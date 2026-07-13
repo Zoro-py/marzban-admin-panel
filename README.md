@@ -123,21 +123,19 @@ Two scripts, same idea as Marzban's own installer:
   existing config it skips straight to a rebuild instead of re-asking everything — this is
   also what makes it reusable, unchanged, on any other server later.
 
-### Step 0 (your side, one-time, ever) — publish the bootstrap file
+### Step 0 (done — one-time, ever)
 
-This is the only piece that needs to be public, and it's intentionally inert on its own —
-copy [`scripts/bootstrap.sh`](scripts/bootstrap.sh) into a new **public** Gist:
-
-1. [gist.github.com](https://gist.github.com) → paste the file's contents → filename
-   `bootstrap.sh` → **Create public gist**.
-2. Click **Raw** on the created gist, copy that URL (`https://gist.githubusercontent.com/...`).
-3. Send it to me once and I'll bake it into the command below for good — this step never
-   needs repeating, including for future servers.
+`scripts/bootstrap.sh` is published as a public Gist:
+https://gist.github.com/Zoro-py/6aa0c5cfabae8546b54945896108cb3b — its raw URL is verified
+working and byte-identical to the copy in this repo. This never needs to be touched again,
+including for future servers; if `scripts/bootstrap.sh` itself ever changes, update that
+Gist's content to match (its logic is meant to stay stable — day-to-day changes belong in
+`scripts/install.sh`, which auto-updates via `git pull` on every run).
 
 ### Step 1 (server side) — the master command
 
 ```bash
-sudo bash -c "$(curl -sL <paste-the-raw-gist-url-here>)"
+sudo bash -c "$(curl -sL https://gist.githubusercontent.com/Zoro-py/6aa0c5cfabae8546b54945896108cb3b/raw/bootstrap.sh)"
 ```
 
 First run on a fresh server, this single line:
