@@ -18,6 +18,16 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
+if ! command -v git >/dev/null 2>&1; then
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "git is missing and this isn't a Debian/Ubuntu box (no apt-get) — install git manually, then re-run this command."
+    exit 1
+  fi
+  echo "==> Installing git"
+  apt-get update -y -qq
+  apt-get install -y -qq git
+fi
+
 if [ ! -f ~/.ssh/id_ed25519 ]; then
   echo "==> Generating an SSH key so this server can pull the private repo"
   ssh-keygen -t ed25519 -C "$(hostname)-marzban-admin-panel" -f ~/.ssh/id_ed25519 -N ""
