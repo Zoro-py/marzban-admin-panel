@@ -1,0 +1,23 @@
+name: Deploy
+
+# Manual only — this touches a live Marzban panel and real billing data, so a
+# push to main never deploys by itself. Trigger from the Actions tab, or:
+#   gh workflow run deploy.yml --ref main
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ secrets.DEPLOY_PATH }}
+            git pull origin main
+            docker compose up -d --build

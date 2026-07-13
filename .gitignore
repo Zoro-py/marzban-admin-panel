@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 
 # Env files with real secrets
+.env
 backend/.env
 bot/.env
 frontend/.env

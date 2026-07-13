@@ -105,9 +105,51 @@ Commands: `/report`, `/customer <name or id>`, `/charge <customer> <amount> [not
   (`SYNC_INTERVAL_MINUTES` in `backend/.env`, default 60); `POST /api/sync/run` or the bot's
   `/sync` trigger it immediately.
 
-## Deployment note
+## Deployment
 
-The backend needs network access to your Marzban panel's API, so it's simplest to run it
-**on the same server as Marzban** (or anywhere with a route to it) rather than on your local
-machine. The frontend is a static build (`npm run build`) that can be served from anywhere
-that can reach the backend — including opening it locally against a remote backend URL.
+Runs as three containers via `docker-compose.yml` at the repo root, on the **same server as
+Marzban** (needs network access to its API) — `backend` (port 8010), `bot`, and `frontend`
+(nginx serving the static build, port 8011). Backend data persists in a named Docker volume.
+
+### One-time server setup
+
+```bash
+git clone git@github.com:Zoro-py/marzban-admin-panel.git /opt/marzban-admin-panel
+cd /opt/marzban-admin-panel
+
+cp backend/.env.example backend/.env   # fill in real MARZBAN_* values
+cp bot/.env.example bot/.env           # fill in real BOT_TOKEN / ADMIN_CHAT_ID / MARZBAN_*
+cp .env.example .env                   # PUBLIC_BACKEND_URL=http://<server-ip>:8010
+
+docker compose up -d --build
+```
+
+Three different "where's the backend" values, easy to mix up:
+- `bot/.env`'s `API_BASE_URL` → `http://backend:8000` (container-to-container, Compose's
+  built-in service-name DNS — already the default in `.env.example`).
+- root `.env`'s `PUBLIC_BACKEND_URL` → the address **your browser** reaches, e.g.
+  `http://<server-ip>:8010`. Baked into the frontend at build time, so changing it later
+  needs a rebuild (`docker compose up -d --build frontend`).
+- `backend/.env`'s `MARZBAN_BASE_URL` → wherever Marzban's own API is already reachable
+  (its existing public URL is simplest and always works, regardless of Docker networking).
+
+### CI/CD
+
+- **CI** (`.github/workflows/ci.yml`): every push/PR — backend + bot import-check, frontend
+  typecheck + build. Catches breakage before it ever reaches the server.
+- **Deploy** (`.github/workflows/deploy.yml`): **manual only** — a push to `main` never
+  deploys by itself, given this touches a live panel and real billing data. Trigger it from
+  the Actions tab (or `gh workflow run deploy.yml --ref main`); it SSHes in and runs
+  `git pull && docker compose up -d --build`.
+
+  Needs these repo secrets (Settings → Secrets and variables → Actions):
+  - `DEPLOY_HOST` — the server's address
+  - `DEPLOY_USER` — e.g. `root`
+  - `DEPLOY_SSH_KEY` — a private key authorized on the server
+  - `DEPLOY_PATH` — e.g. `/opt/marzban-admin-panel`
+
+### Redeploying after an `.env` change
+
+`docker compose up -d --build` picks up `backend/.env` / `bot/.env` changes automatically
+(they're mounted via `env_file:`, read at container start). A root `.env` change
+(`PUBLIC_BACKEND_URL`) needs an explicit frontend rebuild, as noted above.
