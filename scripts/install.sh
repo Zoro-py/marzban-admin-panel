@@ -54,6 +54,51 @@ install_nginx_certbot() {
   fi
 }
 
+# Docker itself being present (checked above) does NOT guarantee the `docker compose`
+# v2 plugin is — depends on how/when Docker was originally installed (e.g. Marzban's own
+# installer may have set Docker up before this box ever needed Compose). Falls back to a
+# directly-downloaded standalone binary rather than assuming a specific apt repo has the
+# plugin package, so this works regardless of how Docker got there.
+detect_or_install_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE_CMD="docker compose"
+    info "Using docker compose (plugin)"
+    return
+  fi
+  if command -v docker-compose >/dev/null 2>&1; then
+    COMPOSE_CMD="docker-compose"
+    info "Using docker-compose (standalone binary, already installed)"
+    return
+  fi
+  info "Neither 'docker compose' nor 'docker-compose' found — installing the standalone binary"
+  # GitHub's release asset names are lowercase ("docker-compose-linux-x86_64"); `uname -s`
+  # returns "Linux" (capital) on every real Linux box, which would 404 if used as-is.
+  local os_lower arch
+  os_lower=$(uname -s | tr '[:upper:]' '[:lower:]')
+  arch=$(uname -m)
+  curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-${os_lower}-${arch}" \
+    -o /usr/local/bin/docker-compose
+  chmod +x /usr/local/bin/docker-compose
+  COMPOSE_CMD="docker-compose"
+}
+
+# Port 80 is where certbot's HTTP-01 challenge and the new nginx server blocks both need
+# to listen. A soft warning, not a hard stop — this box already runs Marzban, so it's worth
+# flagging early if something unexpected already owns that port instead of failing deep
+# inside the certbot step with a less obvious error.
+check_port_80() {
+  if ! command -v ss >/dev/null 2>&1; then
+    return
+  fi
+  local holder
+  holder=$(ss -tlnp 2>/dev/null | awk '/:80[[:space:]]/{print}')
+  if [ -n "$holder" ] && ! echo "$holder" | grep -qi nginx; then
+    warn "Something is already listening on port 80 that doesn't look like nginx:"
+    echo "$holder"
+    warn "If the certbot step below fails, this is the first thing to check."
+  fi
+}
+
 collect_config() {
   info "Configuration (blank keeps the current value if reconfiguring)"
   PANEL_DOMAIN=$(ask "Dashboard subdomain (what you open in a browser)" "ops.melobuds.ir")
@@ -108,7 +153,7 @@ EOF
 write_nginx_configs() {
   info "Writing nginx server blocks"
 
-  cat > /etc/nginx/sites-available/vpn-panel.conf <<EOF
+  cat > /etc/nginx/sites-available/panel.conf <<EOF
 server {
     listen 80;
     server_name $PANEL_DOMAIN;
@@ -122,7 +167,7 @@ server {
 }
 EOF
 
-  cat > /etc/nginx/sites-available/vpn-api.conf <<EOF
+  cat > /etc/nginx/sites-available/api.conf <<EOF
 server {
     listen 80;
     server_name $API_DOMAIN;
@@ -136,8 +181,8 @@ server {
 }
 EOF
 
-  ln -sf /etc/nginx/sites-available/vpn-panel.conf /etc/nginx/sites-enabled/vpn-panel.conf
-  ln -sf /etc/nginx/sites-available/vpn-api.conf /etc/nginx/sites-enabled/vpn-api.conf
+  ln -sf /etc/nginx/sites-available/panel.conf /etc/nginx/sites-enabled/panel.conf
+  ln -sf /etc/nginx/sites-available/api.conf /etc/nginx/sites-enabled/api.conf
   nginx -t
   systemctl reload nginx
 }
@@ -149,13 +194,15 @@ request_certs() {
 
 compose_up() {
   info "Building and starting containers"
-  docker compose up -d --build
+  $COMPOSE_CMD up -d --build
 }
 
 main() {
   require_root
   require_debian_family
   install_docker
+  detect_or_install_compose
+  check_port_80
   install_nginx_certbot
 
   if [ -f backend/.env ]; then
