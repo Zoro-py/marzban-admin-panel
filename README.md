@@ -111,59 +111,71 @@ Runs as three containers via `docker-compose.yml` — `backend` (port 8010), `bo
 `frontend` (nginx serving the static build, port 8011) — behind the **host's** nginx, which
 terminates HTTPS for two subdomains and reverse-proxies to those two ports. Meant to run on
 the **same server as Marzban** (needs network access to its API). Backend data persists in a
-named Docker volume. `scripts/install.sh` does the entire server side end-to-end and is safe
-to re-run (it detects an existing setup and just rebuilds instead of re-asking everything) —
-this is what makes it reusable on any other server you point it at later.
+named Docker volume.
 
-### Step 1 (your side) — let this server pull from GitHub
+Two scripts, same idea as Marzban's own installer:
+- `scripts/bootstrap.sh` — tiny, public (published as a Gist, see Step 0), zero secrets or
+  app logic. Its only job is a one-time SSH deploy key + cloning the private repo, then
+  handing off to:
+- `scripts/install.sh` — the real installer, lives in this (private) repo under normal
+  version control. Installs Docker/nginx/certbot, asks for config, sets up the nginx +
+  Let's Encrypt reverse proxy, brings the containers up. **Safe to re-run**: if it finds an
+  existing config it skips straight to a rebuild instead of re-asking everything — this is
+  also what makes it reusable, unchanged, on any other server later.
 
-One keypair, generated **on the server**, so it can `git clone` the (private) repo:
+### Step 0 (your side, one-time, ever) — publish the bootstrap file
+
+This is the only piece that needs to be public, and it's intentionally inert on its own —
+copy [`scripts/bootstrap.sh`](scripts/bootstrap.sh) into a new **public** Gist:
+
+1. [gist.github.com](https://gist.github.com) → paste the file's contents → filename
+   `bootstrap.sh` → **Create public gist**.
+2. Click **Raw** on the created gist, copy that URL (`https://gist.githubusercontent.com/...`).
+3. Send it to me once and I'll bake it into the command below for good — this step never
+   needs repeating, including for future servers.
+
+### Step 1 (server side) — the master command
 
 ```bash
-ssh-keygen -t ed25519 -C "$(hostname)-vpn-admin-panel" -f ~/.ssh/id_ed25519 -N ""
-cat ~/.ssh/id_ed25519.pub
+sudo bash -c "$(curl -sL <paste-the-raw-gist-url-here>)"
 ```
 
-Copy that output → GitHub → `Zoro-py/marzban-admin-panel` → **Settings → Deploy keys → Add
-deploy key** → paste it, leave "Allow write access" unchecked (read-only is enough).
+First run on a fresh server, this single line:
+1. Generates an SSH key and prints it, pausing with the exact GitHub page/menu to paste it
+   into (**Settings → Deploy keys → Add deploy key**, read-only) — press Enter once done.
+2. Clones the private repo to `/opt/marzban-admin-panel`.
+3. Hands off to `scripts/install.sh`, which installs Docker/nginx/certbot if missing, then
+   asks for: the two subdomains (defaults to `ops.melobuds.ir` / `ops-api.melobuds.ir` —
+   confirmed free via DNS lookup; avoided `admin.melobuds.ir`, `vpn*`, since those either
+   were taken or you didn't want "vpn" in the name), your email for Let's Encrypt, your real
+   Marzban admin URL/username/password, and your Telegram bot token/chat id.
+4. **Pauses again**, printing this server's public IP — go do Step 2 before it requests SSL
+   certificates.
 
-### Step 2 (server side) — the master command
+Re-running the exact same command later (on this server or a new one) skips straight to
+whatever step is still needed — already has the deploy key and clone → straight to
+`install.sh`; already configured → straight to a rebuild.
 
-```bash
-ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-git clone git@github.com:Zoro-py/marzban-admin-panel.git /opt/marzban-admin-panel
-cd /opt/marzban-admin-panel
-sudo bash scripts/install.sh
-```
-
-That last line installs Docker/nginx/certbot if missing, then asks for: the two subdomains
-(defaults to `vpn-panel.melobuds.ir` / `vpn-api.melobuds.ir` — confirmed free via DNS lookup,
-`admin.melobuds.ir` is already taken by something else so it was avoided), your email for
-Let's Encrypt, your real Marzban admin URL/username/password, and your Telegram bot
-token/chat id. **It will pause partway through** and print this server's public IP, waiting
-for you to go do Step 3 before it requests SSL certificates.
-
-### Step 3 (your side, when the script pauses) — DNS
+### Step 2 (your side, when the script pauses) — DNS
 
 Cloudflare dashboard → `melobuds.ir` → DNS → **Add record**, twice:
 
 | Type | Name | Content | Proxy status |
 |---|---|---|---|
-| A | `vpn-panel` | *(IP the script printed)* | DNS only (grey cloud) |
-| A | `vpn-api` | *(IP the script printed)* | DNS only (grey cloud) |
+| A | `ops` | *(IP the script printed)* | DNS only (grey cloud) |
+| A | `ops-api` | *(IP the script printed)* | DNS only (grey cloud) |
 
-Grey-cloud (not proxied) for now — keeps the certificate request simple. You can switch them
-to proxied (orange cloud) afterwards once the certs exist, if you want Cloudflare's WAF in
-front of this too. Wait ~30–60s for it to resolve, then go back to the terminal and press
-Enter to let the script continue.
+Grey-cloud (not proxied) for now — keeps the certificate request simple. Switch to proxied
+(orange cloud) afterwards if you want Cloudflare's WAF in front of this too. Wait ~30–60s,
+then back to the terminal, press Enter to let the script continue.
 
-When it finishes, the dashboard is at `https://vpn-panel.melobuds.ir`.
+When it finishes: **`https://ops.melobuds.ir`**.
 
-### Step 4 (your side, optional) — enable the one-click Actions deploy
+### Step 3 (your side, optional) — enable the one-click Actions deploy
 
 A **second, separate** keypair — this one lets *GitHub Actions* SSH into the server (the
-opposite direction from Step 1's key, which only lets the server pull *from* GitHub; it
-can't be reused here):
+opposite direction from the deploy key above, which only lets the server pull *from* GitHub;
+that key can't be reused here):
 
 ```bash
 ssh-keygen -t ed25519 -C "gh-actions-deploy" -f ~/.ssh/gh_actions_deploy -N ""
@@ -171,29 +183,30 @@ cat ~/.ssh/gh_actions_deploy.pub >> ~/.ssh/authorized_keys
 cat ~/.ssh/gh_actions_deploy       # copy this whole private key
 ```
 
-GitHub → repo → **Settings → Secrets and variables → Actions → New repository secret**, four
-of them:
+Run these **on the server**, over the same SSH session you used for Step 1. Then, in a
+browser: GitHub → repo → **Settings → Secrets and variables → Actions → New repository
+secret**, four of them:
 - `DEPLOY_HOST` — this server's IP
 - `DEPLOY_USER` — `root`
-- `DEPLOY_SSH_KEY` — the private key you just printed, pasted whole
+- `DEPLOY_SSH_KEY` — the private key you just printed, pasted whole (including the
+  `-----BEGIN/END-----` lines)
 - `DEPLOY_PATH` — `/opt/marzban-admin-panel`
 
 After that, **Actions tab → Deploy → Run workflow** SSHes in and runs `git pull && docker
 compose up -d --build` for you — no manual server access needed for routine updates. Without
-this step, redeploying updates just means repeating Step 2's last line
-(`sudo bash scripts/install.sh`, which no-ops the questions and rebuilds) on the server
-yourself.
+this step, redeploying just means running the Step 1 command again on the server yourself.
 
 ### Reusing this on another server later
 
-Repeat Steps 1–4 there — same repo, same script, different subdomains/Marzban
-credentials/bot when the script asks. Nothing here is hardcoded to this one server.
+Same command as Step 1, on the new server. It'll pause for a **new** deploy key (each server
+needs its own) and ask for that server's own subdomains/Marzban credentials/bot — nothing
+here is hardcoded to one machine.
 
 ### The three "where's the backend" values, easy to mix up
 
 - `bot/.env`'s `API_BASE_URL` → `http://backend:8000` (container-to-container, Compose's
   built-in service-name DNS — the installer sets this correctly automatically).
-- root `.env`'s `PUBLIC_BACKEND_URL` → `https://vpn-api.melobuds.ir`, i.e. what **your
+- root `.env`'s `PUBLIC_BACKEND_URL` → `https://ops-api.melobuds.ir`, i.e. what **your
   browser** reaches. Baked into the frontend at build time, so changing it needs a rebuild.
 - `backend/.env`'s `MARZBAN_BASE_URL` → wherever Marzban's own API is already reachable.
 
@@ -203,4 +216,4 @@ credentials/bot when the script asks. Nothing here is hardcoded to this one serv
   typecheck + build. Catches breakage before it ever reaches the server.
 - **Deploy** (`.github/workflows/deploy.yml`): **manual only** (`workflow_dispatch`) — a push
   to `main` never deploys by itself, given this touches a live panel and real billing data.
-  Needs Step 4 above configured first.
+  Needs Step 3 above configured first.

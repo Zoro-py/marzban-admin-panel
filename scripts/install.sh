@@ -56,8 +56,8 @@ install_nginx_certbot() {
 
 collect_config() {
   info "Configuration (blank keeps the current value if reconfiguring)"
-  PANEL_DOMAIN=$(ask "Dashboard subdomain (what you open in a browser)" "vpn-panel.melobuds.ir")
-  API_DOMAIN=$(ask "Backend API subdomain" "vpn-api.melobuds.ir")
+  PANEL_DOMAIN=$(ask "Dashboard subdomain (what you open in a browser)" "ops.melobuds.ir")
+  API_DOMAIN=$(ask "Backend API subdomain" "ops-api.melobuds.ir")
   LE_EMAIL=$(ask "Email for Let's Encrypt renewal notices")
   MARZBAN_BASE_URL=$(ask "Existing Marzban panel URL (e.g. https://sub.example.com:2096)")
   MARZBAN_USERNAME=$(ask "Marzban sudo admin username")
