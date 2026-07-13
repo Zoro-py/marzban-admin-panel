@@ -114,45 +114,42 @@ the **same server as Marzban** (needs network access to its API). Backend data p
 named Docker volume.
 
 Two scripts, same idea as Marzban's own installer:
-- `scripts/bootstrap.sh` — tiny, public (published as a Gist, see Step 0), zero secrets or
-  app logic. Its only job is a one-time SSH deploy key + cloning the private repo, then
-  handing off to:
-- `scripts/install.sh` — the real installer, lives in this (private) repo under normal
-  version control. Installs Docker/nginx/certbot, asks for config, sets up the nginx +
-  Let's Encrypt reverse proxy, brings the containers up. **Safe to re-run**: if it finds an
-  existing config it skips straight to a rebuild instead of re-asking everything — this is
-  also what makes it reusable, unchanged, on any other server later.
+- `scripts/bootstrap.sh` — tiny, zero app logic. Its only job is making sure `git` is
+  available, then cloning/pulling the repo and handing off to:
+- `scripts/install.sh` — the real installer. Installs Docker/nginx/certbot, asks for config,
+  sets up the nginx + Let's Encrypt reverse proxy, brings the containers up. **Safe to
+  re-run**: every step (config, nginx, certs, containers) independently checks whether it's
+  already done and skips or resumes accordingly, rather than one all-or-nothing gate — so
+  re-running after any failure (e.g. certbot failing because DNS hadn't propagated yet)
+  correctly retries only what's still needed. This is also what makes it reusable, unchanged,
+  on any other server later.
 
-### Step 0 (done — one-time, ever)
-
-`scripts/bootstrap.sh` is published as a public Gist:
-https://gist.github.com/Zoro-py/6aa0c5cfabae8546b54945896108cb3b — its raw URL is verified
-working and byte-identical to the copy in this repo. This never needs to be touched again,
-including for future servers; if `scripts/bootstrap.sh` itself ever changes, update that
-Gist's content to match (its logic is meant to stay stable — day-to-day changes belong in
-`scripts/install.sh`, which auto-updates via `git pull` on every run).
+The repo is public, so both scripts are fetched directly from
+`raw.githubusercontent.com` — no Gist, no deploy key, no GitHub auth of any kind for cloning.
 
 ### Step 1 (server side) — the master command
 
 ```bash
-sudo bash -c "$(curl -sL https://gist.githubusercontent.com/Zoro-py/6aa0c5cfabae8546b54945896108cb3b/raw/bootstrap.sh)"
+sudo bash -c "$(curl -sL https://raw.githubusercontent.com/Zoro-py/marzban-admin-panel/main/scripts/bootstrap.sh)"
 ```
 
 First run on a fresh server, this single line:
-1. Generates an SSH key and prints it, pausing with the exact GitHub page/menu to paste it
-   into (**Settings → Deploy keys → Add deploy key**, read-only) — press Enter once done.
-2. Clones the private repo to `/opt/marzban-admin-panel`.
+1. Installs `git` if missing (retries automatically if apt's lock is briefly held by
+   background updates — common on a freshly booted VPS).
+2. Clones the repo to `/opt/marzban-admin-panel` (plain HTTPS, no auth needed).
 3. Hands off to `scripts/install.sh`, which installs Docker/nginx/certbot if missing, then
    asks for: the two subdomains (defaults to `ops.melobuds.ir` / `ops-api.melobuds.ir` —
    confirmed free via DNS lookup; avoided `admin.melobuds.ir`, `vpn*`, since those either
    were taken or you didn't want "vpn" in the name), your email for Let's Encrypt, your real
-   Marzban admin URL/username/password, and your Telegram bot token/chat id.
-4. **Pauses again**, printing this server's public IP — go do Step 2 before it requests SSL
+   Marzban admin URL/username/password, and your Telegram bot token/chat id — every field is
+   validated non-blank before it moves on, so a stray blind Enter can't silently write an
+   empty value into a `.env` file and fail confusingly later.
+4. **Pauses**, printing this server's public IP — go do Step 2 before it requests SSL
    certificates.
 
-Re-running the exact same command later (on this server or a new one) skips straight to
-whatever step is still needed — already has the deploy key and clone → straight to
-`install.sh`; already configured → straight to a rebuild.
+Re-running the exact same command later (on this server or a new one) picks up exactly where
+it left off — already cloned → straight to `install.sh`; already configured → straight to
+whichever of nginx/certs/containers still needs doing.
 
 ### Step 2 (your side, when the script pauses) — DNS
 
@@ -196,9 +193,8 @@ this step, redeploying just means running the Step 1 command again on the server
 
 ### Reusing this on another server later
 
-Same command as Step 1, on the new server. It'll pause for a **new** deploy key (each server
-needs its own) and ask for that server's own subdomains/Marzban credentials/bot — nothing
-here is hardcoded to one machine.
+Exact same command as Step 1, on the new server — it'll ask for that server's own
+subdomains/Marzban credentials/bot. Nothing here is hardcoded to one machine.
 
 ### The three "where's the backend" values, easy to mix up
 

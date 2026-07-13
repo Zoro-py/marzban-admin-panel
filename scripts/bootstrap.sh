@@ -1,22 +1,40 @@
 #!/usr/bin/env bash
-# Public entry point for installing the (private) marzban-admin-panel repo —
-# this file is meant to be published somewhere public (a Gist) so it can be
-# fetched with a single curl|bash command, the same way Marzban's own
-# installer works. It contains zero secrets and zero app logic: its only job
-# is to get an SSH deploy key set up once, clone/pull the private repo, and
-# hand off to that repo's own scripts/install.sh, which does everything else
-# (Docker, nginx, certbot, .env, docker compose) and lives under normal
-# version control where it can be reviewed and changed like any other code.
+# Public entry point for installing marzban-admin-panel — meant to be fetched
+# with a single curl|bash command, the same way Marzban's own installer works.
+# Now that the repo itself is public, this can live in the repo and be fetched
+# straight from raw.githubusercontent.com — no separate Gist to keep in sync,
+# no SSH keys, no GitHub auth of any kind. Its only job is to make sure git is
+# available, clone/pull the repo, and hand off to scripts/install.sh, which
+# does everything else (Docker, nginx, certbot, .env, docker compose).
 set -euo pipefail
 
-REPO_SSH_URL="git@github.com:Zoro-py/marzban-admin-panel.git"
+REPO_URL="https://github.com/Zoro-py/marzban-admin-panel.git"
 INSTALL_DIR="/opt/marzban-admin-panel"
 
 if [ "$EUID" -ne 0 ]; then
   echo "Run as root, e.g.:"
-  echo '  sudo bash -c "$(curl -sL <this-gist-raw-url>)"'
+  echo '  sudo bash -c "$(curl -sL <raw-bootstrap.sh-url>)"'
   exit 1
 fi
+
+# Retries a package-manager command a few times before giving up — apt-get can
+# transiently fail with "Could not get lock /var/lib/dpkg/lock-frontend" on a
+# freshly booted VPS still running unattended-upgrades in the background; this
+# is common enough on cloud images that it's worth handling rather than just
+# failing the whole install over a timing race.
+apt_retry() {
+  local tries=0
+  until "$@"; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 10 ]; then
+      echo "'$*' kept failing after 10 tries (likely a stuck dpkg/apt lock)."
+      echo "Check with: sudo lsof /var/lib/dpkg/lock-frontend"
+      exit 1
+    fi
+    echo "apt is busy (dpkg lock?) — retrying in 5s... ($tries/10)"
+    sleep 5
+  done
+}
 
 if ! command -v git >/dev/null 2>&1; then
   if ! command -v apt-get >/dev/null 2>&1; then
@@ -24,29 +42,23 @@ if ! command -v git >/dev/null 2>&1; then
     exit 1
   fi
   echo "==> Installing git"
-  apt-get update -y -qq
-  apt-get install -y -qq git
-fi
-
-if [ ! -f ~/.ssh/id_ed25519 ]; then
-  echo "==> Generating an SSH key so this server can pull the private repo"
-  ssh-keygen -t ed25519 -C "$(hostname)-marzban-admin-panel" -f ~/.ssh/id_ed25519 -N ""
+  apt_retry apt-get update -y -qq
+  apt_retry apt-get install -y -qq git
 fi
 
 if [ -d "$INSTALL_DIR/.git" ]; then
   echo "==> $INSTALL_DIR already exists — pulling latest instead of cloning"
-  git -C "$INSTALL_DIR" pull
+  git -C "$INSTALL_DIR" pull --ff-only
 else
-  echo
-  echo "==> One-time step: add this server's public key as a read-only Deploy Key"
-  echo "    github.com/Zoro-py/marzban-admin-panel -> Settings -> Deploy keys -> Add deploy key"
-  echo
-  cat ~/.ssh/id_ed25519.pub
-  echo
-  read -rp "Press Enter once it's added on GitHub... "
-
-  ssh-keyscan -H github.com >> ~/.ssh/known_hosts 2>/dev/null
-  git clone "$REPO_SSH_URL" "$INSTALL_DIR"
+  if [ -e "$INSTALL_DIR" ]; then
+    # Only reachable if a previous attempt got interrupted before the clone
+    # ever completed (no .git yet) — nothing of value can exist there yet,
+    # since scripts/install.sh (which is what would eventually write real
+    # config) only exists once the clone succeeds. Safe to clear and retry.
+    echo "==> $INSTALL_DIR exists but isn't a complete clone (leftover from an interrupted run) — removing it and retrying"
+    rm -rf "$INSTALL_DIR"
+  fi
+  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
 fi
 
 exec bash "$INSTALL_DIR/scripts/install.sh"

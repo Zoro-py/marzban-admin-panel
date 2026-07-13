@@ -15,6 +15,9 @@ backend/vpn.db
 backend/vpn.db-*
 backend/.jwt_secret
 
+# scripts/install.sh's own resume-state (subdomains/email from the last run)
+.install_state
+
 # Frontend
 frontend/node_modules/
 frontend/dist/

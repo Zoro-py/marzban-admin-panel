@@ -9,6 +9,25 @@ cd "$(dirname "$0")/.."   # always run from repo root, regardless of cwd
 
 info() { echo -e "\n\033[1;34m==>\033[0m $1"; }
 warn() { echo -e "\033[1;33mwarning:\033[0m $1"; }
+
+# Retries a package-manager command a few times before giving up — apt-get can
+# transiently fail with "Could not get lock /var/lib/dpkg/lock-frontend" on a
+# freshly booted VPS still running unattended-upgrades in the background; common
+# enough on cloud images to handle rather than fail the whole install over a race.
+apt_retry() {
+  local tries=0
+  until "$@"; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 10 ]; then
+      echo "'$*' kept failing after 10 tries (likely a stuck dpkg/apt lock)."
+      echo "Check with: sudo lsof /var/lib/dpkg/lock-frontend"
+      exit 1
+    fi
+    echo "apt is busy (dpkg lock?) — retrying in 5s... ($tries/10)"
+    sleep 5
+  done
+}
+
 ask() {
   local prompt="$1" default="${2:-}" reply
   read -rp "$prompt${default:+ [$default]}: " reply
@@ -19,6 +38,26 @@ ask_secret() {
   read -rsp "$prompt: " reply
   echo >&2
   echo "$reply"
+}
+# Loops until non-empty input — for fields where an accidental blank (just
+# pressing Enter) would otherwise get written straight into a .env file and
+# fail confusingly much later (e.g. inside a container, or on first bot login)
+# instead of right here where the user can immediately see and fix it.
+ask_required() {
+  local prompt="$1" reply
+  while true; do
+    reply=$(ask "$prompt")
+    [ -n "$reply" ] && { echo "$reply"; return; }
+    echo "This can't be blank." >&2
+  done
+}
+ask_secret_required() {
+  local prompt="$1" reply
+  while true; do
+    reply=$(ask_secret "$prompt")
+    [ -n "$reply" ] && { echo "$reply"; return; }
+    echo "This can't be blank." >&2
+  done
 }
 
 require_root() {
@@ -49,8 +88,8 @@ install_nginx_certbot() {
     info "nginx + certbot already installed, skipping"
   else
     info "Installing nginx + certbot"
-    apt-get update -y
-    apt-get install -y nginx certbot python3-certbot-nginx
+    apt_retry apt-get update -y
+    apt_retry apt-get install -y nginx certbot python3-certbot-nginx
   fi
 }
 
@@ -100,20 +139,39 @@ check_port_80() {
 }
 
 collect_config() {
-  info "Configuration (blank keeps the current value if reconfiguring)"
+  info "Configuration"
   PANEL_DOMAIN=$(ask "Dashboard subdomain (what you open in a browser)" "ops.melobuds.ir")
   API_DOMAIN=$(ask "Backend API subdomain" "ops-api.melobuds.ir")
-  LE_EMAIL=$(ask "Email for Let's Encrypt renewal notices")
-  MARZBAN_BASE_URL=$(ask "Existing Marzban panel URL (e.g. https://sub.example.com:2096)")
-  MARZBAN_USERNAME=$(ask "Marzban sudo admin username")
-  MARZBAN_PASSWORD=$(ask_secret "Marzban sudo admin password")
-  BOT_TOKEN=$(ask_secret "Telegram bot token (from @BotFather)")
-  ADMIN_CHAT_ID=$(ask "Your Telegram numeric chat id (from @userinfobot)" "")
+  if [ "$PANEL_DOMAIN" = "$API_DOMAIN" ]; then
+    echo "Dashboard and API subdomains can't be the same value ($PANEL_DOMAIN)." >&2
+    exit 1
+  fi
+
+  LE_EMAIL=$(ask_required "Email for Let's Encrypt renewal notices")
+
+  MARZBAN_BASE_URL=$(ask_required "Existing Marzban panel URL (e.g. https://sub.example.com:2096)")
+  if [[ ! "$MARZBAN_BASE_URL" =~ ^https?:// ]]; then
+    warn "No http(s):// scheme on that URL — assuming https://"
+    MARZBAN_BASE_URL="https://$MARZBAN_BASE_URL"
+  fi
+
+  MARZBAN_USERNAME=$(ask_required "Marzban sudo admin username")
+  MARZBAN_PASSWORD=$(ask_secret_required "Marzban sudo admin password")
+  BOT_TOKEN=$(ask_secret_required "Telegram bot token (from @BotFather)")
+
+  while true; do
+    ADMIN_CHAT_ID=$(ask_required "Your Telegram numeric chat id (from @userinfobot)")
+    [[ "$ADMIN_CHAT_ID" =~ ^-?[0-9]+$ ]] && break
+    echo "That doesn't look like a numeric chat id (digits only, optionally starting with -)." >&2
+  done
 }
 
 confirm_dns() {
   local ip
-  ip=$(curl -fsSL -4 ifconfig.me || echo "<could not detect>")
+  ip=$(curl -fsSL -4 --max-time 5 ifconfig.me 2>/dev/null || curl -fsSL -4 --max-time 5 icanhazip.com 2>/dev/null || true)
+  if [ -z "$ip" ]; then
+    ip="<couldn't auto-detect — run 'curl -4 ifconfig.me' yourself>"
+  fi
   info "Before continuing, make sure DNS is already pointing at this server:"
   echo "    $PANEL_DOMAIN  ->  A record  ->  $ip"
   echo "    $API_DOMAIN    ->  A record  ->  $ip"
@@ -197,6 +255,23 @@ compose_up() {
   $COMPOSE_CMD up -d --build
 }
 
+STATE_FILE=".install_state"
+
+load_state() {
+  [ -f "$STATE_FILE" ] || return 1
+  # shellcheck disable=SC1090
+  source "$STATE_FILE"
+  [ -n "${PANEL_DOMAIN:-}" ] && [ -n "${API_DOMAIN:-}" ] && [ -n "${LE_EMAIL:-}" ]
+}
+
+save_state() {
+  cat > "$STATE_FILE" <<EOF
+PANEL_DOMAIN=$PANEL_DOMAIN
+API_DOMAIN=$API_DOMAIN
+LE_EMAIL=$LE_EMAIL
+EOF
+}
+
 main() {
   require_root
   require_debian_family
@@ -205,23 +280,28 @@ main() {
   check_port_80
   install_nginx_certbot
 
-  if [ -f backend/.env ]; then
-    warn "backend/.env already exists — this server looks already configured."
-    local reconfigure
-    reconfigure=$(ask "Reconfigure from scratch? (y/N)" "N")
-    if [[ ! "$reconfigure" =~ ^[Yy]$ ]]; then
-      info "Skipping configuration, just rebuilding and restarting containers"
-      compose_up
-      info "Done."
-      exit 0
-    fi
+  # Each remaining step below checks its own already-done state independently
+  # (config collected? nginx written? cert obtained?) rather than one coarse
+  # "does backend/.env exist" gate — so re-running after a failure partway
+  # through (e.g. certbot failing because DNS hadn't propagated yet) correctly
+  # retries exactly the step that failed instead of silently skipping it.
+  if [ -f backend/.env ] && load_state; then
+    info "Reusing existing configuration for $PANEL_DOMAIN (delete backend/.env and $STATE_FILE to start over)"
+  else
+    collect_config
+    confirm_dns
+    write_env_files
+    save_state
   fi
 
-  collect_config
-  confirm_dns
-  write_env_files
   write_nginx_configs
-  request_certs
+
+  if [ -f "/etc/letsencrypt/live/$PANEL_DOMAIN/fullchain.pem" ]; then
+    info "Certificate for $PANEL_DOMAIN already exists, skipping certbot"
+  else
+    request_certs
+  fi
+
   compose_up
 
   info "Done."
