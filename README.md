@@ -107,49 +107,100 @@ Commands: `/report`, `/customer <name or id>`, `/charge <customer> <amount> [not
 
 ## Deployment
 
-Runs as three containers via `docker-compose.yml` at the repo root, on the **same server as
-Marzban** (needs network access to its API) — `backend` (port 8010), `bot`, and `frontend`
-(nginx serving the static build, port 8011). Backend data persists in a named Docker volume.
+Runs as three containers via `docker-compose.yml` — `backend` (port 8010), `bot`, and
+`frontend` (nginx serving the static build, port 8011) — behind the **host's** nginx, which
+terminates HTTPS for two subdomains and reverse-proxies to those two ports. Meant to run on
+the **same server as Marzban** (needs network access to its API). Backend data persists in a
+named Docker volume. `scripts/install.sh` does the entire server side end-to-end and is safe
+to re-run (it detects an existing setup and just rebuilds instead of re-asking everything) —
+this is what makes it reusable on any other server you point it at later.
 
-### One-time server setup
+### Step 1 (your side) — let this server pull from GitHub
+
+One keypair, generated **on the server**, so it can `git clone` the (private) repo:
 
 ```bash
-git clone git@github.com:Zoro-py/marzban-admin-panel.git /opt/marzban-admin-panel
-cd /opt/marzban-admin-panel
-
-cp backend/.env.example backend/.env   # fill in real MARZBAN_* values
-cp bot/.env.example bot/.env           # fill in real BOT_TOKEN / ADMIN_CHAT_ID / MARZBAN_*
-cp .env.example .env                   # PUBLIC_BACKEND_URL=http://<server-ip>:8010
-
-docker compose up -d --build
+ssh-keygen -t ed25519 -C "$(hostname)-vpn-admin-panel" -f ~/.ssh/id_ed25519 -N ""
+cat ~/.ssh/id_ed25519.pub
 ```
 
-Three different "where's the backend" values, easy to mix up:
+Copy that output → GitHub → `Zoro-py/marzban-admin-panel` → **Settings → Deploy keys → Add
+deploy key** → paste it, leave "Allow write access" unchecked (read-only is enough).
+
+### Step 2 (server side) — the master command
+
+```bash
+ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+git clone git@github.com:Zoro-py/marzban-admin-panel.git /opt/marzban-admin-panel
+cd /opt/marzban-admin-panel
+sudo bash scripts/install.sh
+```
+
+That last line installs Docker/nginx/certbot if missing, then asks for: the two subdomains
+(defaults to `vpn-panel.melobuds.ir` / `vpn-api.melobuds.ir` — confirmed free via DNS lookup,
+`admin.melobuds.ir` is already taken by something else so it was avoided), your email for
+Let's Encrypt, your real Marzban admin URL/username/password, and your Telegram bot
+token/chat id. **It will pause partway through** and print this server's public IP, waiting
+for you to go do Step 3 before it requests SSL certificates.
+
+### Step 3 (your side, when the script pauses) — DNS
+
+Cloudflare dashboard → `melobuds.ir` → DNS → **Add record**, twice:
+
+| Type | Name | Content | Proxy status |
+|---|---|---|---|
+| A | `vpn-panel` | *(IP the script printed)* | DNS only (grey cloud) |
+| A | `vpn-api` | *(IP the script printed)* | DNS only (grey cloud) |
+
+Grey-cloud (not proxied) for now — keeps the certificate request simple. You can switch them
+to proxied (orange cloud) afterwards once the certs exist, if you want Cloudflare's WAF in
+front of this too. Wait ~30–60s for it to resolve, then go back to the terminal and press
+Enter to let the script continue.
+
+When it finishes, the dashboard is at `https://vpn-panel.melobuds.ir`.
+
+### Step 4 (your side, optional) — enable the one-click Actions deploy
+
+A **second, separate** keypair — this one lets *GitHub Actions* SSH into the server (the
+opposite direction from Step 1's key, which only lets the server pull *from* GitHub; it
+can't be reused here):
+
+```bash
+ssh-keygen -t ed25519 -C "gh-actions-deploy" -f ~/.ssh/gh_actions_deploy -N ""
+cat ~/.ssh/gh_actions_deploy.pub >> ~/.ssh/authorized_keys
+cat ~/.ssh/gh_actions_deploy       # copy this whole private key
+```
+
+GitHub → repo → **Settings → Secrets and variables → Actions → New repository secret**, four
+of them:
+- `DEPLOY_HOST` — this server's IP
+- `DEPLOY_USER` — `root`
+- `DEPLOY_SSH_KEY` — the private key you just printed, pasted whole
+- `DEPLOY_PATH` — `/opt/marzban-admin-panel`
+
+After that, **Actions tab → Deploy → Run workflow** SSHes in and runs `git pull && docker
+compose up -d --build` for you — no manual server access needed for routine updates. Without
+this step, redeploying updates just means repeating Step 2's last line
+(`sudo bash scripts/install.sh`, which no-ops the questions and rebuilds) on the server
+yourself.
+
+### Reusing this on another server later
+
+Repeat Steps 1–4 there — same repo, same script, different subdomains/Marzban
+credentials/bot when the script asks. Nothing here is hardcoded to this one server.
+
+### The three "where's the backend" values, easy to mix up
+
 - `bot/.env`'s `API_BASE_URL` → `http://backend:8000` (container-to-container, Compose's
-  built-in service-name DNS — already the default in `.env.example`).
-- root `.env`'s `PUBLIC_BACKEND_URL` → the address **your browser** reaches, e.g.
-  `http://<server-ip>:8010`. Baked into the frontend at build time, so changing it later
-  needs a rebuild (`docker compose up -d --build frontend`).
-- `backend/.env`'s `MARZBAN_BASE_URL` → wherever Marzban's own API is already reachable
-  (its existing public URL is simplest and always works, regardless of Docker networking).
+  built-in service-name DNS — the installer sets this correctly automatically).
+- root `.env`'s `PUBLIC_BACKEND_URL` → `https://vpn-api.melobuds.ir`, i.e. what **your
+  browser** reaches. Baked into the frontend at build time, so changing it needs a rebuild.
+- `backend/.env`'s `MARZBAN_BASE_URL` → wherever Marzban's own API is already reachable.
 
 ### CI/CD
 
 - **CI** (`.github/workflows/ci.yml`): every push/PR — backend + bot import-check, frontend
   typecheck + build. Catches breakage before it ever reaches the server.
-- **Deploy** (`.github/workflows/deploy.yml`): **manual only** — a push to `main` never
-  deploys by itself, given this touches a live panel and real billing data. Trigger it from
-  the Actions tab (or `gh workflow run deploy.yml --ref main`); it SSHes in and runs
-  `git pull && docker compose up -d --build`.
-
-  Needs these repo secrets (Settings → Secrets and variables → Actions):
-  - `DEPLOY_HOST` — the server's address
-  - `DEPLOY_USER` — e.g. `root`
-  - `DEPLOY_SSH_KEY` — a private key authorized on the server
-  - `DEPLOY_PATH` — e.g. `/opt/marzban-admin-panel`
-
-### Redeploying after an `.env` change
-
-`docker compose up -d --build` picks up `backend/.env` / `bot/.env` changes automatically
-(they're mounted via `env_file:`, read at container start). A root `.env` change
-(`PUBLIC_BACKEND_URL`) needs an explicit frontend rebuild, as noted above.
+- **Deploy** (`.github/workflows/deploy.yml`): **manual only** (`workflow_dispatch`) — a push
+  to `main` never deploys by itself, given this touches a live panel and real billing data.
+  Needs Step 4 above configured first.
