@@ -1,0 +1,104 @@
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional
+
+from sqlmodel import Field, SQLModel
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class AccountRole(str, Enum):
+    primary = "primary"
+    sub = "sub"
+
+
+class LedgerType(str, Enum):
+    charge = "charge"   # customer/group owes us money (بدهی)
+    credit = "credit"   # payment received / credit balance (طلب)
+
+
+class LedgerSource(str, Enum):
+    web = "web"
+    bot = "bot"
+    sync = "sync"
+
+
+class Customer(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    contact: Optional[str] = None  # telegram handle / phone
+    is_group_rep: bool = False
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class Group(SQLModel, table=True):
+    """A pay-as-you-go billing group (e.g. a company). Billed as one unit
+    across all member accounts, settled on a recurring cycle."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str
+    representative_customer_id: int = Field(foreign_key="customer.id")
+    billing_cycle_days: int = 30
+    rate_per_gb: Optional[float] = None
+    last_settled_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class Account(SQLModel, table=True):
+    """One Marzban user, mirrored locally with ownership + a synced usage snapshot."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    marzban_username: str = Field(unique=True, index=True)
+
+    customer_id: Optional[int] = Field(default=None, foreign_key="customer.id")
+    group_id: Optional[int] = Field(default=None, foreign_key="group.id")
+    role: AccountRole = AccountRole.primary
+    rate_per_gb: Optional[float] = None  # per-account rate when not part of a group
+
+    # Snapshot of Marzban state, refreshed by the sync job (source of truth is Marzban itself)
+    used_traffic: int = 0
+    lifetime_used_traffic: int = 0
+    data_limit: Optional[int] = None
+    expire: Optional[int] = None  # unix timestamp, mirrors Marzban's `expire`
+    status: Optional[str] = None
+    last_synced_at: Optional[datetime] = None
+
+    # `lifetime_used_traffic` value as of the last pay-as-you-go settlement (individual
+    # or as part of a group). Billable usage for the current cycle = lifetime - baseline.
+    # Using lifetime_used_traffic (monotonic, survives Marzban data_limit resets) rather
+    # than used_traffic avoids silently re-billing usage across a reset boundary.
+    usage_baseline: int = 0
+    usage_baseline_at: Optional[datetime] = None
+
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class LedgerEntry(SQLModel, table=True):
+    """Append-only money ledger. Never update/delete a row to fix a balance —
+    insert a correcting entry instead, so the audit trail stays intact."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    type: LedgerType
+    amount: float
+    date: datetime = Field(default_factory=utcnow)
+
+    customer_id: Optional[int] = Field(default=None, foreign_key="customer.id")
+    group_id: Optional[int] = Field(default=None, foreign_key="group.id")
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id")
+
+    note: Optional[str] = None
+    source: LedgerSource = LedgerSource.web
+
+
+class AccountEvent(SQLModel, table=True):
+    """Audit trail for direct Marzban actions (time/quota changes), since the
+    field itself lives in Marzban and isn't duplicated here as an editable value."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: int = Field(foreign_key="account.id")
+    action: str  # "extend_expire" | "reduce_expire" | "set_data_limit" | "create"
+    detail: str
+    date: datetime = Field(default_factory=utcnow)
+    source: LedgerSource = LedgerSource.web
