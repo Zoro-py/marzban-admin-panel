@@ -374,36 +374,76 @@ PUBLIC_BACKEND_URL=https://$API_DOMAIN
 EOF
 }
 
+# Writes one server block for a domain — with a live listen-443-ssl block
+# reusing an already-issued cert if one exists, or listen-80-only (serving
+# the app directly, not just redirecting, since this also needs to work
+# *before* a cert exists — certbot's HTTP-01 challenge needs port 80 to
+# already be serving something real) otherwise.
+#
+# This function is what write_nginx_configs re-runs on every single install.sh
+# invocation, including a routine redeploy where a cert already exists from
+# a previous run — so it must independently reconstruct the exact same SSL
+# config certbot would have written, every time, rather than only writing the
+# plain HTTP block and assuming SSL config, once added, stays untouched.
+# It does NOT: an earlier version of this script always overwrote the config
+# with the plain HTTP-only template unconditionally, which silently deleted
+# the listen-443 block certbot had added on the *first* run, on every
+# *subsequent* run — since the already-issued certificate file on disk made
+# the separate certbot step skip itself (correctly — the cert didn't need
+# reissuing), nothing ever re-added the now-missing 443 block. Confirmed this
+# exact failure against a real nginx before writing the fix below.
+_write_site_config() {
+  local domain="$1" upstream_port="$2" conf_name="$3"
+  local cert_dir="/etc/letsencrypt/live/$domain"
+
+  if [ -f "$cert_dir/fullchain.pem" ]; then
+    cat > "/etc/nginx/sites-available/${conf_name}.conf" <<EOF
+server {
+    listen 80;
+    server_name $domain;
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name $domain;
+
+    ssl_certificate $cert_dir/fullchain.pem;
+    ssl_certificate_key $cert_dir/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:$upstream_port;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+  else
+    cat > "/etc/nginx/sites-available/${conf_name}.conf" <<EOF
+server {
+    listen 80;
+    server_name $domain;
+    location / {
+        proxy_pass http://127.0.0.1:$upstream_port;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+  fi
+}
+
 write_nginx_configs() {
   info "Writing nginx server blocks"
 
-  cat > /etc/nginx/sites-available/panel.conf <<EOF
-server {
-    listen 80;
-    server_name $PANEL_DOMAIN;
-    location / {
-        proxy_pass http://127.0.0.1:8011;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-
-  cat > /etc/nginx/sites-available/api.conf <<EOF
-server {
-    listen 80;
-    server_name $API_DOMAIN;
-    location / {
-        proxy_pass http://127.0.0.1:8010;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
+  _write_site_config "$PANEL_DOMAIN" 8011 panel
+  _write_site_config "$API_DOMAIN" 8010 api
 
   ln -sf /etc/nginx/sites-available/panel.conf /etc/nginx/sites-enabled/panel.conf
   ln -sf /etc/nginx/sites-available/api.conf /etc/nginx/sites-enabled/api.conf
