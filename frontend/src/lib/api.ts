@@ -40,7 +40,12 @@ export const tokenStore = {
 }
 
 export const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000',
+  // `||`, not `??` — an unset PUBLIC_BACKEND_URL build arg comes through as an
+  // EMPTY STRING (Docker/Compose default), which `??` treats as a valid value
+  // and would silently point every request at same-origin (the frontend's own
+  // nginx) instead of falling back to this default. Found while diagnosing a
+  // report of "nothing on the page works" that turned out to be exactly this.
+  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000',
 })
 
 api.interceptors.request.use((config) => {
