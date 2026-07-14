@@ -156,6 +156,33 @@ def _run_lightweight_migrations() -> None:
                 {"now": now3},
             )
 
+        # "Every account belongs to one person unless it's deliberately
+        # grouped" -- customer_id was being treated as an optional admin step
+        # (assign a customer before an account can be billed), leaving every
+        # account sync discovers unowned until someone manually links one.
+        # The operator's actual model is the reverse: an account IS its own
+        # billing identity by default, a Group is the occasional exception.
+        # sync_job.py now provisions a personal Customer for every NEW
+        # account it discovers going forward; this backfills the accounts
+        # that were already sitting unowned before that changed. Self-limiting
+        # like the fixes above: once customer_id is set (here, or later by an
+        # operator explicitly clearing it back to unassigned), this stops
+        # matching that account.
+        unowned = conn.execute(
+            text("SELECT id, marzban_username FROM account WHERE customer_id IS NULL AND group_id IS NULL")
+        ).all()
+        if unowned:
+            now4 = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
+            for account_id, username in unowned:
+                result = conn.execute(
+                    text("INSERT INTO customer (name, is_group_rep, created_at) VALUES (:name, 0, :now)"),
+                    {"name": username, "now": now4},
+                )
+                conn.execute(
+                    text("UPDATE account SET customer_id = :cid WHERE id = :aid"),
+                    {"cid": result.lastrowid, "aid": account_id},
+                )
+
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)

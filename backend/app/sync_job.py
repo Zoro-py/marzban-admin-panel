@@ -4,7 +4,7 @@ from sqlmodel import Session, select
 
 from app.db import engine
 from app.marzban_client import marzban_client
-from app.models import Account, AccountEvent, LedgerSource, OnlineSnapshot, utcnow
+from app.models import Account, AccountEvent, Customer, LedgerSource, OnlineSnapshot, utcnow
 
 PAGE_SIZE = 200
 
@@ -45,10 +45,14 @@ async def _fetch_all_marzban_users() -> list[dict]:
 
 async def run_sync() -> dict:
     """Pulls every user from Marzban and mirrors usage/status/limits into the
-    local Account table. Never touches ownership fields (customer_id/group_id) —
-    those are only ever set by an operator action, never inferred from Marzban.
-    A Marzban user with no local match yet is inserted unassigned so it shows
-    up in the dashboard's "needs assignment" view."""
+    local Account table. Every account belongs to one person by default — a
+    Group is the deliberate exception for when several accounts are meant to
+    be billed together, not the norm — so a Marzban user with no local match
+    yet gets its own personal Customer (named after the Marzban username)
+    created and linked immediately, rather than being left unowned until an
+    operator manually assigns one. Sync never touches group_id, or
+    customer_id on an account that already has one — both stay exclusively
+    an operator action from that point on."""
     marzban_users = await _fetch_all_marzban_users()
     now = utcnow()
     created = 0
@@ -63,6 +67,16 @@ async def run_sync() -> dict:
             account = existing.get(username)
             if account is None:
                 account = Account(marzban_username=username)
+                # Every account is its own billing identity by default — a
+                # Group is the deliberate, occasional exception, not
+                # something an operator has to opt every account out of.
+                # Named after the Marzban username as a starting point;
+                # rename it from the Customers page like any other customer.
+                personal_customer = Customer(name=username)
+                session.add(personal_customer)
+                session.flush()  # need personal_customer.id before it can be assigned below
+                account.customer_id = personal_customer.id
+
                 # first_seen_traffic baselines the MONTHLY-AVERAGE-USAGE
                 # ESTIMATE (a display figure) at this account's lifetime total
                 # right now — averaging in months of pre-existing history
