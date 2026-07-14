@@ -48,10 +48,13 @@ export function SettingsDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="ghost" size="sm" className="justify-start gap-2 text-muted-foreground">
-          <Settings className="h-4 w-4" />
+        <button
+          type="button"
+          className="flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-xs font-medium text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+        >
+          <Settings className="h-3.5 w-3.5" />
           Settings
-        </Button>
+        </button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>

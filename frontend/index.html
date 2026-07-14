@@ -5,6 +5,17 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>VPN Reseller Dashboard</title>
+    <script>
+      // Apply the saved (or OS) theme before first paint so a dark-theme user
+      // never sees a white flash. Kept in sync with src/lib/theme.tsx.
+      ;(function () {
+        try {
+          var stored = localStorage.getItem('vpn_dashboard_theme')
+          var dark = stored === 'dark' || (stored !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          if (dark) document.documentElement.classList.add('dark')
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

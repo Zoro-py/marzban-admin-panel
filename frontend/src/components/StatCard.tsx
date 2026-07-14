@@ -1,52 +1,39 @@
-import type { LucideIcon } from 'lucide-react'
-import { Card, CardContent } from '@/components/ui/card'
 import { cn } from '@/lib/utils'
 
 interface StatCardProps {
   label: string
   value: string | number
-  icon: LucideIcon
-  tone?: 'default' | 'warning' | 'destructive' | 'success'
-  // A second, smaller figure shown beside the primary one — e.g. "3 near quota"
-  // next to "1 exhausted" so a related-but-distinct count doesn't need its own
-  // full tile (see item 9: exhausted must never be silently folded into the
-  // near-quota number, but it also doesn't need equal visual weight).
+  tone?: 'default' | 'warning' | 'destructive' | 'success' | 'credit'
+  /** A second, smaller related figure ("2 exhausted" beside "5 near quota") —
+   * related-but-distinct counts never get silently merged into one number. */
   secondary?: { label: string; value: string | number; tone?: StatCardProps['tone'] }
-}
-
-const TONE_STYLES: Record<NonNullable<StatCardProps['tone']>, string> = {
-  default: 'bg-primary/10 text-primary',
-  warning: 'bg-warning/15 text-warning',
-  destructive: 'bg-destructive/10 text-destructive',
-  success: 'bg-success/10 text-success',
+  className?: string
 }
 
 const TONE_TEXT: Record<NonNullable<StatCardProps['tone']>, string> = {
-  default: 'text-primary',
+  default: 'text-foreground',
   warning: 'text-warning',
   destructive: 'text-destructive',
   success: 'text-success',
+  credit: 'text-credit',
 }
 
-export function StatCard({ label, value, icon: Icon, tone = 'default', secondary }: StatCardProps) {
+/** Quiet stat tile: label over value, color only when the value itself is a
+ * state (debt red, all-clear green). No icon boxes — decoration competed with
+ * the numbers. Values use proportional figures (not tabular) per large-number
+ * typography convention. */
+export function StatCard({ label, value, tone = 'default', secondary, className }: StatCardProps) {
   return (
-    <Card>
-      <CardContent className="flex items-center gap-4 p-5">
-        <div className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-lg', TONE_STYLES[tone])}>
-          <Icon className="h-5 w-5" />
-        </div>
-        <div className="min-w-0">
-          <p className="truncate text-sm text-muted-foreground">{label}</p>
-          <div className="flex items-baseline gap-2">
-            <p className="text-xl font-semibold tabular-nums">{value}</p>
-            {secondary && (
-              <span className={cn('text-xs font-medium tabular-nums', TONE_TEXT[secondary.tone ?? 'default'])}>
-                {secondary.value} {secondary.label}
-              </span>
-            )}
-          </div>
-        </div>
-      </CardContent>
-    </Card>
+    <div className={cn('rounded-lg border border-border bg-card px-4 py-3', className)}>
+      <p className="truncate text-xs text-muted-foreground">{label}</p>
+      <div className="mt-1 flex items-baseline gap-2">
+        <p className={cn('text-lg font-semibold leading-tight', TONE_TEXT[tone])}>{value}</p>
+        {secondary && (
+          <span className={cn('text-xs font-medium', TONE_TEXT[secondary.tone ?? 'default'])}>
+            {secondary.value} {secondary.label}
+          </span>
+        )}
+      </div>
+    </div>
   )
 }

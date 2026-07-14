@@ -31,6 +31,11 @@ class CustomerRead(BaseModel):
 class CustomerWithBalance(CustomerRead):
     balance: float  # positive = customer owes us (بدهی), negative = we owe them (طلب)
     account_count: int
+    # Names of groups this customer is the billing representative for —
+    # computed from Group rows (never from the manual is_group_rep flag, which
+    # can drift), so the customer list can show real representation without a
+    # client-side join against the full group list.
+    represented_group_names: list[str] = []
 
 
 # ---- Group ---------------------------------------------------------------
@@ -151,6 +156,19 @@ class AccountRead(BaseModel):
     status: Optional[str]
     last_synced_at: Optional[datetime]
     created_at: datetime
+
+
+class AccountEventRead(BaseModel):
+    """One entry of the per-account audit trail (AccountEvent) — the account
+    inspector's History section shows these interleaved with ledger entries,
+    so an operator can answer "what happened to this account?" in one place."""
+
+    id: int
+    account_id: int
+    action: str
+    detail: str
+    date: datetime
+    source: LedgerSource
 
 
 class AccountRow(AccountRead):

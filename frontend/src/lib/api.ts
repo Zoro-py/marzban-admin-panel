@@ -1,6 +1,7 @@
 import axios, { AxiosError } from 'axios'
 import type {
   Account,
+  AccountEvent,
   AccountInvoice,
   AccountRow,
   Balance,
@@ -13,6 +14,7 @@ import type {
   GroupWithBalance,
   LedgerEntry,
   ReportSummary,
+  SyncStatus,
 } from './types'
 
 const TOKEN_KEY = 'vpn_dashboard_token'
@@ -142,6 +144,7 @@ export const accountsApi = {
     (await api.post<Account>(`/api/accounts/${id}/reset`, body)).data,
   invoice: async (id: number) => (await api.get<AccountInvoice>(`/api/accounts/${id}/invoice`)).data,
   settle: async (id: number) => (await api.post(`/api/accounts/${id}/settle`)).data,
+  events: async (id: number) => (await api.get<AccountEvent[]>(`/api/accounts/${id}/events`)).data,
 }
 
 // ---- ledger ----
@@ -168,6 +171,7 @@ export const reportsApi = {
 
 export const syncApi = {
   run: async () => (await api.post('/api/sync/run')).data,
+  status: async () => (await api.get<SyncStatus>('/api/sync/status')).data,
 }
 
 // ---- settings ----

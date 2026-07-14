@@ -32,6 +32,18 @@ def summary(
     groups = {g.id: g for g in session.exec(select(Group)).all()}
     now_ts = int(time.time())
 
+    # Owner shown next to each flagged account: its customer, or its group —
+    # an attention list of bare usernames forces the operator to look each one
+    # up before acting on it ("whose account is this?").
+    customer_names = {c.id: c.name for c in customers}
+
+    def owner_of(a: Account) -> str | None:
+        if a.customer_id is not None:
+            return customer_names.get(a.customer_id)
+        if a.group_id is not None and a.group_id in groups:
+            return groups[a.group_id].name
+        return None
+
     # Already-expired/exhausted accounts are a DIFFERENT problem than "about to"
     # ones (nothing to do but notice vs. still time to act) — kept as separate
     # buckets rather than lumped by threshold, per explicit product requirement.
@@ -40,29 +52,37 @@ def summary(
     expired_accounts = []
     near_expiry_accounts = []
     no_rate_accounts = []
+    unassigned_accounts = []
 
     for a in accounts:
         if a.data_limit:
             used_pct = round(a.used_traffic / a.data_limit * 100, 1)
             if used_pct >= 100:
                 exhausted_accounts.append(
-                    {"account_id": a.id, "marzban_username": a.marzban_username, "used_pct": used_pct}
+                    {"account_id": a.id, "marzban_username": a.marzban_username, "used_pct": used_pct, "owner_name": owner_of(a)}
                 )
             elif used_pct >= quota_pct_threshold:
                 near_quota_accounts.append(
-                    {"account_id": a.id, "marzban_username": a.marzban_username, "used_pct": used_pct}
+                    {"account_id": a.id, "marzban_username": a.marzban_username, "used_pct": used_pct, "owner_name": owner_of(a)}
                 )
 
         if a.expire:
             days_left = round((a.expire - now_ts) / 86400, 1)
             if days_left < 0:
                 expired_accounts.append(
-                    {"account_id": a.id, "marzban_username": a.marzban_username, "days_left": days_left}
+                    {"account_id": a.id, "marzban_username": a.marzban_username, "days_left": days_left, "owner_name": owner_of(a)}
                 )
             elif days_left <= expiry_days_threshold:
                 near_expiry_accounts.append(
-                    {"account_id": a.id, "marzban_username": a.marzban_username, "days_left": days_left}
+                    {"account_id": a.id, "marzban_username": a.marzban_username, "days_left": days_left, "owner_name": owner_of(a)}
                 )
+
+        # The sync job deliberately inserts Marzban users it discovers as
+        # unassigned "so they show up in the dashboard's needs-assignment
+        # view" (its own words) — but no such view ever existed on the
+        # dashboard. This bucket is that view.
+        if a.customer_id is None and a.group_id is None:
+            unassigned_accounts.append({"account_id": a.id, "marzban_username": a.marzban_username})
 
         # "No group" is not itself a problem (every account is standalone unless
         # explicitly grouped) — what actually needs attention is an account where
@@ -71,7 +91,7 @@ def summary(
         # keeps an intentionally-comped account (rate explicitly set to 0) out
         # of this list — that's a deliberate choice, not a misconfiguration.
         if not rate_is_configured(session, a, groups.get(a.group_id)):
-            no_rate_accounts.append({"account_id": a.id, "marzban_username": a.marzban_username})
+            no_rate_accounts.append({"account_id": a.id, "marzban_username": a.marzban_username, "owner_name": owner_of(a)})
 
     exhausted_accounts.sort(key=lambda x: -x["used_pct"])
     near_quota_accounts.sort(key=lambda x: -x["used_pct"])
@@ -118,6 +138,7 @@ def summary(
         "expired_accounts": expired_accounts,
         "near_expiry_accounts": near_expiry_accounts,
         "no_rate_accounts": no_rate_accounts,
+        "unassigned_accounts": unassigned_accounts,
         "groups_due_for_settlement": groups_due_for_settlement,
         "total_accounts": len(accounts),
         "total_customers": len(customers),
@@ -154,14 +175,23 @@ def finance(session: Session = Depends(get_session)):
 
     since = now - timedelta(days=30)
     by_day: dict[str, float] = defaultdict(float)
+    charged_by_day_map: dict[str, float] = defaultdict(float)
     day = since.date()
     while day <= now.date():
         by_day[day.isoformat()] = 0.0
+        charged_by_day_map[day.isoformat()] = 0.0
         day += timedelta(days=1)
     for e in all_entries:
-        if e.type == LedgerType.credit and e.date >= since:
-            by_day[e.date.date().isoformat()] += e.amount
+        if e.date >= since:
+            if e.type == LedgerType.credit:
+                by_day[e.date.date().isoformat()] += e.amount
+            else:
+                charged_by_day_map[e.date.date().isoformat()] += e.amount
     revenue_by_day = [{"date": d, "amount": round(amt, 2)} for d, amt in sorted(by_day.items())]
+    # Billed alongside collected, per day — the chart pairs them so "charged a
+    # lot this week but nothing came in yet" is visible at a glance instead of
+    # being two disconnected month totals.
+    charged_by_day = [{"date": d, "amount": round(amt, 2)} for d, amt in sorted(charged_by_day_map.items())]
 
     customer_names = {c.id: c.name for c in customers}
     groups = {g.id: g for g in session.exec(select(Group)).all()}
@@ -208,6 +238,7 @@ def finance(session: Session = Depends(get_session)):
         "revenue_this_month": round(revenue_this_month, 2),
         "charged_this_month": round(charged_this_month, 2),
         "revenue_by_day": revenue_by_day,
+        "charged_by_day": charged_by_day,
         "recent_transactions": recent_transactions,
         "rate_overview": rate_overview,
     }

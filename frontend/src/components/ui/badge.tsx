@@ -2,17 +2,21 @@ import * as React from 'react'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
 
+/** State chips — tinted, never solid-filled: a saturated pill per row turns a
+ * table into confetti. Badges carry STATE WORDS (active, due, unassigned…);
+ * money amounts are never put inside one (see <Money/>). */
 const badgeVariants = cva(
-  'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors',
+  'inline-flex items-center gap-1 rounded-md border px-1.5 py-px text-[11px] font-medium leading-[18px] whitespace-nowrap',
   {
     variants: {
       variant: {
-        default: 'border-transparent bg-primary text-primary-foreground',
-        secondary: 'border-transparent bg-secondary text-secondary-foreground',
-        destructive: 'border-transparent bg-destructive text-destructive-foreground',
-        success: 'border-transparent bg-success text-success-foreground',
-        warning: 'border-transparent bg-warning text-warning-foreground',
-        outline: 'text-foreground border-border',
+        default: 'border-primary/20 bg-primary/10 text-primary',
+        secondary: 'border-transparent bg-muted text-muted-foreground',
+        destructive: 'border-destructive/20 bg-destructive/10 text-destructive',
+        success: 'border-success/25 bg-success/10 text-success',
+        warning: 'border-warning/25 bg-warning/10 text-warning',
+        credit: 'border-credit/25 bg-credit/10 text-credit',
+        outline: 'border-border bg-transparent text-muted-foreground',
       },
     },
     defaultVariants: {

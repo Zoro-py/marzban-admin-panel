@@ -13,6 +13,7 @@ from app.schemas import (
     AccountAdjustRequest,
     AccountBillingUpdate,
     AccountCreateRequest,
+    AccountEventRead,
     AccountRead,
     AccountRelationshipUpdate,
     AccountResetRequest,
@@ -214,6 +215,22 @@ async def adjust_account(account_id: int, body: AccountAdjustRequest, session: S
     session.commit()
     session.refresh(account)
     return account
+
+
+@router.get("/{account_id}/events", response_model=list[AccountEventRead])
+def get_account_events(account_id: int, limit: int = 50, session: Session = Depends(get_session)):
+    """The audit trail (adjust/reset/billing/ownership changes) that was being
+    written since day one but never exposed — the account inspector's History
+    section reads it, merged client-side with this account's ledger entries."""
+    if not session.get(Account, account_id):
+        raise HTTPException(404, "Account not found")
+    stmt = (
+        select(AccountEvent)
+        .where(AccountEvent.account_id == account_id)
+        .order_by(AccountEvent.date.desc(), AccountEvent.id.desc())
+        .limit(limit)
+    )
+    return session.exec(stmt).all()
 
 
 @router.get("/{account_id}/invoice")

@@ -1,19 +1,29 @@
+from collections import defaultdict
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.auth import require_auth
 from app.db import get_session
-from app.models import Account, Customer
+from app.models import Account, Customer, Group
 from app.schemas import AccountRow, CustomerCreate, CustomerRead, CustomerUpdate, CustomerWithBalance
 from app.services import compute_balance, enrich_accounts
 
 router = APIRouter(prefix="/api/customers", tags=["customers"], dependencies=[Depends(require_auth)])
 
 
+def _represented_groups(session: Session) -> dict[int, list[str]]:
+    by_rep: dict[int, list[str]] = defaultdict(list)
+    for g in session.exec(select(Group)).all():
+        by_rep[g.representative_customer_id].append(g.name)
+    return by_rep
+
+
 @router.get("", response_model=list[CustomerWithBalance])
 def list_customers(session: Session = Depends(get_session)):
     customers = session.exec(select(Customer)).all()
+    rep_groups = _represented_groups(session)
     result = []
     for c in customers:
         charge, credit = compute_balance(session, customer_id=c.id)
@@ -25,6 +35,7 @@ def list_customers(session: Session = Depends(get_session)):
                 **c.model_dump(),
                 balance=charge - credit,
                 account_count=account_count,
+                represented_group_names=rep_groups.get(c.id, []),
             )
         )
     return result
@@ -48,7 +59,13 @@ def get_customer(customer_id: int, session: Session = Depends(get_session)):
     account_count = session.exec(
         select(func.count()).select_from(Account).where(Account.customer_id == customer_id)
     ).one()
-    return CustomerWithBalance(**customer.model_dump(), balance=charge - credit, account_count=account_count)
+    rep_groups = _represented_groups(session)
+    return CustomerWithBalance(
+        **customer.model_dump(),
+        balance=charge - credit,
+        account_count=account_count,
+        represented_group_names=rep_groups.get(customer_id, []),
+    )
 
 
 @router.patch("/{customer_id}", response_model=CustomerRead)

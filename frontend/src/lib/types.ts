@@ -14,6 +14,9 @@ export interface Customer {
 export interface CustomerWithBalance extends Customer {
   balance: number
   account_count: number
+  // Groups this customer is the billing representative for (computed
+  // server-side from Group rows, not the manual is_group_rep flag).
+  represented_group_names: string[]
 }
 
 export interface Group {
@@ -121,14 +124,29 @@ export interface GroupInvoice {
 
 export interface ReportSummary {
   overdue_customers: { customer_id: number; name: string; balance: number }[]
-  exhausted_accounts: { account_id: number; marzban_username: string; used_pct: number }[]
-  near_quota_accounts: { account_id: number; marzban_username: string; used_pct: number }[]
-  expired_accounts: { account_id: number; marzban_username: string; days_left: number }[]
-  near_expiry_accounts: { account_id: number; marzban_username: string; days_left: number }[]
-  no_rate_accounts: { account_id: number; marzban_username: string }[]
+  exhausted_accounts: { account_id: number; marzban_username: string; used_pct: number; owner_name: string | null }[]
+  near_quota_accounts: { account_id: number; marzban_username: string; used_pct: number; owner_name: string | null }[]
+  expired_accounts: { account_id: number; marzban_username: string; days_left: number; owner_name: string | null }[]
+  near_expiry_accounts: { account_id: number; marzban_username: string; days_left: number; owner_name: string | null }[]
+  no_rate_accounts: { account_id: number; marzban_username: string; owner_name: string | null }[]
+  unassigned_accounts: { account_id: number; marzban_username: string }[]
   groups_due_for_settlement: { group_id: number; name: string; days_overdue: number; pending_amount: number }[]
   total_accounts: number
   total_customers: number
+}
+
+export interface AccountEvent {
+  id: number
+  account_id: number
+  action: string
+  detail: string
+  date: string
+  source: LedgerSource
+}
+
+export interface SyncStatus {
+  last_synced_at: string | null
+  account_count: number
 }
 
 export interface FinanceTransaction {
@@ -158,6 +176,7 @@ export interface FinanceSummary {
   revenue_this_month: number
   charged_this_month: number
   revenue_by_day: { date: string; amount: number }[]
+  charged_by_day: { date: string; amount: number }[]
   recent_transactions: FinanceTransaction[]
   rate_overview: RateOverviewRow[]
 }
