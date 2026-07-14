@@ -60,6 +60,27 @@ ask_secret_required() {
   done
 }
 
+# Escapes a value for safe placement inside double quotes in a .env file (both
+# python-dotenv, used by the backend/bot, and Docker Compose's own env_file
+# parser respect \\ and \" this way). Without this, a Marzban password/token
+# containing '#', a space, or a quote could get silently truncated or corrupt
+# the whole file — verified byte-for-byte against python-dotenv directly
+# rather than assumed. Character-by-character on purpose: bash's `${v//\\/\\\\}`
+# global pattern substitution does NOT reliably double a lone backslash (tested
+# and confirmed broken), so this avoids that pattern-matching path entirely.
+env_escape() {
+  local s="$1" out="" c i
+  for ((i = 0; i < ${#s}; i++)); do
+    c="${s:i:1}"
+    case "$c" in
+      '\') out+='\\' ;;
+      '"') out+='\"' ;;
+      *) out+="$c" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
 require_root() {
   if [ "$EUID" -ne 0 ]; then
     echo "Run as root: sudo bash scripts/install.sh"
@@ -121,21 +142,55 @@ detect_or_install_compose() {
   COMPOSE_CMD="docker-compose"
 }
 
+# Shared diagnostic used both as an early warning and, more importantly, at the actual
+# point of failure if nginx can't bind a port — cross-references `ss` with `docker ps` so
+# a port squatted by some other container (this box already runs Marzban) shows up by
+# name instead of leaving it to guesswork.
+diagnose_port() {
+  local port="$1"
+  echo "--- what's listening on port $port ---"
+  if command -v ss >/dev/null 2>&1; then
+    ss -tlnp 2>/dev/null | awk -v port="$port" '$0 ~ ":"port"[[:space:]]" {print}' || true
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    echo "--- docker containers publishing port $port ---"
+    docker ps --format '{{.Names}}: {{.Ports}}' 2>/dev/null | grep -F ":${port}->" || echo "(none found via docker ps)"
+  fi
+}
+
 # Port 80 is where certbot's HTTP-01 challenge and the new nginx server blocks both need
 # to listen. A soft warning, not a hard stop — this box already runs Marzban, so it's worth
-# flagging early if something unexpected already owns that port instead of failing deep
-# inside the certbot step with a less obvious error.
+# flagging early if something unexpected already owns that port instead of only discovering
+# it much later inside the certbot step.
 check_port_80() {
   if ! command -v ss >/dev/null 2>&1; then
     return
   fi
   local holder
-  holder=$(ss -tlnp 2>/dev/null | awk '/:80[[:space:]]/{print}')
+  holder=$(ss -tlnp 2>/dev/null | awk '/:80[[:space:]]/{print}') || true
   if [ -n "$holder" ] && ! echo "$holder" | grep -qi nginx; then
     warn "Something is already listening on port 80 that doesn't look like nginx:"
-    echo "$holder"
-    warn "If the certbot step below fails, this is the first thing to check."
+    diagnose_port 80
+    warn "If nginx fails to start below, this is why — stop whatever that is first."
   fi
+}
+
+# `systemctl reload nginx` errors out ("nginx.service is not active, cannot reload") if
+# nginx was installed but never actually came up — e.g. a fresh `apt-get install nginx`
+# where the package's own postinst tried to start it and silently lost a port-80 race
+# against something already there. `reload-or-restart` is the correct systemd verb for
+# "reload if running, otherwise (re)start" and covers both a fresh install and a rerun.
+start_or_reload_nginx() {
+  if systemctl reload-or-restart nginx; then
+    return
+  fi
+  echo
+  echo "nginx failed to (re)start — almost always means something else already owns port 80 or 443."
+  diagnose_port 80
+  diagnose_port 443
+  echo
+  echo "Stop whatever that is (or move it off that port), then re-run the installer — it resumes from here."
+  exit 1
 }
 
 collect_config() {
@@ -178,29 +233,65 @@ confirm_dns() {
   echo "  (Cloudflare: add both as 'DNS only' / grey-cloud for now — proxying them"
   echo "   can be turned on later once the certs are already issued.)"
   read -rp "Press Enter once both records exist and have propagated... "
+
+  # Actually verify rather than trust the Enter keypress — catches "I added it
+  # but it hasn't propagated yet" or a typo'd record BEFORE burning a
+  # certbot attempt against Let's Encrypt's rate limits, not after.
+  [ "$ip" = "<couldn't auto-detect — run 'curl -4 ifconfig.me' yourself>" ] && return
+  if ! command -v getent >/dev/null 2>&1; then
+    return
+  fi
+
+  local domain resolved tries
+  for domain in "$PANEL_DOMAIN" "$API_DOMAIN"; do
+    tries=0
+    while true; do
+      resolved=$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | head -1) || true
+      if [ "$resolved" = "$ip" ]; then
+        break
+      fi
+      tries=$((tries + 1))
+      if [ "$tries" -ge 3 ]; then
+        warn "$domain resolves to '${resolved:-nothing}', not $ip — certbot below will likely fail until this is fixed."
+        break
+      fi
+      echo "  $domain -> '${resolved:-not resolving yet}', not $ip yet — waiting 10s and checking again ($tries/3)..."
+      sleep 10
+    done
+  done
 }
 
 write_env_files() {
   info "Writing backend/.env, bot/.env, .env"
 
+  # Quoted + escaped so a password/token containing '#', a space, or a quote
+  # can't get silently truncated or corrupt the file (verified against
+  # python-dotenv directly — see env_escape above).
+  local q_url q_user q_pass q_token q_chat
+  q_url=$(env_escape "$MARZBAN_BASE_URL")
+  q_user=$(env_escape "$MARZBAN_USERNAME")
+  q_pass=$(env_escape "$MARZBAN_PASSWORD")
+  q_token=$(env_escape "$BOT_TOKEN")
+  q_chat=$(env_escape "$ADMIN_CHAT_ID")
+
   cat > backend/.env <<EOF
-MARZBAN_BASE_URL=$MARZBAN_BASE_URL
-MARZBAN_USERNAME=$MARZBAN_USERNAME
-MARZBAN_PASSWORD=$MARZBAN_PASSWORD
+MARZBAN_BASE_URL="$q_url"
+MARZBAN_USERNAME="$q_user"
+MARZBAN_PASSWORD="$q_pass"
 DATABASE_URL=sqlite:////app/data/vpn.db
 JWT_EXPIRE_MINUTES=1440
-BOT_TOKEN=$BOT_TOKEN
-BOT_ADMIN_CHAT_ID=$ADMIN_CHAT_ID
+BOT_TOKEN="$q_token"
+BOT_ADMIN_CHAT_ID="$q_chat"
 BOT_API_BASE_URL=http://backend:8000
 SYNC_INTERVAL_MINUTES=60
 EOF
 
   cat > bot/.env <<EOF
-BOT_TOKEN=$BOT_TOKEN
-ADMIN_CHAT_ID=$ADMIN_CHAT_ID
+BOT_TOKEN="$q_token"
+ADMIN_CHAT_ID="$q_chat"
 API_BASE_URL=http://backend:8000
-MARZBAN_USERNAME=$MARZBAN_USERNAME
-MARZBAN_PASSWORD=$MARZBAN_PASSWORD
+MARZBAN_USERNAME="$q_user"
+MARZBAN_PASSWORD="$q_pass"
 EOF
 
   cat > .env <<EOF
@@ -242,7 +333,7 @@ EOF
   ln -sf /etc/nginx/sites-available/panel.conf /etc/nginx/sites-enabled/panel.conf
   ln -sf /etc/nginx/sites-available/api.conf /etc/nginx/sites-enabled/api.conf
   nginx -t
-  systemctl reload nginx
+  start_or_reload_nginx
 }
 
 request_certs() {
