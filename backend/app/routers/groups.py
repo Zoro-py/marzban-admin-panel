@@ -170,3 +170,31 @@ def settle_group(group_id: int, session: Session = Depends(get_session)):
     session.commit()
 
     return {"group_id": group_id, "charged_amount": total_amount, "settled_at": now, "lines": lines}
+
+
+@router.post("/{group_id}/reset-cycle")
+def reset_group_cycle(group_id: int, session: Session = Depends(get_session)):
+    """Same as /settle EXCEPT it never posts a ledger charge — rolls every
+    member's usage_baseline forward and starts a new cycle as if payment was
+    already collected some other way (cash, a manual "New debt/credit" entry
+    recorded separately, etc.). Without this, the only way to close out a
+    cycle was to charge the computed pending amount, which double-bills a
+    group whose members already paid outside the ledger."""
+    group = session.get(Group, group_id)
+    if not group:
+        raise HTTPException(404, "Group not found")
+
+    accounts = session.exec(select(Account).where(Account.group_id == group_id)).all()
+    lines = _invoice_lines(session, accounts, group)
+
+    now = utcnow()
+    for a in accounts:
+        a.usage_baseline = a.used_traffic
+        a.usage_baseline_at = now
+        session.add(a)
+
+    group.last_settled_at = now
+    session.add(group)
+    session.commit()
+
+    return {"group_id": group_id, "reset_at": now, "lines": lines}

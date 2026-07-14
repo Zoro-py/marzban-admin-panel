@@ -275,7 +275,13 @@ function AdjustSection({ account, canBill }: { account: AccountRow; canBill: boo
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
-  const canSubmit = (!!extendDays && Number(extendDays) !== 0) || (!!extendGb && Number(extendGb) !== 0)
+  // "Record a debt" defaults checked so adding GB bills it by default — but if
+  // the operator leaves the amount blank (e.g. no rate configured anywhere in
+  // the account/group/default chain), the checkbox alone does nothing: the box
+  // stays checked, looking like debt will be recorded, while the mutation above
+  // silently skips posting any charge. Block submission instead of failing quietly.
+  const chargeBlocked = recordCharge && canBill && !!extendGb && Number(extendGb) > 0 && !(chargeAmount && Number(chargeAmount) > 0)
+  const canSubmit = ((!!extendDays && Number(extendDays) !== 0) || (!!extendGb && Number(extendGb) !== 0)) && !chargeBlocked
 
   return (
     <Section icon={CalendarClock} title="Adjust time / data" defaultOpen>
@@ -340,17 +346,24 @@ function AdjustSection({ account, canBill }: { account: AccountRow; canBill: boo
             </span>
           </label>
           {recordCharge && canBill && (
-            <Input
-              type="number"
-              min={0}
-              className="mt-2"
-              value={chargeAmount}
-              onChange={(e) => {
-                setChargeTouched(true)
-                setChargeAmount(e.target.value)
-              }}
-              placeholder="Amount in Toman"
-            />
+            <>
+              <Input
+                type="number"
+                min={0}
+                className="mt-2"
+                value={chargeAmount}
+                onChange={(e) => {
+                  setChargeTouched(true)
+                  setChargeAmount(e.target.value)
+                }}
+                placeholder="Amount in Toman"
+              />
+              {chargeBlocked && (
+                <p className="mt-1.5 text-[11px] text-destructive">
+                  Enter an amount to record debt, or uncheck the box to skip billing this addition.
+                </p>
+              )}
+            </>
           )}
         </div>
       )}

@@ -116,6 +116,7 @@ export const groupsApi = {
   accounts: async (id: number) => (await api.get<AccountRow[]>(`/api/groups/${id}/accounts`)).data,
   invoice: async (id: number) => (await api.get<GroupInvoice>(`/api/groups/${id}/invoice`)).data,
   settle: async (id: number) => (await api.post(`/api/groups/${id}/settle`)).data,
+  resetCycle: async (id: number) => (await api.post(`/api/groups/${id}/reset-cycle`)).data,
 }
 
 // ---- accounts ----

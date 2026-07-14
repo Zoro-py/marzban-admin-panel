@@ -176,7 +176,12 @@ export function DashboardPage() {
                     to={`/groups/${p.id}`}
                     className="flex items-center justify-between gap-3 px-4 py-1.5 text-[13px] hover:bg-muted/50"
                   >
-                    <span className="truncate">{p.name}</span>
+                    <span className="flex min-w-0 items-baseline gap-2">
+                      <span className="truncate">{p.name}</span>
+                      <span className="shrink-0 text-[11px] text-muted-foreground">
+                        {p.billing_mode === 'payg' ? 'pay-as-you-go' : 'prepay'}
+                      </span>
+                    </span>
                     <span className="shrink-0 text-xs text-muted-foreground">
                       {p.is_due && (
                         <>
@@ -184,7 +189,17 @@ export function DashboardPage() {
                           {' · '}
                         </>
                       )}
-                      <span className="font-medium text-warning">{formatToman(p.pending_amount)} pending</span>
+                      {/* Prepay groups only ever carry `balance` (no usage-based
+                          pending concept); payg groups can carry both — already
+                          charged debt sitting unpaid, plus unbilled usage since
+                          the last settle. Show whichever are non-zero. */}
+                      {p.balance > 0 && (
+                        <span className="font-medium text-destructive">{formatToman(p.balance)} owed</span>
+                      )}
+                      {p.balance > 0 && p.pending_amount > 0 && ' · '}
+                      {p.pending_amount > 0 && (
+                        <span className="font-medium text-warning">{formatToman(p.pending_amount)} pending</span>
+                      )}
                     </span>
                   </Link>
                 ) : (

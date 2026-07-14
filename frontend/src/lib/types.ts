@@ -134,7 +134,16 @@ export interface ReportSummary {
     type: 'group' | 'account'
     id: number
     name: string
+    billing_mode: BillingMode
+    // Unbilled usage-based preview since the last settle (payg groups/accounts
+    // only — always 0 for prepay, which has no usage-driven cycle).
     pending_amount: number
+    // Real posted debt (charges minus credits). Populated for groups (both
+    // prepay and payg — group-scoped balance never overlaps another entity's).
+    // Always 0 for standalone accounts: their debt is customer-level and
+    // already surfaced via overdue_customers, so repeating it here per-account
+    // would double-count the same debt across every account a customer owns.
+    balance: number
     is_due: boolean | null
     days_overdue: number | null
   }[]

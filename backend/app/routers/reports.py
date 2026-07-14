@@ -103,14 +103,19 @@ def summary(
     expired_accounts.sort(key=lambda x: x["days_left"])
     near_expiry_accounts.sort(key=lambda x: x["days_left"])
 
-    # Real, accrued, unbilled money — NOT gated by billing_cycle_days. That
-    # field only tells you WHEN a cycle nominally ends; it says nothing about
-    # whether there's already a large real balance sitting unbilled well
-    # before that date. A group/account with 500,000T of real pending usage
-    # must be visible today, not hidden until an arbitrary calendar date
-    # arrives — this bucket is every payg group AND every standalone payg
-    # account with pending_amount > 0, full stop. is_due (cycle elapsed) is
-    # still reported per entry as a secondary signal, not the gate.
+    # Real money owed, for EVERY group regardless of billing mode — NOT gated
+    # by billing_cycle_days (that field only says WHEN a cycle nominally ends,
+    # not whether there's already a real balance sitting unpaid before that
+    # date). Two distinct figures, both shown when present:
+    #   - pending_amount: payg-only, usage accrued but not yet even charged
+    #     (a preview — settling turns this into a real ledger charge)
+    #   - balance: ALREADY charged, not yet paid, for EITHER billing mode —
+    #     a prepay group's debt only ever exists as balance (it has no
+    #     usage-based pending concept), so excluding prepay from this section
+    #     (as an earlier version of this endpoint did) made prepay debt
+    #     invisible here even though it's exactly the kind of thing "who
+    #     currently owes me money" should include.
+    # is_due (cycle elapsed) is a secondary signal per entry, not a gate.
     now_dt = utcnow().replace(tzinfo=None)
     accounts_by_group: dict[int, list[Account]] = defaultdict(list)
     for a in accounts:
@@ -119,33 +124,42 @@ def summary(
 
     pending_settlement = []
     for g in groups.values():
-        if g.billing_mode != BillingMode.payg:
-            continue
         pending = 0.0
-        for a in accounts_by_group.get(g.id, []):
-            billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
-            pending += billable_gb * effective_rate(session, a, g)
-        if pending <= 0:
+        if g.billing_mode == BillingMode.payg:
+            for a in accounts_by_group.get(g.id, []):
+                billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
+                pending += billable_gb * effective_rate(session, a, g)
+        charge, credit = compute_balance(session, group_id=g.id)
+        balance = round(charge - credit, 2)
+        pending = round(pending, 2)
+        if pending <= 0 and balance <= 0:
             continue
         cycle_start = g.last_settled_at or g.created_at
         next_due_at = cycle_start + timedelta(days=g.billing_cycle_days)
-        is_due = next_due_at <= now_dt
+        is_due = g.billing_mode == BillingMode.payg and next_due_at <= now_dt
         pending_settlement.append(
             {
                 "type": "group",
                 "id": g.id,
                 "name": g.name,
-                "pending_amount": round(pending, 2),
+                "billing_mode": g.billing_mode,
+                "pending_amount": pending,
+                "balance": balance,
                 "is_due": is_due,
                 "days_overdue": round((now_dt - next_due_at).total_seconds() / 86400, 1) if is_due else None,
             }
         )
 
+    # Standalone (non-grouped) accounts: only their own payg pending amount is
+    # shown here, deliberately not their customer's `balance` — that balance
+    # belongs to the CUSTOMER (already visible via overdue_customers above),
+    # and a customer with several accounts would have the same number show up
+    # once per account here, looking like separate debts instead of one.
     for a in accounts:
         if a.group_id is not None or a.billing_mode != BillingMode.payg:
             continue
         billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
-        pending = billable_gb * effective_rate(session, a, None)
+        pending = round(billable_gb * effective_rate(session, a, None), 2)
         if pending <= 0:
             continue
         pending_settlement.append(
@@ -153,13 +167,15 @@ def summary(
                 "type": "account",
                 "id": a.id,
                 "name": a.marzban_username,
-                "pending_amount": round(pending, 2),
+                "billing_mode": a.billing_mode,
+                "pending_amount": pending,
+                "balance": 0.0,
                 "is_due": None,
                 "days_overdue": None,
             }
         )
 
-    pending_settlement.sort(key=lambda x: -x["pending_amount"])
+    pending_settlement.sort(key=lambda x: -(x["pending_amount"] + x["balance"]))
     total_pending = round(sum(x["pending_amount"] for x in pending_settlement), 2)
 
     return {

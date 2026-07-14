@@ -12,6 +12,7 @@ import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
 import { SettleGroupDialog } from '@/components/groups/SettleGroupDialog'
+import { ResetGroupCycleDialog } from '@/components/groups/ResetGroupCycleDialog'
 import { GroupSettingsDialog } from '@/components/groups/GroupSettingsDialog'
 import { UsageBar } from '@/components/UsageBar'
 import { StatusDot } from '@/components/StatusDot'
@@ -93,6 +94,7 @@ export function GroupDetailPage() {
           <GroupSettingsDialog group={group} />
           <LedgerActionDialog groupId={groupId} currentBalance={group.balance} />
           <NewAccountDialog defaultGroupId={groupId} />
+          {group.billing_mode === 'payg' && <ResetGroupCycleDialog groupId={groupId} />}
           <SettleGroupDialog groupId={groupId} />
         </div>
       </div>
