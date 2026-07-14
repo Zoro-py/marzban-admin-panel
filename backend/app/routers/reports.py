@@ -7,7 +7,7 @@ from sqlmodel import Session, select
 
 from app.auth import require_auth
 from app.db import get_session
-from app.models import Account, Customer, Group, LedgerEntry, LedgerType, utcnow
+from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerType, utcnow
 from app.services import compute_balance, effective_rate, rate_is_configured
 
 router = APIRouter(prefix="/api/reports", tags=["reports"], dependencies=[Depends(require_auth)])
@@ -78,6 +78,39 @@ def summary(
     expired_accounts.sort(key=lambda x: x["days_left"])
     near_expiry_accounts.sort(key=lambda x: x["days_left"])
 
+    # Gives billing_cycle_days an actual consequence instead of being a number
+    # nothing ever reads: a payg group whose cycle has elapsed shows up here so
+    # "settle" isn't something an operator has to remember to check for. Prepay
+    # groups are excluded — they're billed via manual invoices, not a metered
+    # cycle, so "overdue for settlement" doesn't apply to them.
+    now_dt = utcnow().replace(tzinfo=None)
+    accounts_by_group: dict[int, list[Account]] = defaultdict(list)
+    for a in accounts:
+        if a.group_id is not None:
+            accounts_by_group[a.group_id].append(a)
+
+    groups_due_for_settlement = []
+    for g in groups.values():
+        if g.billing_mode != BillingMode.payg:
+            continue
+        cycle_start = g.last_settled_at or g.created_at
+        next_due_at = cycle_start + timedelta(days=g.billing_cycle_days)
+        if next_due_at > now_dt:
+            continue
+        pending = 0.0
+        for a in accounts_by_group.get(g.id, []):
+            billable_gb = max(0, a.lifetime_used_traffic - a.usage_baseline) / (1024**3)
+            pending += billable_gb * effective_rate(session, a, g)
+        groups_due_for_settlement.append(
+            {
+                "group_id": g.id,
+                "name": g.name,
+                "days_overdue": round((now_dt - next_due_at).total_seconds() / 86400, 1),
+                "pending_amount": round(pending, 2),
+            }
+        )
+    groups_due_for_settlement.sort(key=lambda x: -x["pending_amount"])
+
     return {
         "overdue_customers": overdue_customers,
         "exhausted_accounts": exhausted_accounts,
@@ -85,6 +118,7 @@ def summary(
         "expired_accounts": expired_accounts,
         "near_expiry_accounts": near_expiry_accounts,
         "no_rate_accounts": no_rate_accounts,
+        "groups_due_for_settlement": groups_due_for_settlement,
         "total_accounts": len(accounts),
         "total_customers": len(customers),
     }

@@ -98,10 +98,17 @@ export const customersApi = {
 export const groupsApi = {
   list: async () => (await api.get<GroupWithBalance[]>('/api/groups')).data,
   get: async (id: number) => (await api.get<GroupWithBalance>(`/api/groups/${id}`)).data,
-  create: async (body: { name: string; representative_customer_id: number; billing_cycle_days?: number; rate_per_gb?: number }) =>
-    (await api.post<Group>('/api/groups', body)).data,
-  update: async (id: number, body: Partial<{ name: string; billing_cycle_days: number; rate_per_gb: number }>) =>
-    (await api.patch<Group>(`/api/groups/${id}`, body)).data,
+  create: async (body: {
+    name: string
+    representative_customer_id: number
+    billing_cycle_days?: number
+    rate_per_gb?: number
+    billing_mode?: BillingMode
+  }) => (await api.post<Group>('/api/groups', body)).data,
+  update: async (
+    id: number,
+    body: Partial<{ name: string; billing_cycle_days: number; rate_per_gb: number; billing_mode: BillingMode }>,
+  ) => (await api.patch<Group>(`/api/groups/${id}`, body)).data,
   accounts: async (id: number) => (await api.get<AccountRow[]>(`/api/groups/${id}/accounts`)).data,
   invoice: async (id: number) => (await api.get<GroupInvoice>(`/api/groups/${id}/invoice`)).data,
   settle: async (id: number) => (await api.post(`/api/groups/${id}/settle`)).data,

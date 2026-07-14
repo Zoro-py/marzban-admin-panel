@@ -41,12 +41,14 @@ class GroupCreate(BaseModel):
     representative_customer_id: int
     billing_cycle_days: int = 30
     rate_per_gb: Optional[float] = None
+    billing_mode: BillingMode = BillingMode.payg
 
 
 class GroupUpdate(BaseModel):
     name: Optional[str] = None
     billing_cycle_days: Optional[int] = None
     rate_per_gb: Optional[float] = None
+    billing_mode: Optional[BillingMode] = None
 
 
 class GroupRead(BaseModel):
@@ -55,6 +57,7 @@ class GroupRead(BaseModel):
     representative_customer_id: int
     billing_cycle_days: int
     rate_per_gb: Optional[float]
+    billing_mode: BillingMode
     last_settled_at: Optional[datetime]
     created_at: datetime
 
@@ -62,7 +65,21 @@ class GroupRead(BaseModel):
 class GroupWithBalance(GroupRead):
     balance: float
     account_count: int
+    # Marzban's own used_traffic counter, summed — NOT what should drive
+    # billing (see current_cycle_used_bytes for that): Marzban can reset this
+    # independently of when WE last settled the group.
     total_used_traffic: int
+    # Usage actually accrued since the group's last settlement (sum of each
+    # member's lifetime_used_traffic - usage_baseline) — this is what a settle
+    # right now would charge, and what item 1 of the operator's feedback
+    # asked to see prioritized over a lifetime/reset-prone counter.
+    current_cycle_used_bytes: int
+    # What settling right now would charge, at each member's effective rate —
+    # the "why is balance 0 even though there's real usage" answer: nothing
+    # gets charged until an operator explicitly settles or invoices.
+    pending_amount: float
+    next_due_at: datetime
+    is_due: bool
 
 
 # ---- Account ---------------------------------------------------------------

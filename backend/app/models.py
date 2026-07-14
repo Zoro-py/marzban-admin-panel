@@ -39,14 +39,20 @@ class Customer(SQLModel, table=True):
 
 
 class Group(SQLModel, table=True):
-    """A pay-as-you-go billing group (e.g. a company). Billed as one unit
-    across all member accounts, settled on a recurring cycle."""
+    """A billing group (e.g. a company) — one unit across all member accounts.
+    billing_mode decides HOW it's billed: payg computes a charge from actual
+    metered usage at settle time (the group's original/default design); prepay
+    means the group is billed manually (a package sold up front) via ledger
+    entries instead of the usage-based settle flow — settle_group still works
+    either way, but the UI treats prepay groups' pending/current-usage figures
+    as informational rather than "here's what to charge"."""
 
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
     representative_customer_id: int = Field(foreign_key="customer.id")
     billing_cycle_days: int = 30
     rate_per_gb: Optional[float] = None
+    billing_mode: BillingMode = BillingMode.payg
     last_settled_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utcnow)
 

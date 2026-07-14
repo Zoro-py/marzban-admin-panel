@@ -25,7 +25,10 @@ export function CustomersPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Customers</h1>
-          <p className="text-sm text-muted-foreground">Billing contacts — each may own several Marzban accounts.</p>
+          <p className="text-sm text-muted-foreground">
+            Billing contacts. A customer can own accounts directly (billed individually, "Accounts" below), and/or
+            represent a Group (billed together as one unit) — "group rep" marks the latter.
+          </p>
         </div>
         <NewCustomerDialog />
       </div>

@@ -22,6 +22,7 @@ export interface Group {
   representative_customer_id: number
   billing_cycle_days: number
   rate_per_gb: number | null
+  billing_mode: BillingMode
   last_settled_at: string | null
   created_at: string
 }
@@ -29,7 +30,15 @@ export interface Group {
 export interface GroupWithBalance extends Group {
   balance: number
   account_count: number
+  // Marzban's own used_traffic counter, summed — NOT what drives billing.
   total_used_traffic: number
+  // Usage accrued since the group's last settlement — what a settle right
+  // now would actually charge. This is the figure to show as "current usage."
+  current_cycle_used_bytes: number
+  // What settling right now would charge, at each member's effective rate.
+  pending_amount: number
+  next_due_at: string
+  is_due: boolean
 }
 
 export interface Account {
@@ -117,6 +126,7 @@ export interface ReportSummary {
   expired_accounts: { account_id: number; marzban_username: string; days_left: number }[]
   near_expiry_accounts: { account_id: number; marzban_username: string; days_left: number }[]
   no_rate_accounts: { account_id: number; marzban_username: string }[]
+  groups_due_for_settlement: { group_id: number; name: string; days_overdue: number; pending_amount: number }[]
   total_accounts: number
   total_customers: number
 }

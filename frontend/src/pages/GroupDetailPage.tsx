@@ -1,10 +1,13 @@
+import * as React from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft } from 'lucide-react'
-import { groupsApi, ledgerApi } from '@/lib/api'
+import { toast } from 'sonner'
+import { ArrowLeft, Clock, Copy } from 'lucide-react'
+import { groupsApi, ledgerApi, apiErrorMessage } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { AdjustAccountDialog } from '@/components/accounts/AdjustAccountDialog'
@@ -12,12 +15,14 @@ import { RelationshipDialog } from '@/components/accounts/RelationshipDialog'
 import { ResetUsageDialog } from '@/components/accounts/ResetUsageDialog'
 import { BillingDialog } from '@/components/accounts/BillingDialog'
 import { SettleGroupDialog } from '@/components/groups/SettleGroupDialog'
+import { GroupSettingsDialog } from '@/components/groups/GroupSettingsDialog'
 import { UsageBar } from '@/components/UsageBar'
 import { formatDate, formatToman } from '@/lib/utils'
 
 export function GroupDetailPage() {
   const { id } = useParams<{ id: string }>()
   const groupId = Number(id)
+  const [copying, setCopying] = React.useState(false)
 
   const groupQuery = useQuery({ queryKey: ['groups', groupId], queryFn: () => groupsApi.get(groupId) })
   const accountsQuery = useQuery({ queryKey: ['accounts', { groupId }], queryFn: () => groupsApi.accounts(groupId) })
@@ -29,18 +34,51 @@ export function GroupDetailPage() {
 
   const group = groupQuery.data
 
+  // Item 8 of the follow-up feedback: a one-click summary of what this cycle
+  // would charge, per member, ready to paste into a chat with the customer.
+  async function copySummary() {
+    setCopying(true)
+    try {
+      const invoice = await groupsApi.invoice(groupId)
+      const lines = invoice.lines
+        .filter((l) => l.billable_gb > 0)
+        .map((l) => `${l.marzban_username}: ${l.billable_gb} GB => ${formatToman(l.amount)}`)
+      const text = [
+        `${group.name} — usage since ${group.last_settled_at ? formatDate(group.last_settled_at) : 'the start'}`,
+        ...lines,
+        `Total: ${formatToman(invoice.total_amount)}`,
+      ].join('\n')
+      await navigator.clipboard.writeText(text)
+      toast.success('Summary copied to clipboard')
+    } catch (err) {
+      toast.error(apiErrorMessage(err))
+    } finally {
+      setCopying(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <Link to="/groups" className="flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
         <ArrowLeft className="h-3.5 w-3.5" /> Back to groups
       </Link>
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{group.name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight">{group.name}</h1>
+            <Badge variant={group.billing_mode === 'payg' ? 'outline' : 'secondary'} className="capitalize">
+              {group.billing_mode}
+            </Badge>
+            {group.is_due && group.billing_mode === 'payg' && (
+              <Badge variant="warning" className="gap-1">
+                <Clock className="h-3 w-3" /> due for settlement
+              </Badge>
+            )}
+          </div>
           <p className="text-sm text-muted-foreground">
             {group.rate_per_gb ? `${formatToman(group.rate_per_gb)}/GB` : 'No rate set'} · every {group.billing_cycle_days} days · last
-            settled {formatDate(group.last_settled_at)}
+            settled {formatDate(group.last_settled_at)} · next due {formatDate(group.next_due_at)}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -51,15 +89,48 @@ export function GroupDetailPage() {
           ) : (
             <Badge variant="secondary">{formatToman(Math.abs(group.balance))} credit</Badge>
           )}
+          <GroupSettingsDialog group={group} />
           <LedgerActionDialog groupId={groupId} />
           <NewAccountDialog defaultGroupId={groupId} />
           <SettleGroupDialog groupId={groupId} />
         </div>
       </div>
 
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Usage this cycle</p>
+            <p className="text-lg font-semibold tabular-nums">
+              {(group.current_cycle_used_bytes / 1024 ** 3).toFixed(2)} GB
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Pending (not yet charged)</p>
+            <p className="text-lg font-semibold tabular-nums text-warning">{formatToman(group.pending_amount)}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Settled balance</p>
+            <p className="text-lg font-semibold tabular-nums">{formatToman(group.balance)}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">Members</p>
+            <p className="text-lg font-semibold tabular-nums">{group.account_count}</p>
+          </CardContent>
+        </Card>
+      </div>
+
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">Member accounts ({accountsQuery.data?.length ?? 0})</CardTitle>
+          <Button size="sm" variant="outline" className="gap-1.5" onClick={copySummary} disabled={copying}>
+            <Copy className="h-3.5 w-3.5" /> {copying ? 'Copying…' : 'Copy usage summary'}
+          </Button>
         </CardHeader>
         <CardContent className="p-0">
           <Table>

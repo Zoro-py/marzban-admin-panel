@@ -1,5 +1,6 @@
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.auth import require_auth
@@ -11,14 +12,50 @@ from app.services import compute_balance, effective_rate, enrich_accounts
 router = APIRouter(prefix="/api/groups", tags=["groups"], dependencies=[Depends(require_auth)])
 
 
+def _invoice_lines(session: Session, accounts: list[Account], group: Group) -> list[dict]:
+    """Each account's own rate wins, then the group's rate, then the
+    dashboard-wide default (see services.effective_rate) — this is how a
+    per-account discount (or markup) within a group works, and how a global
+    default rate actually reaches group billing instead of only standalone
+    accounts."""
+    lines = []
+    for a in accounts:
+        billable_bytes = max(0, a.lifetime_used_traffic - a.usage_baseline)
+        billable_gb = billable_bytes / (1024**3)
+        rate = effective_rate(session, a, group)
+        lines.append(
+            {
+                "account_id": a.id,
+                "marzban_username": a.marzban_username,
+                "billable_gb": round(billable_gb, 3),
+                "rate_per_gb": rate,
+                "amount": round(billable_gb * rate, 2),
+            }
+        )
+    return lines
+
+
 def _with_balance(session: Session, g: Group) -> GroupWithBalance:
     charge, credit = compute_balance(session, group_id=g.id)
     accounts = session.exec(select(Account).where(Account.group_id == g.id)).all()
+    lines = _invoice_lines(session, accounts, g)
+
+    # last_settled_at/created_at round-trip through SQLite as naive even though
+    # utcnow() produces an aware datetime (same quirk noted throughout this
+    # codebase) — stay naive-UTC here too.
+    now = utcnow().replace(tzinfo=None)
+    cycle_start = g.last_settled_at or g.created_at
+    next_due_at = cycle_start + timedelta(days=g.billing_cycle_days)
+
     return GroupWithBalance(
         **g.model_dump(),
         balance=charge - credit,
         account_count=len(accounts),
         total_used_traffic=sum(a.used_traffic for a in accounts),
+        current_cycle_used_bytes=sum(round(line["billable_gb"] * 1024**3) for line in lines),
+        pending_amount=round(sum(line["amount"] for line in lines), 2),
+        next_due_at=next_due_at,
+        is_due=next_due_at <= now,
     )
 
 
@@ -66,29 +103,6 @@ def get_group_accounts(group_id: int, session: Session = Depends(get_session)):
         raise HTTPException(404, "Group not found")
     accounts = session.exec(select(Account).where(Account.group_id == group_id)).all()
     return enrich_accounts(session, accounts)
-
-
-def _invoice_lines(session: Session, accounts: list[Account], group: Group) -> list[dict]:
-    """Each account's own rate wins, then the group's rate, then the
-    dashboard-wide default (see services.effective_rate) — this is how a
-    per-account discount (or markup) within a group works, and how a global
-    default rate actually reaches group billing instead of only standalone
-    accounts."""
-    lines = []
-    for a in accounts:
-        billable_bytes = max(0, a.lifetime_used_traffic - a.usage_baseline)
-        billable_gb = billable_bytes / (1024**3)
-        rate = effective_rate(session, a, group)
-        lines.append(
-            {
-                "account_id": a.id,
-                "marzban_username": a.marzban_username,
-                "billable_gb": round(billable_gb, 3),
-                "rate_per_gb": rate,
-                "amount": round(billable_gb * rate, 2),
-            }
-        )
-    return lines
 
 
 @router.get("/{group_id}/invoice")

@@ -19,6 +19,13 @@ def _run_lightweight_migrations() -> None:
         if existing and "billing_mode" not in existing:
             conn.execute(text("ALTER TABLE account ADD COLUMN billing_mode VARCHAR NOT NULL DEFAULT 'prepay'"))
 
+        existing_group = {row[1] for row in conn.execute(text("PRAGMA table_info(\"group\")"))}
+        if existing_group and "billing_mode" not in existing_group:
+            # Default existing groups to 'payg' (not 'prepay') on backfill — every
+            # group created before this column existed was, by the original design,
+            # a pay-as-you-go group; this keeps their behavior unchanged.
+            conn.execute(text("ALTER TABLE \"group\" ADD COLUMN billing_mode VARCHAR NOT NULL DEFAULT 'payg'"))
+
         if existing and "first_seen_traffic" not in existing:
             conn.execute(text("ALTER TABLE account ADD COLUMN first_seen_traffic INTEGER NOT NULL DEFAULT 0"))
             conn.execute(text("ALTER TABLE account ADD COLUMN first_seen_traffic_at DATETIME"))

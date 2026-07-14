@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Clock, Users, Network, Wallet, TrendingUp, Ban, CalendarX, Tag } from 'lucide-react'
+import { AlertTriangle, Clock, Users, Network, Wallet, TrendingUp, Ban, CalendarX, Tag, RefreshCw } from 'lucide-react'
 import { reportsApi } from '@/lib/api'
 import { StatCard } from '@/components/StatCard'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -191,6 +191,29 @@ export function DashboardPage() {
               >
                 <span className="font-mono">{a.marzban_username}</span>
                 <Badge variant="outline">would bill ₮0</Badge>
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <RefreshCw className="h-4 w-4 text-warning" /> Groups due for settlement
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {data.groups_due_for_settlement.length === 0 && (
+              <EmptyRow text="No pay-as-you-go group's billing cycle has elapsed." />
+            )}
+            {data.groups_due_for_settlement.map((g) => (
+              <Link
+                key={g.group_id}
+                to={`/groups/${g.group_id}`}
+                className="flex items-center justify-between rounded-md px-2 py-1.5 text-sm hover:bg-accent"
+              >
+                <span>{g.name}</span>
+                <Badge variant="warning">{g.days_overdue}d overdue{g.pending_amount > 0 ? ` · ${formatToman(g.pending_amount)}` : ''}</Badge>
               </Link>
             ))}
           </CardContent>
