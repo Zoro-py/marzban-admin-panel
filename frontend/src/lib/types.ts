@@ -130,7 +130,15 @@ export interface ReportSummary {
   near_expiry_accounts: { account_id: number; marzban_username: string; days_left: number; owner_name: string | null }[]
   no_rate_accounts: { account_id: number; marzban_username: string; owner_name: string | null }[]
   unassigned_accounts: { account_id: number; marzban_username: string }[]
-  groups_due_for_settlement: { group_id: number; name: string; days_overdue: number; pending_amount: number }[]
+  pending_settlement: {
+    type: 'group' | 'account'
+    id: number
+    name: string
+    pending_amount: number
+    is_due: boolean | null
+    days_overdue: number | null
+  }[]
+  total_pending: number
   total_accounts: number
   total_customers: number
 }

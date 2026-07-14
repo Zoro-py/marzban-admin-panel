@@ -103,38 +103,64 @@ def summary(
     expired_accounts.sort(key=lambda x: x["days_left"])
     near_expiry_accounts.sort(key=lambda x: x["days_left"])
 
-    # Gives billing_cycle_days an actual consequence instead of being a number
-    # nothing ever reads: a payg group whose cycle has elapsed shows up here so
-    # "settle" isn't something an operator has to remember to check for. Prepay
-    # groups are excluded — they're billed via manual invoices, not a metered
-    # cycle, so "overdue for settlement" doesn't apply to them.
+    # Real, accrued, unbilled money — NOT gated by billing_cycle_days. That
+    # field only tells you WHEN a cycle nominally ends; it says nothing about
+    # whether there's already a large real balance sitting unbilled well
+    # before that date. A group/account with 500,000T of real pending usage
+    # must be visible today, not hidden until an arbitrary calendar date
+    # arrives — this bucket is every payg group AND every standalone payg
+    # account with pending_amount > 0, full stop. is_due (cycle elapsed) is
+    # still reported per entry as a secondary signal, not the gate.
     now_dt = utcnow().replace(tzinfo=None)
     accounts_by_group: dict[int, list[Account]] = defaultdict(list)
     for a in accounts:
         if a.group_id is not None:
             accounts_by_group[a.group_id].append(a)
 
-    groups_due_for_settlement = []
+    pending_settlement = []
     for g in groups.values():
         if g.billing_mode != BillingMode.payg:
-            continue
-        cycle_start = g.last_settled_at or g.created_at
-        next_due_at = cycle_start + timedelta(days=g.billing_cycle_days)
-        if next_due_at > now_dt:
             continue
         pending = 0.0
         for a in accounts_by_group.get(g.id, []):
             billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
             pending += billable_gb * effective_rate(session, a, g)
-        groups_due_for_settlement.append(
+        if pending <= 0:
+            continue
+        cycle_start = g.last_settled_at or g.created_at
+        next_due_at = cycle_start + timedelta(days=g.billing_cycle_days)
+        is_due = next_due_at <= now_dt
+        pending_settlement.append(
             {
-                "group_id": g.id,
+                "type": "group",
+                "id": g.id,
                 "name": g.name,
-                "days_overdue": round((now_dt - next_due_at).total_seconds() / 86400, 1),
                 "pending_amount": round(pending, 2),
+                "is_due": is_due,
+                "days_overdue": round((now_dt - next_due_at).total_seconds() / 86400, 1) if is_due else None,
             }
         )
-    groups_due_for_settlement.sort(key=lambda x: -x["pending_amount"])
+
+    for a in accounts:
+        if a.group_id is not None or a.billing_mode != BillingMode.payg:
+            continue
+        billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
+        pending = billable_gb * effective_rate(session, a, None)
+        if pending <= 0:
+            continue
+        pending_settlement.append(
+            {
+                "type": "account",
+                "id": a.id,
+                "name": a.marzban_username,
+                "pending_amount": round(pending, 2),
+                "is_due": None,
+                "days_overdue": None,
+            }
+        )
+
+    pending_settlement.sort(key=lambda x: -x["pending_amount"])
+    total_pending = round(sum(x["pending_amount"] for x in pending_settlement), 2)
 
     return {
         "overdue_customers": overdue_customers,
@@ -144,7 +170,8 @@ def summary(
         "near_expiry_accounts": near_expiry_accounts,
         "no_rate_accounts": no_rate_accounts,
         "unassigned_accounts": unassigned_accounts,
-        "groups_due_for_settlement": groups_due_for_settlement,
+        "pending_settlement": pending_settlement,
+        "total_pending": total_pending,
         "total_accounts": len(accounts),
         "total_customers": len(customers),
     }

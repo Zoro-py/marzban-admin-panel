@@ -38,7 +38,7 @@ export function DashboardPage() {
     data.overdue_customers.length +
     data.near_expiry_accounts.length +
     data.near_quota_accounts.length +
-    data.groups_due_for_settlement.length +
+    data.pending_settlement.length +
     data.unassigned_accounts.length +
     data.no_rate_accounts.length
 
@@ -51,7 +51,12 @@ export function DashboardPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <StatCard
+          label="Pending (not yet charged)"
+          value={formatToman(data.total_pending)}
+          tone={data.total_pending > 0 ? 'warning' : 'default'}
+        />
         <Link to="/finance" className="contents">
           <StatCard
             label="Outstanding (owed to you)"
@@ -87,7 +92,7 @@ export function DashboardPage() {
             <CheckCircle2 className="h-6 w-6 text-success" />
             <p className="text-[13px] font-medium">All clear</p>
             <p className="text-xs text-muted-foreground">
-              Nothing expired, nothing out of quota, nobody in debt, no cycle overdue.
+              Nothing expired, nothing out of quota, nobody in debt, nothing pending settlement.
             </p>
           </div>
         ) : (
@@ -161,27 +166,39 @@ export function DashboardPage() {
             <QueueSection
               icon={RefreshCw}
               tone="warn"
-              title="Groups due for settlement"
-              count={data.groups_due_for_settlement.length}
+              title="Pending settlement"
+              count={data.pending_settlement.length}
             >
-              {data.groups_due_for_settlement.map((g) => (
-                <Link
-                  key={g.group_id}
-                  to={`/groups/${g.group_id}`}
-                  className="flex items-center justify-between gap-3 px-4 py-1.5 text-[13px] hover:bg-muted/50"
-                >
-                  <span className="truncate">{g.name}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {g.days_overdue}d overdue
-                    {g.pending_amount > 0 && (
-                      <>
-                        {' · '}
-                        <span className="font-medium text-warning">{formatToman(g.pending_amount)} pending</span>
-                      </>
-                    )}
-                  </span>
-                </Link>
-              ))}
+              {data.pending_settlement.map((p) =>
+                p.type === 'group' ? (
+                  <Link
+                    key={`group-${p.id}`}
+                    to={`/groups/${p.id}`}
+                    className="flex items-center justify-between gap-3 px-4 py-1.5 text-[13px] hover:bg-muted/50"
+                  >
+                    <span className="truncate">{p.name}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {p.is_due && (
+                        <>
+                          <span className="font-medium text-destructive">{p.days_overdue}d overdue</span>
+                          {' · '}
+                        </>
+                      )}
+                      <span className="font-medium text-warning">{formatToman(p.pending_amount)} pending</span>
+                    </span>
+                  </Link>
+                ) : (
+                  <button
+                    key={`account-${p.id}`}
+                    type="button"
+                    onClick={() => openAccount(p.id)}
+                    className="flex items-center justify-between gap-3 px-4 py-1.5 text-left text-[13px] hover:bg-muted/50"
+                  >
+                    <span className="truncate font-mono text-xs font-medium">{p.name}</span>
+                    <span className="shrink-0 text-xs font-medium text-warning">{formatToman(p.pending_amount)} pending</span>
+                  </button>
+                ),
+              )}
             </QueueSection>
 
             <QueueSection icon={UserX} tone="info" title="Unassigned accounts" count={data.unassigned_accounts.length}>
