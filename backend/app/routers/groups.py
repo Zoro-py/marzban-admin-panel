@@ -51,7 +51,13 @@ def _with_balance(session: Session, g: Group) -> GroupWithBalance:
         **g.model_dump(),
         balance=charge - credit,
         account_count=len(accounts),
-        total_used_traffic=sum(a.used_traffic for a in accounts),
+        # Real cumulative total (lifetime_used_traffic), NOT Marzban's own
+        # used_traffic counter — that counter resets whenever Marzban applies a
+        # data_limit reset for an account, independent of anything we track, so
+        # summing it could (and did) come out LOWER than current_cycle_used_bytes
+        # below, which is nonsensical for a figure labeled "lifetime": lifetime
+        # must always be >= usage-since-our-last-settle by definition.
+        total_used_traffic=sum(a.lifetime_used_traffic for a in accounts),
         current_cycle_used_bytes=sum(round(line["billable_gb"] * 1024**3) for line in lines),
         pending_amount=round(sum(line["amount"] for line in lines), 2),
         next_due_at=next_due_at,

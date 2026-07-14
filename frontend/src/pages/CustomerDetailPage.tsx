@@ -1,7 +1,7 @@
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft } from 'lucide-react'
-import { customersApi, ledgerApi } from '@/lib/api'
+import { ArrowLeft, Building2 } from 'lucide-react'
+import { customersApi, groupsApi, ledgerApi } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
@@ -21,6 +21,12 @@ export function CustomerDetailPage() {
   const customerQuery = useQuery({ queryKey: ['customers', customerId], queryFn: () => customersApi.get(customerId) })
   const accountsQuery = useQuery({ queryKey: ['accounts', { customerId }], queryFn: () => customersApi.accounts(customerId) })
   const ledgerQuery = useQuery({ queryKey: ['ledger', { customerId }], queryFn: () => ledgerApi.list({ customer_id: customerId }) })
+  // No dedicated endpoint for "groups this customer represents" — the group
+  // list is small enough to fetch and filter client-side, same pattern used
+  // elsewhere in this app. This is specifically what makes a customer with
+  // group-only accounts NOT read as "0 accounts, nothing here" — see item 5.
+  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: groupsApi.list })
+  const representedGroups = groupsQuery.data?.filter((g) => g.representative_customer_id === customerId) ?? []
 
   if (customerQuery.isLoading || !customerQuery.data) {
     return <p className="text-sm text-muted-foreground">Loading…</p>
@@ -47,14 +53,44 @@ export function CustomerDetailPage() {
           ) : (
             <Badge variant="secondary">{formatToman(Math.abs(customer.balance))} credit</Badge>
           )}
-          <LedgerActionDialog customerId={customerId} />
+          <LedgerActionDialog customerId={customerId} currentBalance={customer.balance} />
           <NewAccountDialog defaultCustomerId={customerId} />
         </div>
       </div>
 
+      {representedGroups.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Building2 className="h-4 w-4 text-muted-foreground" /> Represents {representedGroups.length} group
+              {representedGroups.length > 1 ? 's' : ''}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {representedGroups.map((g) => (
+              <Link
+                key={g.id}
+                to={`/groups/${g.id}`}
+                className="flex items-center justify-between rounded-md px-2 py-1.5 text-sm hover:bg-accent"
+              >
+                <span className="font-medium">{g.name}</span>
+                <span className="text-muted-foreground">{g.account_count} accounts</span>
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Accounts ({accountsQuery.data?.length ?? 0})</CardTitle>
+          <CardTitle className="text-base">
+            Accounts owned directly ({accountsQuery.data?.length ?? 0})
+            {representedGroups.length > 0 && (
+              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                — not counting group members above
+              </span>
+            )}
+          </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <Table>

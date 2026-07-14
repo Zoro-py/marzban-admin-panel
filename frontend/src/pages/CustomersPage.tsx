@@ -44,7 +44,7 @@ export function CustomersPage() {
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Contact</TableHead>
-              <TableHead>Accounts</TableHead>
+              <TableHead>Direct accounts</TableHead>
               <TableHead className="text-right">Balance</TableHead>
             </TableRow>
           </TableHeader>

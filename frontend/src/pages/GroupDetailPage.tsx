@@ -2,12 +2,13 @@ import * as React from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ArrowLeft, Clock, Copy } from 'lucide-react'
+import { ArrowLeft, Clock, Copy, Info } from 'lucide-react'
 import { groupsApi, ledgerApi, apiErrorMessage } from '@/lib/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { AdjustAccountDialog } from '@/components/accounts/AdjustAccountDialog'
@@ -27,6 +28,16 @@ export function GroupDetailPage() {
   const groupQuery = useQuery({ queryKey: ['groups', groupId], queryFn: () => groupsApi.get(groupId) })
   const accountsQuery = useQuery({ queryKey: ['accounts', { groupId }], queryFn: () => groupsApi.accounts(groupId) })
   const ledgerQuery = useQuery({ queryKey: ['ledger', { groupId }], queryFn: () => ledgerApi.list({ group_id: groupId }) })
+  // Fetched eagerly (not just on "copy summary" click) so the member table can
+  // show the SAME billable-GB figure the pending amount is computed from —
+  // previously the table only showed Marzban's used_traffic progress bar,
+  // which can legitimately differ from billable usage, and looked like the
+  // pending amount didn't match anything visible on the page.
+  const invoiceQuery = useQuery({ queryKey: ['groups', groupId, 'invoice'], queryFn: () => groupsApi.invoice(groupId) })
+  const billableByAccount = React.useMemo(
+    () => new Map(invoiceQuery.data?.lines.map((l) => [l.account_id, l])),
+    [invoiceQuery.data],
+  )
 
   if (groupQuery.isLoading || !groupQuery.data) {
     return <p className="text-sm text-muted-foreground">Loading…</p>
@@ -90,7 +101,7 @@ export function GroupDetailPage() {
             <Badge variant="secondary">{formatToman(Math.abs(group.balance))} credit</Badge>
           )}
           <GroupSettingsDialog group={group} />
-          <LedgerActionDialog groupId={groupId} />
+          <LedgerActionDialog groupId={groupId} currentBalance={group.balance} />
           <NewAccountDialog defaultGroupId={groupId} />
           <SettleGroupDialog groupId={groupId} />
         </div>
@@ -99,7 +110,18 @@ export function GroupDetailPage() {
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         <Card>
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">Usage this cycle</p>
+            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+              Usage this cycle
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-3 w-3 cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs">
+                  Usage accrued since the last settle (drives the Pending amount), not Marzban's own per-account
+                  counter shown in the table below — those can differ if Marzban has reset an account's quota since.
+                </TooltipContent>
+              </Tooltip>
+            </div>
             <p className="text-lg font-semibold tabular-nums">
               {(group.current_cycle_used_bytes / 1024 ** 3).toFixed(2)} GB
             </p>
@@ -137,7 +159,22 @@ export function GroupDetailPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Username</TableHead>
-                <TableHead>Usage</TableHead>
+                <TableHead>Usage (Marzban)</TableHead>
+                <TableHead>
+                  <div className="flex items-center gap-1">
+                    Billable this cycle
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Info className="h-3 w-3 cursor-help" />
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs">
+                        Usage since the group's last settle, at this account's effective rate — this is what feeds
+                        the Pending amount above. Can differ from "Usage" if Marzban has reset this account's quota
+                        since the last settle.
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
+                </TableHead>
                 <TableHead>Expires</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
@@ -146,33 +183,46 @@ export function GroupDetailPage() {
             <TableBody>
               {accountsQuery.data?.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-muted-foreground">
+                  <TableCell colSpan={6} className="text-center text-muted-foreground">
                     No accounts in this group yet.
                   </TableCell>
                 </TableRow>
               )}
-              {accountsQuery.data?.map((a) => (
-                <TableRow key={a.id}>
-                  <TableCell className="font-mono">
-                    <Link to={`/accounts?highlight=${a.id}`} className="hover:underline">
-                      {a.marzban_username}
-                    </Link>
-                  </TableCell>
-                  <TableCell>
-                    <UsageBar used={a.used_traffic} limit={a.data_limit} />
-                  </TableCell>
-                  <TableCell>{formatDate(a.expire)}</TableCell>
-                  <TableCell>
-                    <Badge variant={a.status === 'active' ? 'success' : 'outline'}>{a.status ?? 'unknown'}</Badge>
-                  </TableCell>
-                  <TableCell className="flex flex-wrap justify-end gap-2">
-                    <AdjustAccountDialog account={a} groupRatePerGb={group.rate_per_gb} />
-                    <ResetUsageDialog account={a} />
-                    <BillingDialog account={a} groupRatePerGb={group.rate_per_gb} />
-                    <RelationshipDialog account={a} />
-                  </TableCell>
-                </TableRow>
-              ))}
+              {accountsQuery.data?.map((a) => {
+                const billable = billableByAccount.get(a.id)
+                return (
+                  <TableRow key={a.id}>
+                    <TableCell className="font-mono">
+                      <Link to={`/accounts?highlight=${a.id}`} className="hover:underline">
+                        {a.marzban_username}
+                      </Link>
+                    </TableCell>
+                    <TableCell>
+                      <UsageBar used={a.used_traffic} limit={a.data_limit} />
+                    </TableCell>
+                    <TableCell className="text-sm">
+                      {billable ? (
+                        <div className="flex flex-col">
+                          <span className="font-mono tabular-nums">{billable.billable_gb} GB</span>
+                          <span className="text-xs text-muted-foreground">{formatToman(billable.amount)}</span>
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell>{formatDate(a.expire)}</TableCell>
+                    <TableCell>
+                      <Badge variant={a.status === 'active' ? 'success' : 'outline'}>{a.status ?? 'unknown'}</Badge>
+                    </TableCell>
+                    <TableCell className="flex flex-wrap justify-end gap-2">
+                      <AdjustAccountDialog account={a} groupRatePerGb={group.rate_per_gb} />
+                      <ResetUsageDialog account={a} />
+                      <BillingDialog account={a} groupRatePerGb={group.rate_per_gb} />
+                      <RelationshipDialog account={a} />
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
             </TableBody>
           </Table>
         </CardContent>

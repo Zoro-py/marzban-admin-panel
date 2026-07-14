@@ -16,6 +16,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { formatToman } from '@/lib/utils'
 import { CircleMinus, CirclePlus } from 'lucide-react'
 
 interface LedgerActionDialogProps {
@@ -23,14 +24,30 @@ interface LedgerActionDialogProps {
   groupId?: number
   trigger?: React.ReactNode
   defaultType?: LedgerType
+  // Current balance (positive = owed to us, negative = credit owed back) —
+  // when given, the dialog can show "pay in full" and a live preview of what
+  // recording this amount would leave as the new balance. Covers item 1 of
+  // the follow-up feedback in full: partial payment (any amount less than the
+  // balance), adding to debt (Debt tab), and recording an overpayment that
+  // leaves a credit owed back (Credit tab, amount > current balance) are all
+  // just this one form — the gap was that none of that was ever explained.
+  currentBalance?: number
 }
 
-export function LedgerActionDialog({ customerId, groupId, trigger, defaultType = 'charge' }: LedgerActionDialogProps) {
+export function LedgerActionDialog({ customerId, groupId, trigger, defaultType = 'charge', currentBalance }: LedgerActionDialogProps) {
   const [open, setOpen] = React.useState(false)
   const [type, setType] = React.useState<LedgerType>(defaultType)
   const [amount, setAmount] = React.useState('')
   const [note, setNote] = React.useState('')
   const queryClient = useQueryClient()
+
+  React.useEffect(() => {
+    if (open) {
+      setType(defaultType)
+      setAmount('')
+      setNote('')
+    }
+  }, [open, defaultType])
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -66,8 +83,25 @@ export function LedgerActionDialog({ customerId, groupId, trigger, defaultType =
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Record a transaction</DialogTitle>
-          <DialogDescription>Charges (debt owed to you) and credits (payments received) are both logged here.</DialogDescription>
+          <DialogDescription>
+            Debt = they owe you more (a new charge). Credit = money received — enter less than the full balance for
+            a partial payment, the exact balance to settle it, or more than the balance to record an overpayment
+            (leaves a credit owed back to them).
+          </DialogDescription>
         </DialogHeader>
+
+        {currentBalance !== undefined && (
+          <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm">
+            <span className="text-muted-foreground">Current balance: </span>
+            {currentBalance === 0 ? (
+              <span className="font-medium">settled</span>
+            ) : currentBalance > 0 ? (
+              <span className="font-medium text-destructive">{formatToman(currentBalance)} owed to you</span>
+            ) : (
+              <span className="font-medium text-warning">{formatToman(Math.abs(currentBalance))} credit owed back to them</span>
+            )}
+          </div>
+        )}
 
         <Tabs value={type} onValueChange={(v) => setType(v as LedgerType)}>
           <TabsList className="grid w-full grid-cols-2">
@@ -82,7 +116,18 @@ export function LedgerActionDialog({ customerId, groupId, trigger, defaultType =
 
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="amount">Amount (Toman)</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="amount">Amount (Toman)</Label>
+              {type === 'credit' && currentBalance !== undefined && currentBalance > 0 && (
+                <button
+                  type="button"
+                  className="text-xs text-primary hover:underline"
+                  onClick={() => setAmount(String(currentBalance))}
+                >
+                  Pay in full ({formatToman(currentBalance)})
+                </button>
+              )}
+            </div>
             <Input
               id="amount"
               type="number"
@@ -97,6 +142,18 @@ export function LedgerActionDialog({ customerId, groupId, trigger, defaultType =
             <Label htmlFor="note">Note (optional)</Label>
             <Input id="note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="1 month renewal" />
           </div>
+
+          {currentBalance !== undefined && amount && Number(amount) > 0 && (
+            <p className="text-xs text-muted-foreground">
+              New balance after this:{' '}
+              {(() => {
+                const next = currentBalance + (type === 'charge' ? Number(amount) : -Number(amount))
+                if (next === 0) return <span className="font-medium">settled</span>
+                if (next > 0) return <span className="font-medium">{formatToman(next)} still owed</span>
+                return <span className="font-medium">{formatToman(Math.abs(next))} credit owed back to them</span>
+              })()}
+            </p>
+          )}
         </div>
 
         <DialogFooter>
