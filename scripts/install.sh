@@ -4,6 +4,13 @@
 # a rebuild instead of re-asking every question, so this same script works for
 # both the first install on a new server and redeploying on one already set up.
 set -euo pipefail
+# Without this, `set -e` does NOT apply inside a $(...) command substitution
+# by default — so a function called as `x=$(some_func)` that itself fails
+# deep inside (e.g. hits EOF on `read`) only kills that inner subshell, not
+# the whole script. Reproduced this exact bug (an `exit 1` on EOF inside ask()
+# was silently swallowed, causing ask_required's retry loop to spin forever)
+# and confirmed this line fixes it before relying on it.
+shopt -s inherit_errexit
 
 cd "$(dirname "$0")/.."   # always run from repo root, regardless of cwd
 
@@ -28,14 +35,28 @@ apt_retry() {
   done
 }
 
+# `read`'s exit status distinguishes "user pressed Enter on an empty line" (0)
+# from "stdin closed / EOF" (non-zero) — without checking it, a closed stdin
+# (broken SSH session, or this script run non-interactively by mistake) would
+# make ask_required's retry loop spin forever printing "can't be blank."
+# instead of failing once, clearly. Tested: reproduced the infinite spin,
+# confirmed this stops it.
 ask() {
   local prompt="$1" default="${2:-}" reply
-  read -rp "$prompt${default:+ [$default]}: " reply
+  if ! read -rp "$prompt${default:+ [$default]}: " reply; then
+    echo >&2
+    echo "Input closed unexpectedly (EOF) — this installer needs an interactive terminal." >&2
+    exit 1
+  fi
   echo "${reply:-$default}"
 }
 ask_secret() {
   local prompt="$1" reply
-  read -rsp "$prompt: " reply
+  if ! read -rsp "$prompt: " reply; then
+    echo >&2
+    echo "Input closed unexpectedly (EOF) — this installer needs an interactive terminal." >&2
+    exit 1
+  fi
   echo >&2
   echo "$reply"
 }
@@ -204,20 +225,62 @@ collect_config() {
 
   LE_EMAIL=$(ask_required "Email for Let's Encrypt renewal notices")
 
-  MARZBAN_BASE_URL=$(ask_required "Existing Marzban panel URL (e.g. https://sub.example.com:2096)")
-  if [[ ! "$MARZBAN_BASE_URL" =~ ^https?:// ]]; then
-    warn "No http(s):// scheme on that URL — assuming https://"
-    MARZBAN_BASE_URL="https://$MARZBAN_BASE_URL"
-  fi
+  verify_marzban_login
 
-  MARZBAN_USERNAME=$(ask_required "Marzban sudo admin username")
-  MARZBAN_PASSWORD=$(ask_secret_required "Marzban sudo admin password")
   BOT_TOKEN=$(ask_secret_required "Telegram bot token (from @BotFather)")
 
   while true; do
     ADMIN_CHAT_ID=$(ask_required "Your Telegram numeric chat id (from @userinfobot)")
     [[ "$ADMIN_CHAT_ID" =~ ^-?[0-9]+$ ]] && break
     echo "That doesn't look like a numeric chat id (digits only, optionally starting with -)." >&2
+  done
+}
+
+# Collects MARZBAN_BASE_URL/USERNAME/PASSWORD and actually tests them against
+# Marzban's own /api/admin/token before moving on. Catches, right here instead
+# of after the whole install finishes: a URL that's the browser-facing
+# dashboard path rather than the API root (e.g. https://host:port/dashboard/ —
+# Marzban's API is always at the host root, any path typed here gets stripped
+# with a warning), a typo'd password, or an unreachable host.
+verify_marzban_login() {
+  while true; do
+    MARZBAN_BASE_URL=$(ask_required "Existing Marzban panel URL — host:port only, e.g. https://sub.example.com:2096 (not the /dashboard path)")
+    if [[ ! "$MARZBAN_BASE_URL" =~ ^https?:// ]]; then
+      warn "No http(s):// scheme on that URL — assuming https://"
+      MARZBAN_BASE_URL="https://$MARZBAN_BASE_URL"
+    fi
+    if [[ "$MARZBAN_BASE_URL" =~ ^(https?://[^/]+)(/.*)?$ ]]; then
+      if [ -n "${BASH_REMATCH[2]:-}" ]; then
+        warn "Stripping '${BASH_REMATCH[2]}' — Marzban's API lives at the host root, not under a dashboard/sub-path"
+      fi
+      MARZBAN_BASE_URL="${BASH_REMATCH[1]}"
+    fi
+
+    MARZBAN_USERNAME=$(ask_required "Marzban sudo admin username")
+    MARZBAN_PASSWORD=$(ask_secret_required "Marzban sudo admin password")
+
+    info "Verifying against $MARZBAN_BASE_URL ..."
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+      -X POST "$MARZBAN_BASE_URL/api/admin/token" \
+      --data-urlencode "username=$MARZBAN_USERNAME" \
+      --data-urlencode "password=$MARZBAN_PASSWORD") || code="000"
+
+    case "$code" in
+      200)
+        info "Marzban login verified."
+        return
+        ;;
+      401)
+        warn "Marzban rejected that username/password (HTTP 401). Let's try again."
+        ;;
+      000)
+        warn "Couldn't reach $MARZBAN_BASE_URL at all (connection failed or timed out). Check the URL and try again."
+        ;;
+      *)
+        warn "Got HTTP $code from $MARZBAN_BASE_URL/api/admin/token — that doesn't look like Marzban's API. Double-check the URL (host:port only, no path) and try again."
+        ;;
+    esac
   done
 }
 

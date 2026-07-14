@@ -7,6 +7,7 @@
 # available, clone/pull the repo, and hand off to scripts/install.sh, which
 # does everything else (Docker, nginx, certbot, .env, docker compose).
 set -euo pipefail
+shopt -s inherit_errexit  # see install.sh for why this matters
 
 REPO_URL="https://github.com/Zoro-py/marzban-admin-panel.git"
 INSTALL_DIR="/opt/marzban-admin-panel"
