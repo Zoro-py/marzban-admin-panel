@@ -8,7 +8,7 @@ from app.auth import require_auth
 from app.config import settings
 from app.db import get_session
 from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_client
-from app.models import Account, AccountEvent, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
+from app.models import Account, AccountEvent, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
 from app.schemas import (
     AccountAdjustRequest,
     AccountBillingUpdate,
@@ -89,6 +89,8 @@ async def create_account(body: AccountCreateRequest, session: Session = Depends(
         lifetime_used_traffic=marzban_user.get("lifetime_used_traffic", 0),
         first_seen_traffic=marzban_user.get("lifetime_used_traffic", 0),
         first_seen_traffic_at=now,
+        usage_baseline=marzban_user.get("lifetime_used_traffic", 0),
+        usage_baseline_at=now,
         data_limit=marzban_user.get("data_limit"),
         expire=marzban_user.get("expire"),
         status=marzban_user.get("status"),
@@ -268,14 +270,23 @@ def settle_account(account_id: int, session: Session = Depends(get_session)):
 
 @router.post("/{account_id}/reset", response_model=AccountRead)
 async def reset_account(account_id: int, body: AccountResetRequest, session: Session = Depends(get_session)):
-    """Starts a new usage cycle in Marzban. `charge_amount` (from the dashboard's
-    suggested-then-confirmed flow, GET /invoice for payg accounts) is posted as a
-    charge here — never computed and posted automatically without that confirm step."""
+    """Starts a new usage cycle in Marzban. If `charge_amount` is explicitly
+    given (including 0, to deliberately skip charging e.g. a comp reset), that
+    exact value is posted. Otherwise, for a payg account, the accrued usage is
+    computed and charged automatically — resetting always rolls the billing
+    baseline forward regardless, so leaving this to silently charge nothing
+    would permanently lose that cycle's billing data."""
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "Account not found")
 
-    if body.charge_amount and body.charge_amount > 0 and not account.customer_id and not account.group_id:
+    charge_amount = body.charge_amount
+    if charge_amount is None and account.billing_mode == BillingMode.payg:
+        billable_bytes = max(0, account.lifetime_used_traffic - account.usage_baseline)
+        billable_gb = billable_bytes / (1024**3)
+        charge_amount = round(billable_gb * effective_rate(session, account), 2)
+
+    if charge_amount and charge_amount > 0 and not account.customer_id and not account.group_id:
         raise HTTPException(400, "Can't charge an unassigned account — assign it to a customer first")
 
     try:
@@ -286,11 +297,11 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
         raise HTTPException(502, str(exc))
 
     now = utcnow()
-    if body.charge_amount and body.charge_amount > 0:
+    if charge_amount and charge_amount > 0:
         session.add(
             LedgerEntry(
                 type=LedgerType.charge,
-                amount=round(body.charge_amount, 2),
+                amount=round(charge_amount, 2),
                 customer_id=account.customer_id,
                 group_id=account.group_id,
                 account_id=account.id,
@@ -315,7 +326,7 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
         AccountEvent(
             account_id=account.id,
             action="reset",
-            detail=f"charge_amount={body.charge_amount}" + (f" | note={body.note}" if body.note else ""),
+            detail=f"charge_amount={charge_amount}" + (f" | note={body.note}" if body.note else ""),
         )
     )
     session.commit()

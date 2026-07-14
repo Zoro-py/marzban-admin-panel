@@ -45,6 +45,26 @@ def _run_lightweight_migrations() -> None:
                 {"now": now},
             )
 
+        # Real billing bug, not a schema change: usage_baseline (what billable
+        # usage is measured FROM) was never initialized when an account was
+        # first discovered — it defaulted to 0, so the very first settle for
+        # any account with real pre-existing Marzban history would bill its
+        # ENTIRE lifetime usage, not just usage since this dashboard started
+        # tracking it. usage_baseline_at IS NULL unambiguously identifies
+        # accounts that have never been through a settle/reset AND predate the
+        # fix (every account created after the fix gets usage_baseline_at set
+        # immediately) — same safe policy as first_seen_traffic above: start
+        # the baseline now rather than guess, so nothing gets retroactively
+        # billed for history this system was never tracking.
+        now2 = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
+        conn.execute(
+            text(
+                "UPDATE account SET usage_baseline = lifetime_used_traffic, "
+                "usage_baseline_at = :now WHERE usage_baseline_at IS NULL"
+            ),
+            {"now": now2},
+        )
+
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
