@@ -105,8 +105,8 @@ function InspectorBody({ account, onClose }: { account: AccountRow; onClose: () 
           <div className="flex items-center gap-2">
             <StatusDot status={account.status} />
             <h2 className="truncate font-mono text-sm font-semibold">{account.marzban_username}</h2>
-            <Badge variant={account.billing_mode === 'payg' ? 'warning' : 'secondary'}>
-              {account.billing_mode === 'payg' ? 'pay-as-you-go' : 'prepay'}
+            <Badge variant={account.effective_billing_mode === 'payg' ? 'warning' : 'secondary'}>
+              {account.effective_billing_mode === 'payg' ? 'pay-as-you-go' : 'prepay'}
             </Badge>
           </div>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">
@@ -381,7 +381,7 @@ function ResetSection({ account, canBill }: { account: AccountRow; canBill: bool
   const [note, setNote] = React.useState('')
   const [prefilled, setPrefilled] = React.useState(false)
   const invalidate = useInvalidateAccount(account.id)
-  const isPayg = account.billing_mode === 'payg'
+  const isPayg = account.effective_billing_mode === 'payg'
 
   const invoiceQuery = useQuery({
     queryKey: ['account', account.id, 'invoice'],

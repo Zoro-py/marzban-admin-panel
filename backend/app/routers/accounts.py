@@ -19,7 +19,7 @@ from app.schemas import (
     AccountResetRequest,
     AccountRow,
 )
-from app.services import bytes_from_gb, effective_rate, enrich_accounts
+from app.services import bytes_from_gb, effective_billing_mode, effective_rate, enrich_accounts
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(require_auth)])
 
@@ -297,13 +297,19 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
     exact value is posted. Otherwise, for a payg account, the accrued usage is
     computed and charged automatically — resetting always rolls the billing
     baseline forward regardless, so leaving this to silently charge nothing
-    would permanently lose that cycle's billing data."""
+    would permanently lose that cycle's billing data.
+
+    "payg" here means effective_billing_mode, not the raw field: a member of a
+    payg group whose own billing_mode was never explicitly touched (it
+    defaults to prepay) is still billed as payg by group settle, so a solo
+    reset on that same account needs to agree, or resetting it individually
+    would silently skip the auto-charge a group settle would have applied."""
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "Account not found")
 
     charge_amount = body.charge_amount
-    if charge_amount is None and account.billing_mode == BillingMode.payg:
+    if charge_amount is None and effective_billing_mode(session, account) == BillingMode.payg:
         billable_bytes = max(0, account.used_traffic - account.usage_baseline)
         billable_gb = billable_bytes / (1024**3)
         charge_amount = round(billable_gb * effective_rate(session, account), 2)

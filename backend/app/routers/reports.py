@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerType, OnlineSnapshot, utcnow
-from app.services import compute_balance, effective_rate, rate_is_configured
+from app.services import compute_balance, effective_billing_mode, effective_rate, rate_is_configured
 
 router = APIRouter(prefix="/api/reports", tags=["reports"], dependencies=[Depends(require_auth)])
 
@@ -268,7 +268,10 @@ def finance(session: Session = Depends(get_session)):
             "group_name": group_names.get(a.group_id) if a.group_id else None,
             "rate_per_gb": effective_rate(session, a, groups.get(a.group_id)),
             "rate_configured": rate_is_configured(session, a, groups.get(a.group_id)),
-            "billing_mode": a.billing_mode,
+            # Effective, not raw: a payg group's member reads as 'prepay' on
+            # its own field until someone explicitly flips it, which almost
+            # never happens since group settle bills it correctly either way.
+            "billing_mode": effective_billing_mode(session, a, groups.get(a.group_id)),
             "effective_rate_source": (
                 "account"
                 if a.rate_per_gb is not None

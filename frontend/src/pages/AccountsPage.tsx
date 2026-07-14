@@ -44,9 +44,9 @@ function matchesView(a: AccountRow, view: View): boolean {
     case 'unassigned':
       return a.customer_id === null && a.group_id === null
     case 'debt':
-      return a.payer_balance > 0
+      return a.payer_balance > 0 || a.pending_amount > 0
     case 'payg':
-      return a.billing_mode === 'payg'
+      return a.effective_billing_mode === 'payg'
     case 'no_rate':
       return !a.rate_configured
     case 'disabled':
@@ -309,7 +309,16 @@ function AccountTableRow({
         )}
       </TableCell>
       <TableCell className="text-right">
-        <Money amount={a.payer_balance} className="text-xs" />
+        {a.payer_balance === 0 && a.pending_amount <= 0 ? (
+          <span className="text-xs text-muted-foreground">—</span>
+        ) : (
+          <span className="flex flex-col items-end gap-0.5">
+            {a.payer_balance !== 0 && <Money amount={a.payer_balance} className="text-xs" />}
+            {a.pending_amount > 0 && (
+              <span className="text-[11px] font-medium text-warning">{formatToman(a.pending_amount)} pending</span>
+            )}
+          </span>
+        )}
       </TableCell>
     </TableRow>
   )
@@ -327,7 +336,7 @@ function compareBy(key: string, a: AccountRow, b: AccountRow): number {
       return pctA - pctB
     }
     case 'balance':
-      return a.payer_balance - b.payer_balance
+      return (a.payer_balance + a.pending_amount) - (b.payer_balance + b.pending_amount)
     case 'rate':
       return a.effective_rate - b.effective_rate
     case 'expires':

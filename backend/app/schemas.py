@@ -188,6 +188,17 @@ class AccountRow(AccountRead):
     # group's representative customer) — not a per-account ledger slice, since
     # billing is modeled at the customer/group level, not the account level.
     payer_balance: float
+    # This account's own unbilled usage-based amount since its last settle —
+    # 0 for prepay. payer_balance only reflects REAL posted charges, which for
+    # a grouped account stays 0 until the whole group is settled, so without
+    # this a member with heavy real usage looks debt-free until then.
+    pending_amount: float
+    # How this account is ACTUALLY billed: its group's mode when it belongs to
+    # one (group settle bills every member by the group's mode regardless of
+    # their own field — see services.effective_billing_mode), else its own
+    # billing_mode. Distinct from the raw `billing_mode` field above, which is
+    # what's actually persisted and what the Billing section edits.
+    effective_billing_mode: BillingMode
     monthly_avg_usage_gb: Optional[float]
     usage_confidence: Literal["insufficient_data", "preliminary", "full"]
     usage_sample_days: float

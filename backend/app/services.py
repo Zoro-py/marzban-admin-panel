@@ -2,7 +2,7 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from app.models import Account, AppSettings, Customer, Group, LedgerEntry, LedgerType, utcnow
+from app.models import Account, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerType, utcnow
 
 
 def compute_balance(session: Session, *, customer_id: Optional[int] = None, group_id: Optional[int] = None) -> tuple[float, float]:
@@ -54,6 +54,25 @@ def effective_rate(session: Session, account: Account, group: Optional[Group] = 
     if group is not None and group.rate_per_gb is not None:
         return group.rate_per_gb
     return get_default_rate(session)
+
+
+def effective_billing_mode(session: Session, account: Account, group: Optional[Group] = None) -> BillingMode:
+    """A grouped account's OWN billing_mode field is close to vestigial: group
+    settle/reset-cycle already bills every member by the GROUP's mode
+    regardless of it (see routers/groups.py's _invoice_lines, which never
+    checks a member's billing_mode). But the field defaults to 'prepay' and
+    nothing ever syncs it to match the group when an account is assigned — so
+    a member of a payg group whose own field was simply never touched still
+    reads as 'prepay' everywhere that checks the raw field instead of the
+    group, contradicting how it's actually billed. The group's mode always
+    wins for a grouped account; the account's own field only matters once
+    it's standalone."""
+    if account.group_id is not None:
+        if group is None:
+            group = session.get(Group, account.group_id)
+        if group is not None:
+            return group.billing_mode
+    return account.billing_mode
 
 
 def rate_is_configured(session: Session, account: Account, group: Optional[Group] = None) -> bool:
@@ -138,6 +157,17 @@ def enrich_accounts(session: Session, accounts: list[Account]) -> list:
         customer = customers.get(a.customer_id) if a.customer_id else None
         group = groups.get(a.group_id) if a.group_id else None
 
+        eff_mode = effective_billing_mode(session, a, group)
+        # Unbilled usage-based preview for THIS account specifically — same
+        # shape as groups.py's _invoice_lines, so a grouped payg member with
+        # real usage shows something even though payer_balance (real, posted
+        # ledger debt) stays 0 until the group is actually settled.
+        if eff_mode == BillingMode.payg:
+            billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
+            pending = round(billable_gb * effective_rate(session, a, group), 2)
+        else:
+            pending = 0.0
+
         rows.append(
             AccountRow(
                 **AccountRead.model_validate(a, from_attributes=True).model_dump(),
@@ -146,6 +176,8 @@ def enrich_accounts(session: Session, accounts: list[Account]) -> list:
                 effective_rate=effective_rate(session, a, group),
                 rate_configured=rate_is_configured(session, a, group),
                 payer_balance=round(payer_balance(a), 2),
+                pending_amount=pending,
+                effective_billing_mode=eff_mode,
                 monthly_avg_usage_gb=monthly_avg_usage_gb,
                 usage_confidence=usage_confidence,
                 usage_sample_days=round(observed_days, 1),

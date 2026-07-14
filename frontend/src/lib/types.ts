@@ -73,6 +73,16 @@ export interface AccountRow extends Account {
   // never-configured.
   rate_configured: boolean
   payer_balance: number
+  // This account's own unbilled usage-based amount since its last settle —
+  // always 0 for prepay. payer_balance alone stays 0 for a grouped account
+  // until the whole group is settled, so this is what makes a member with
+  // real usage show as owing something before that happens.
+  pending_amount: number
+  // How this account is ACTUALLY billed: its group's mode when grouped
+  // (group settle bills every member by the group's mode regardless of their
+  // own field), else its own billing_mode. Use this, not the raw
+  // `billing_mode` field, for anything deciding "is this payg."
+  effective_billing_mode: BillingMode
   monthly_avg_usage_gb: number | null
   usage_confidence: UsageConfidence
   usage_sample_days: number
