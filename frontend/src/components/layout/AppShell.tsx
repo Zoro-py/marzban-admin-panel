@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 import { useAuth } from '@/lib/auth'
 import { syncApi, apiErrorMessage } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { SettingsDialog } from '@/components/SettingsDialog'
 import { cn } from '@/lib/utils'
 
 const NAV_ITEMS = [
@@ -54,6 +55,7 @@ export function AppShell() {
             <RefreshCw className={cn('h-4 w-4', syncMutation.isPending && 'animate-spin')} />
             Sync with Marzban
           </Button>
+          <SettingsDialog />
           <Button variant="ghost" size="sm" className="justify-start gap-2 text-muted-foreground" onClick={logout}>
             <LogOut className="h-4 w-4" />
             Log out

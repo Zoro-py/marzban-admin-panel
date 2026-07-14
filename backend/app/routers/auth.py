@@ -10,6 +10,7 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 class LoginRequest(BaseModel):
     username: str
     password: str
+    remember_me: bool = False
 
 
 class LoginResponse(BaseModel):
@@ -29,4 +30,4 @@ async def login(body: LoginRequest) -> LoginResponse:
 
     if not ok:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incorrect Marzban username or password")
-    return LoginResponse(access_token=create_access_token(body.username))
+    return LoginResponse(access_token=create_access_token(body.username, remember_me=body.remember_me))

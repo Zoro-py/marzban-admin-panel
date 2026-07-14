@@ -5,8 +5,8 @@ from sqlmodel import Session, select
 from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
-from app.schemas import GroupCreate, GroupRead, GroupUpdate, GroupWithBalance
-from app.services import compute_balance
+from app.schemas import AccountRow, GroupCreate, GroupRead, GroupUpdate, GroupWithBalance
+from app.services import compute_balance, effective_rate, enrich_accounts
 
 router = APIRouter(prefix="/api/groups", tags=["groups"], dependencies=[Depends(require_auth)])
 
@@ -60,28 +60,32 @@ def update_group(group_id: int, body: GroupUpdate, session: Session = Depends(ge
     return group
 
 
-@router.get("/{group_id}/accounts")
+@router.get("/{group_id}/accounts", response_model=list[AccountRow])
 def get_group_accounts(group_id: int, session: Session = Depends(get_session)):
     if not session.get(Group, group_id):
         raise HTTPException(404, "Group not found")
-    return session.exec(select(Account).where(Account.group_id == group_id)).all()
+    accounts = session.exec(select(Account).where(Account.group_id == group_id)).all()
+    return enrich_accounts(session, accounts)
 
 
-def _invoice_lines(accounts: list[Account], group_rate: float) -> list[dict]:
-    """Each account's own rate_per_gb wins over the group's rate when set —
-    this is how a per-account discount (or markup) within a group works."""
+def _invoice_lines(session: Session, accounts: list[Account], group: Group) -> list[dict]:
+    """Each account's own rate wins, then the group's rate, then the
+    dashboard-wide default (see services.effective_rate) — this is how a
+    per-account discount (or markup) within a group works, and how a global
+    default rate actually reaches group billing instead of only standalone
+    accounts."""
     lines = []
     for a in accounts:
         billable_bytes = max(0, a.lifetime_used_traffic - a.usage_baseline)
         billable_gb = billable_bytes / (1024**3)
-        effective_rate = a.rate_per_gb if a.rate_per_gb is not None else group_rate
+        rate = effective_rate(session, a, group)
         lines.append(
             {
                 "account_id": a.id,
                 "marzban_username": a.marzban_username,
                 "billable_gb": round(billable_gb, 3),
-                "rate_per_gb": effective_rate,
-                "amount": round(billable_gb * effective_rate, 2),
+                "rate_per_gb": rate,
+                "amount": round(billable_gb * rate, 2),
             }
         )
     return lines
@@ -91,14 +95,14 @@ def _invoice_lines(accounts: list[Account], group_rate: float) -> list[dict]:
 def get_group_invoice(group_id: int, session: Session = Depends(get_session)):
     """Usage-based invoice preview for the current, not-yet-settled cycle:
     each member account's usage since the group's last settlement (lifetime_used_traffic
-    minus that account's usage_baseline), times the group's rate_per_gb. Purely a read —
+    minus that account's usage_baseline), times its effective rate. Purely a read —
     use POST /{group_id}/settle to actually charge it and roll the cycle forward."""
     group = session.get(Group, group_id)
     if not group:
         raise HTTPException(404, "Group not found")
 
     accounts = session.exec(select(Account).where(Account.group_id == group_id)).all()
-    lines = _invoice_lines(accounts, group.rate_per_gb or 0)
+    lines = _invoice_lines(session, accounts, group)
     return {
         "group_id": group_id,
         "rate_per_gb": group.rate_per_gb or 0,
@@ -118,7 +122,7 @@ def settle_group(group_id: int, session: Session = Depends(get_session)):
         raise HTTPException(404, "Group not found")
 
     accounts = session.exec(select(Account).where(Account.group_id == group_id)).all()
-    lines = _invoice_lines(accounts, group.rate_per_gb or 0)
+    lines = _invoice_lines(session, accounts, group)
     total_amount = round(sum(line["amount"] for line in lines), 2)
 
     now = utcnow()

@@ -78,6 +78,16 @@ class Account(SQLModel, table=True):
     usage_baseline: int = 0
     usage_baseline_at: Optional[datetime] = None
 
+    # Baseline captured ONCE, immutably, the moment this account is first observed
+    # locally (dashboard create, or sync discovering a pre-existing Marzban user) —
+    # never touched again after that (unlike usage_baseline, which rolls forward on
+    # every settle). Exists solely so the monthly-average-usage estimate measures
+    # usage actually OBSERVED by this dashboard, not a Marzban account's entire
+    # pre-existing history misattributed to however many days it's been since sync
+    # first saw it (see routers/accounts.py's enrich_accounts).
+    first_seen_traffic: int = 0
+    first_seen_traffic_at: Optional[datetime] = None
+
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -96,6 +106,15 @@ class LedgerEntry(SQLModel, table=True):
 
     note: Optional[str] = None
     source: LedgerSource = LedgerSource.web
+
+
+class AppSettings(SQLModel, table=True):
+    """Single-row table (id is always 1) for dashboard-wide settings — currently
+    just the default rate used when neither an account nor its group has one
+    set. A real table (not a hardcoded default) so it's editable from the UI."""
+
+    id: Optional[int] = Field(default=1, primary_key=True)
+    default_rate_per_gb: Optional[float] = None
 
 
 class AccountEvent(SQLModel, table=True):

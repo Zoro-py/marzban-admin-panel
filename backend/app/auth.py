@@ -10,8 +10,9 @@ ALGORITHM = "HS256"
 _bearer = HTTPBearer(auto_error=False)
 
 
-def create_access_token(subject: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_expire_minutes)
+def create_access_token(subject: str, *, remember_me: bool = False) -> str:
+    minutes = settings.jwt_remember_expire_minutes if remember_me else settings.jwt_expire_minutes
+    expire = datetime.now(timezone.utc) + timedelta(minutes=minutes)
     return jwt.encode({"sub": subject, "exp": expire}, settings.jwt_secret, algorithm=ALGORITHM)
 
 

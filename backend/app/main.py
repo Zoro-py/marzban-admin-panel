@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.db import init_db
-from app.routers import accounts, auth, customers, groups, ledger, reports, sync
+from app.routers import accounts, auth, customers, groups, ledger, reports, settings as settings_router, sync
 from app.sync_job import run_sync
 
 scheduler = AsyncIOScheduler()
@@ -37,6 +37,7 @@ app.include_router(accounts.router)
 app.include_router(ledger.router)
 app.include_router(reports.router)
 app.include_router(sync.router)
+app.include_router(settings_router.router)
 
 
 @app.get("/api/health")

@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Clock, Users, Network, UserX, Wallet, TrendingUp } from 'lucide-react'
+import { AlertTriangle, Clock, Users, Network, Wallet, TrendingUp, Ban, CalendarX, Tag } from 'lucide-react'
 import { reportsApi } from '@/lib/api'
 import { StatCard } from '@/components/StatCard'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -41,11 +41,33 @@ export function DashboardPage() {
             tone="success"
           />
         </Link>
-        <StatCard label="Near quota" value={data.near_quota_accounts.length} icon={AlertTriangle} tone={data.near_quota_accounts.length ? 'warning' : 'success'} />
-        <StatCard label="Expiring soon" value={data.near_expiry_accounts.length} icon={Clock} tone={data.near_expiry_accounts.length ? 'warning' : 'success'} />
+        {/* Near-quota and exhausted are deliberately two figures on one tile, never merged
+            into one number — a used-up account is a different problem than a soon-to-be-used-up one. */}
+        <StatCard
+          label="Near quota"
+          value={data.near_quota_accounts.length}
+          icon={AlertTriangle}
+          tone={data.near_quota_accounts.length ? 'warning' : 'success'}
+          secondary={
+            data.exhausted_accounts.length
+              ? { label: 'exhausted', value: data.exhausted_accounts.length, tone: 'destructive' }
+              : undefined
+          }
+        />
+        <StatCard
+          label="Expiring soon"
+          value={data.near_expiry_accounts.length}
+          icon={Clock}
+          tone={data.near_expiry_accounts.length ? 'warning' : 'success'}
+          secondary={
+            data.expired_accounts.length
+              ? { label: 'expired', value: data.expired_accounts.length, tone: 'destructive' }
+              : undefined
+          }
+        />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-3">
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
@@ -62,6 +84,48 @@ export function DashboardPage() {
               >
                 <span>{c.name}</span>
                 <Badge variant="destructive">{formatToman(c.balance)}</Badge>
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Ban className="h-4 w-4 text-destructive" /> Exhausted (out of quota)
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {data.exhausted_accounts.length === 0 && <EmptyRow text="No accounts have run out of data." />}
+            {data.exhausted_accounts.map((a) => (
+              <Link
+                key={a.account_id}
+                to={`/accounts?highlight=${a.account_id}`}
+                className="flex items-center justify-between rounded-md px-2 py-1.5 text-sm hover:bg-accent"
+              >
+                <span className="font-mono">{a.marzban_username}</span>
+                <Badge variant="destructive">{a.used_pct}%</Badge>
+              </Link>
+            ))}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <CalendarX className="h-4 w-4 text-destructive" /> Already expired
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            {data.expired_accounts.length === 0 && <EmptyRow text="Nothing has expired." />}
+            {data.expired_accounts.map((a) => (
+              <Link
+                key={a.account_id}
+                to={`/accounts?highlight=${a.account_id}`}
+                className="flex items-center justify-between rounded-md px-2 py-1.5 text-sm hover:bg-accent"
+              >
+                <span className="font-mono">{a.marzban_username}</span>
+                <Badge variant="destructive">{Math.abs(a.days_left)}d ago</Badge>
               </Link>
             ))}
           </CardContent>
@@ -103,9 +167,7 @@ export function DashboardPage() {
                 className="flex items-center justify-between rounded-md px-2 py-1.5 text-sm hover:bg-accent"
               >
                 <span className="font-mono">{a.marzban_username}</span>
-                <Badge variant={a.days_left < 0 ? 'destructive' : 'warning'}>
-                  {a.days_left < 0 ? 'expired' : `${a.days_left}d left`}
-                </Badge>
+                <Badge variant="warning">{a.days_left}d left</Badge>
               </Link>
             ))}
           </CardContent>
@@ -114,19 +176,21 @@ export function DashboardPage() {
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
-              <UserX className="h-4 w-4 text-muted-foreground" /> Needs assignment
+              <Tag className="h-4 w-4 text-muted-foreground" /> No rate configured
             </CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
-            {data.unassigned_accounts.length === 0 && <EmptyRow text="Every account has an owner." />}
-            {data.unassigned_accounts.map((a) => (
+            {data.no_rate_accounts.length === 0 && (
+              <EmptyRow text="Every account resolves to a rate (own, group, or the dashboard default)." />
+            )}
+            {data.no_rate_accounts.map((a) => (
               <Link
                 key={a.account_id}
                 to={`/accounts?highlight=${a.account_id}`}
                 className="flex items-center justify-between rounded-md px-2 py-1.5 text-sm hover:bg-accent"
               >
                 <span className="font-mono">{a.marzban_username}</span>
-                <Badge variant="outline">unassigned</Badge>
+                <Badge variant="outline">would bill ₮0</Badge>
               </Link>
             ))}
           </CardContent>

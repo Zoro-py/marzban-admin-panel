@@ -3,7 +3,7 @@ import { login as loginRequest, tokenStore } from './api'
 
 interface AuthContextValue {
   isAuthenticated: boolean
-  login: (username: string, password: string) => Promise<void>
+  login: (username: string, password: string, rememberMe: boolean) => Promise<void>
   logout: () => void
 }
 
@@ -12,9 +12,9 @@ const AuthContext = React.createContext<AuthContextValue | null>(null)
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = React.useState<string | null>(() => tokenStore.get())
 
-  const login = React.useCallback(async (username: string, password: string) => {
-    const accessToken = await loginRequest(username, password)
-    tokenStore.set(accessToken)
+  const login = React.useCallback(async (username: string, password: string, rememberMe: boolean) => {
+    const accessToken = await loginRequest(username, password, rememberMe)
+    tokenStore.set(accessToken, rememberMe)
     setToken(accessToken)
   }, [])
 

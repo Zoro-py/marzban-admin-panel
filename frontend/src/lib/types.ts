@@ -49,6 +49,23 @@ export interface Account {
   created_at: string
 }
 
+export type UsageConfidence = 'insufficient_data' | 'preliminary' | 'full'
+
+export interface AccountRow extends Account {
+  customer_name: string | null
+  group_name: string | null
+  effective_rate: number
+  // Whether effective_rate came from an actual configured value somewhere in
+  // the chain, vs. falling through to 0 because nothing was ever set — an
+  // explicit 0 (comp/free account) is rate_configured=true, distinct from
+  // never-configured.
+  rate_configured: boolean
+  payer_balance: number
+  monthly_avg_usage_gb: number | null
+  usage_confidence: UsageConfidence
+  usage_sample_days: number
+}
+
 export interface AccountInvoice {
   account_id: number
   since: string | null
@@ -95,9 +112,11 @@ export interface GroupInvoice {
 
 export interface ReportSummary {
   overdue_customers: { customer_id: number; name: string; balance: number }[]
+  exhausted_accounts: { account_id: number; marzban_username: string; used_pct: number }[]
   near_quota_accounts: { account_id: number; marzban_username: string; used_pct: number }[]
+  expired_accounts: { account_id: number; marzban_username: string; days_left: number }[]
   near_expiry_accounts: { account_id: number; marzban_username: string; days_left: number }[]
-  unassigned_accounts: { account_id: number; marzban_username: string }[]
+  no_rate_accounts: { account_id: number; marzban_username: string }[]
   total_accounts: number
   total_customers: number
 }
@@ -117,9 +136,10 @@ export interface RateOverviewRow {
   marzban_username: string
   customer_name: string | null
   group_name: string | null
-  rate_per_gb: number | null
+  rate_per_gb: number
+  rate_configured: boolean
   billing_mode: BillingMode
-  effective_rate_source: 'account' | 'group' | null
+  effective_rate_source: 'account' | 'group' | 'default'
 }
 
 export interface FinanceSummary {

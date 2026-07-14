@@ -111,7 +111,9 @@ export function FinancePage() {
                       <Badge variant={r.billing_mode === 'payg' ? 'warning' : 'outline'}>{r.billing_mode}</Badge>
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {r.rate_per_gb != null ? (
+                      {!r.rate_configured ? (
+                        <Badge variant="outline">not set</Badge>
+                      ) : r.rate_per_gb > 0 ? (
                         <>
                           {formatToman(r.rate_per_gb)}/GB
                           {r.effective_rate_source === 'account' && r.group_name && (
@@ -119,9 +121,14 @@ export function FinancePage() {
                               override
                             </Badge>
                           )}
+                          {r.effective_rate_source === 'default' && (
+                            <Badge variant="outline" className="ml-1.5">
+                              dashboard default
+                            </Badge>
+                          )}
                         </>
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        <Badge variant="secondary">free</Badge>
                       )}
                     </TableCell>
                   </TableRow>

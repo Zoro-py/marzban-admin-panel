@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     # touch it" value, not one more env var to set.
     jwt_secret: str = ""
     jwt_expire_minutes: int = 1440
+    # "Remember me" checkbox on login uses this instead of jwt_expire_minutes.
+    jwt_remember_expire_minutes: int = 43200  # 30 days
 
     bot_token: str = ""
     bot_admin_chat_id: str = ""

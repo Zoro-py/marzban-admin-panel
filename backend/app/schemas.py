@@ -136,6 +136,28 @@ class AccountRead(BaseModel):
     created_at: datetime
 
 
+class AccountRow(AccountRead):
+    """Enriched shape for the accounts table — everything item 4/5/6/14 of the
+    UI ask needs to sort/filter/display without the frontend re-deriving it
+    from three other endpoints."""
+
+    customer_name: Optional[str]
+    group_name: Optional[str]
+    effective_rate: float
+    # Whether effective_rate resolves from an ACTUAL configured value somewhere
+    # in the chain, vs. falling through to 0 because nothing was ever set. An
+    # operator can legitimately price an account at 0 (comp/free) — that's
+    # rate_configured=True, effective_rate=0, distinct from never-configured.
+    rate_configured: bool
+    # Balance of whoever actually pays for this account (its customer, or its
+    # group's representative customer) — not a per-account ledger slice, since
+    # billing is modeled at the customer/group level, not the account level.
+    payer_balance: float
+    monthly_avg_usage_gb: Optional[float]
+    usage_confidence: Literal["insufficient_data", "preliminary", "full"]
+    usage_sample_days: float
+
+
 # ---- Ledger ---------------------------------------------------------------
 
 

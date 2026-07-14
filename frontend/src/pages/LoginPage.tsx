@@ -5,6 +5,7 @@ import { apiErrorMessage } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
 export function LoginPage() {
@@ -13,6 +14,7 @@ export function LoginPage() {
   const location = useLocation()
   const [username, setUsername] = React.useState('')
   const [password, setPassword] = React.useState('')
+  const [rememberMe, setRememberMe] = React.useState(true)
   const [error, setError] = React.useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = React.useState(false)
 
@@ -26,7 +28,7 @@ export function LoginPage() {
     setError(null)
     setIsSubmitting(true)
     try {
-      await login(username, password)
+      await login(username, password, rememberMe)
       navigate('/', { replace: true })
     } catch (err) {
       setError(apiErrorMessage(err))
@@ -65,6 +67,16 @@ export function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
               />
+            </div>
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="remember-me"
+                checked={rememberMe}
+                onCheckedChange={(checked) => setRememberMe(checked === true)}
+              />
+              <Label htmlFor="remember-me" className="cursor-pointer font-normal text-muted-foreground">
+                Remember me on this device
+              </Label>
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}
             <Button type="submit" disabled={isSubmitting || !username || !password} className="w-full">

@@ -16,13 +16,14 @@ from app.schemas import (
     AccountRead,
     AccountRelationshipUpdate,
     AccountResetRequest,
+    AccountRow,
 )
-from app.services import bytes_from_gb
+from app.services import bytes_from_gb, effective_rate, enrich_accounts
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(require_auth)])
 
 
-@router.get("", response_model=list[AccountRead])
+@router.get("", response_model=list[AccountRow])
 def list_accounts(
     unassigned_only: bool = False,
     customer_id: Optional[int] = None,
@@ -36,15 +37,16 @@ def list_accounts(
         stmt = stmt.where(Account.customer_id == customer_id)
     if group_id is not None:
         stmt = stmt.where(Account.group_id == group_id)
-    return session.exec(stmt).all()
+    accounts = session.exec(stmt).all()
+    return enrich_accounts(session, accounts)
 
 
-@router.get("/{account_id}", response_model=AccountRead)
+@router.get("/{account_id}", response_model=AccountRow)
 def get_account(account_id: int, session: Session = Depends(get_session)):
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "Account not found")
-    return account
+    return enrich_accounts(session, [account])[0]
 
 
 @router.post("", response_model=AccountRead)
@@ -76,6 +78,7 @@ async def create_account(body: AccountCreateRequest, session: Session = Depends(
     except (MarzbanUnavailable, MarzbanAuthError) as exc:
         raise HTTPException(502, str(exc))
 
+    now = utcnow()
     account = Account(
         marzban_username=body.marzban_username,
         customer_id=body.customer_id,
@@ -84,10 +87,12 @@ async def create_account(body: AccountCreateRequest, session: Session = Depends(
         rate_per_gb=body.rate_per_gb,
         used_traffic=marzban_user.get("used_traffic", 0),
         lifetime_used_traffic=marzban_user.get("lifetime_used_traffic", 0),
+        first_seen_traffic=marzban_user.get("lifetime_used_traffic", 0),
+        first_seen_traffic_at=now,
         data_limit=marzban_user.get("data_limit"),
         expire=marzban_user.get("expire"),
         status=marzban_user.get("status"),
-        last_synced_at=utcnow(),
+        last_synced_at=now,
     )
     session.add(account)
     session.commit()
@@ -217,7 +222,7 @@ def get_account_invoice(account_id: int, session: Session = Depends(get_session)
         raise HTTPException(404, "Account not found")
     billable_bytes = max(0, account.lifetime_used_traffic - account.usage_baseline)
     billable_gb = billable_bytes / (1024**3)
-    rate = account.rate_per_gb or 0
+    rate = effective_rate(session, account)
     return {
         "account_id": account_id,
         "since": account.usage_baseline_at,
@@ -237,7 +242,7 @@ def settle_account(account_id: int, session: Session = Depends(get_session)):
 
     billable_bytes = max(0, account.lifetime_used_traffic - account.usage_baseline)
     billable_gb = billable_bytes / (1024**3)
-    rate = account.rate_per_gb or 0
+    rate = effective_rate(session, account)
     amount = round(billable_gb * rate, 2)
 
     now = utcnow()

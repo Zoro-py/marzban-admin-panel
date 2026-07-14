@@ -5,8 +5,8 @@ from sqlmodel import Session, select
 from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, Customer
-from app.schemas import CustomerCreate, CustomerRead, CustomerUpdate, CustomerWithBalance
-from app.services import compute_balance
+from app.schemas import AccountRow, CustomerCreate, CustomerRead, CustomerUpdate, CustomerWithBalance
+from app.services import compute_balance, enrich_accounts
 
 router = APIRouter(prefix="/api/customers", tags=["customers"], dependencies=[Depends(require_auth)])
 
@@ -64,8 +64,9 @@ def update_customer(customer_id: int, body: CustomerUpdate, session: Session = D
     return customer
 
 
-@router.get("/{customer_id}/accounts")
+@router.get("/{customer_id}/accounts", response_model=list[AccountRow])
 def get_customer_accounts(customer_id: int, session: Session = Depends(get_session)):
     if not session.get(Customer, customer_id):
         raise HTTPException(404, "Customer not found")
-    return session.exec(select(Account).where(Account.customer_id == customer_id)).all()
+    accounts = session.exec(select(Account).where(Account.customer_id == customer_id)).all()
+    return enrich_accounts(session, accounts)

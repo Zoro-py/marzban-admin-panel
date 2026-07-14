@@ -2,6 +2,7 @@ import axios, { AxiosError } from 'axios'
 import type {
   Account,
   AccountInvoice,
+  AccountRow,
   Balance,
   BillingMode,
   Customer,
@@ -16,10 +17,26 @@ import type {
 
 const TOKEN_KEY = 'vpn_dashboard_token'
 
+// "Remember me" checked -> localStorage (survives closing the browser, paired
+// with a long-lived JWT from the backend). Unchecked -> sessionStorage (gone
+// the moment the tab/browser closes, paired with the normal short-lived JWT).
+// Both are checked on read so an existing session doesn't break if the choice
+// changes; both are cleared on logout so a stale copy can't linger in the other.
 export const tokenStore = {
-  get: () => localStorage.getItem(TOKEN_KEY),
-  set: (token: string) => localStorage.setItem(TOKEN_KEY, token),
-  clear: () => localStorage.removeItem(TOKEN_KEY),
+  get: () => localStorage.getItem(TOKEN_KEY) ?? sessionStorage.getItem(TOKEN_KEY),
+  set: (token: string, remember: boolean) => {
+    if (remember) {
+      localStorage.setItem(TOKEN_KEY, token)
+      sessionStorage.removeItem(TOKEN_KEY)
+    } else {
+      sessionStorage.setItem(TOKEN_KEY, token)
+      localStorage.removeItem(TOKEN_KEY)
+    }
+  },
+  clear: () => {
+    localStorage.removeItem(TOKEN_KEY)
+    sessionStorage.removeItem(TOKEN_KEY)
+  },
 }
 
 export const api = axios.create({
@@ -52,8 +69,12 @@ export function apiErrorMessage(error: unknown): string {
 }
 
 // ---- auth ----
-export async function login(username: string, password: string): Promise<string> {
-  const { data } = await api.post<{ access_token: string }>('/api/auth/login', { username, password })
+export async function login(username: string, password: string, rememberMe: boolean): Promise<string> {
+  const { data } = await api.post<{ access_token: string }>('/api/auth/login', {
+    username,
+    password,
+    remember_me: rememberMe,
+  })
   return data.access_token
 }
 
@@ -65,7 +86,7 @@ export const customersApi = {
     (await api.post<Customer>('/api/customers', body)).data,
   update: async (id: number, body: Partial<{ name: string; contact: string; is_group_rep: boolean }>) =>
     (await api.patch<Customer>(`/api/customers/${id}`, body)).data,
-  accounts: async (id: number) => (await api.get<Account[]>(`/api/customers/${id}/accounts`)).data,
+  accounts: async (id: number) => (await api.get<AccountRow[]>(`/api/customers/${id}/accounts`)).data,
 }
 
 // ---- groups ----
@@ -76,7 +97,7 @@ export const groupsApi = {
     (await api.post<Group>('/api/groups', body)).data,
   update: async (id: number, body: Partial<{ name: string; billing_cycle_days: number; rate_per_gb: number }>) =>
     (await api.patch<Group>(`/api/groups/${id}`, body)).data,
-  accounts: async (id: number) => (await api.get<Account[]>(`/api/groups/${id}/accounts`)).data,
+  accounts: async (id: number) => (await api.get<AccountRow[]>(`/api/groups/${id}/accounts`)).data,
   invoice: async (id: number) => (await api.get<GroupInvoice>(`/api/groups/${id}/invoice`)).data,
   settle: async (id: number) => (await api.post(`/api/groups/${id}/settle`)).data,
 }
@@ -84,8 +105,8 @@ export const groupsApi = {
 // ---- accounts ----
 export const accountsApi = {
   list: async (params?: { unassigned_only?: boolean; customer_id?: number; group_id?: number }) =>
-    (await api.get<Account[]>('/api/accounts', { params })).data,
-  get: async (id: number) => (await api.get<Account>(`/api/accounts/${id}`)).data,
+    (await api.get<AccountRow[]>('/api/accounts', { params })).data,
+  get: async (id: number) => (await api.get<AccountRow>(`/api/accounts/${id}`)).data,
   create: async (body: {
     marzban_username: string
     customer_id?: number | null
@@ -135,4 +156,11 @@ export const reportsApi = {
 
 export const syncApi = {
   run: async () => (await api.post('/api/sync/run')).data,
+}
+
+// ---- settings ----
+export const settingsApi = {
+  get: async () => (await api.get<{ default_rate_per_gb: number | null }>('/api/settings')).data,
+  update: async (body: { default_rate_per_gb: number | null }) =>
+    (await api.patch<{ default_rate_per_gb: number | null }>('/api/settings', body)).data,
 }

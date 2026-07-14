@@ -82,7 +82,11 @@ export function GroupDetailPage() {
               )}
               {accountsQuery.data?.map((a) => (
                 <TableRow key={a.id}>
-                  <TableCell className="font-mono">{a.marzban_username}</TableCell>
+                  <TableCell className="font-mono">
+                    <Link to={`/accounts?highlight=${a.id}`} className="hover:underline">
+                      {a.marzban_username}
+                    </Link>
+                  </TableCell>
                   <TableCell>
                     <UsageBar used={a.used_traffic} limit={a.data_limit} />
                   </TableCell>

@@ -5,7 +5,7 @@ from handlers.common import admin_only
 
 HELP_TEXT = """*VPN reseller bot*
 
-/report — daily summary: overdue customers, near-quota, expiring soon, unassigned
+/report — daily summary: overdue customers, exhausted/near-quota, expired/expiring soon, no rate configured
 /customer <name or id> — balance + accounts for one customer
 /charge <customer> <amount> [note] — record a debt (بدهی)
 /credit <customer> <amount> [note] — record a credit/payment (طلب)

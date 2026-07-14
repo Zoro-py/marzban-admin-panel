@@ -21,7 +21,12 @@ import { CalendarClock } from 'lucide-react'
 const DAY_PRESETS = [-30, -7, 7, 30]
 
 interface AdjustAccountDialogProps {
-  account: Account
+  // Callers that already have the enriched AccountRow (server-resolved through
+  // the full account -> group -> dashboard-default chain) should pass it as-is
+  // — effective_rate is used directly when present. Callers with only a plain
+  // Account (customers.py/groups.py's older, unenriched account lists) fall
+  // back to the account/group-only computation via groupRatePerGb.
+  account: Account & { effective_rate?: number }
   groupRatePerGb?: number | null
   trigger?: React.ReactNode
 }
@@ -36,7 +41,10 @@ export function AdjustAccountDialog({ account, groupRatePerGb, trigger }: Adjust
   const [chargeTouched, setChargeTouched] = React.useState(false)
   const queryClient = useQueryClient()
 
-  const effectiveRate = account.rate_per_gb ?? groupRatePerGb ?? null
+  const effectiveRate =
+    account.effective_rate && account.effective_rate > 0
+      ? account.effective_rate
+      : (account.rate_per_gb ?? groupRatePerGb ?? null)
   const canBill = !!(account.customer_id || account.group_id)
   const suggestedCharge = effectiveRate && extendGb && Number(extendGb) > 0 ? Number(extendGb) * effectiveRate : 0
 

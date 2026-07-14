@@ -61,7 +61,8 @@ export function BillingDialog({ account, groupRatePerGb, trigger }: BillingDialo
           <DialogDescription>
             {account.group_id
               ? `Part of a group${groupRatePerGb ? ` (group rate: ${groupRatePerGb.toLocaleString()} T/GB)` : ''} — set a rate here to override it for just this account (a discount or markup).`
-              : 'Standalone rate — used for this account\'s own pay-as-you-go invoice.'}
+              : "Standalone rate — used for this account's own pay-as-you-go invoice."}{' '}
+            Leave blank to fall back to the group rate, then the dashboard-wide default if neither is set.
           </DialogDescription>
         </DialogHeader>
 

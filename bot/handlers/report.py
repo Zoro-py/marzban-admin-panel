@@ -18,6 +18,13 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         lines.append(f"• {c['name']} — {format_toman(c['balance'])}")
 
     lines.append("")
+    lines.append(f"*Exhausted, out of quota ({len(summary['exhausted_accounts'])})*")
+    if not summary["exhausted_accounts"]:
+        lines.append("None.")
+    for a in summary["exhausted_accounts"][:15]:
+        lines.append(f"• `{a['marzban_username']}` — {a['used_pct']}%")
+
+    lines.append("")
     lines.append(f"*Near quota, ≥80% ({len(summary['near_quota_accounts'])})*")
     if not summary["near_quota_accounts"]:
         lines.append("None.")
@@ -25,18 +32,24 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         lines.append(f"• `{a['marzban_username']}` — {a['used_pct']}%")
 
     lines.append("")
+    lines.append(f"*Already expired ({len(summary['expired_accounts'])})*")
+    if not summary["expired_accounts"]:
+        lines.append("None.")
+    for a in summary["expired_accounts"][:15]:
+        lines.append(f"• `{a['marzban_username']}` — {abs(a['days_left'])}d ago")
+
+    lines.append("")
     lines.append(f"*Expiring within 3 days ({len(summary['near_expiry_accounts'])})*")
     if not summary["near_expiry_accounts"]:
         lines.append("None.")
     for a in summary["near_expiry_accounts"][:15]:
-        status = "expired" if a["days_left"] < 0 else f"{a['days_left']}d left"
-        lines.append(f"• `{a['marzban_username']}` — {status}")
+        lines.append(f"• `{a['marzban_username']}` — {a['days_left']}d left")
 
     lines.append("")
-    lines.append(f"*Needs assignment ({len(summary['unassigned_accounts'])})*")
-    if not summary["unassigned_accounts"]:
+    lines.append(f"*No rate configured ({len(summary['no_rate_accounts'])})*")
+    if not summary["no_rate_accounts"]:
         lines.append("None.")
-    for a in summary["unassigned_accounts"][:15]:
+    for a in summary["no_rate_accounts"][:15]:
         lines.append(f"• `{a['marzban_username']}`")
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")

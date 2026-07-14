@@ -39,6 +39,13 @@ async def run_sync() -> dict:
             account = existing.get(username)
             if account is None:
                 account = Account(marzban_username=username)
+                # Baseline the monthly-average-usage window at whatever Marzban
+                # already reports as this user's lifetime total — a reseller
+                # onboarding an existing Marzban install has users with months of
+                # real history that must NOT be attributed to "the last N days
+                # since this dashboard started watching them."
+                account.first_seen_traffic = mu.get("lifetime_used_traffic", 0)
+                account.first_seen_traffic_at = now
                 created += 1
             else:
                 updated += 1
