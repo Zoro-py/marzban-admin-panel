@@ -149,6 +149,19 @@ export interface SyncStatus {
   account_count: number
 }
 
+export type OnlineHistoryRange = '1d' | '3d' | '1w' | '1m'
+
+export interface OnlineHistoryPoint {
+  recorded_at: string
+  online_count: number
+  total_accounts: number
+}
+
+export interface OnlineHistory {
+  range: OnlineHistoryRange
+  points: OnlineHistoryPoint[]
+}
+
 export interface FinanceTransaction {
   id: number
   type: LedgerType

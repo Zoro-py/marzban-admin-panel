@@ -13,6 +13,8 @@ import type {
   GroupInvoice,
   GroupWithBalance,
   LedgerEntry,
+  OnlineHistory,
+  OnlineHistoryRange,
   ReportSummary,
   SyncStatus,
 } from './types'
@@ -167,6 +169,8 @@ export const ledgerApi = {
 export const reportsApi = {
   summary: async () => (await api.get<ReportSummary>('/api/reports/summary')).data,
   finance: async () => (await api.get<FinanceSummary>('/api/reports/finance')).data,
+  onlineHistory: async (range: OnlineHistoryRange) =>
+    (await api.get<OnlineHistory>('/api/reports/online-history', { params: { range } })).data,
 }
 
 export const syncApi = {

@@ -26,6 +26,9 @@ def _run_lightweight_migrations() -> None:
             # a pay-as-you-go group; this keeps their behavior unchanged.
             conn.execute(text("ALTER TABLE \"group\" ADD COLUMN billing_mode VARCHAR NOT NULL DEFAULT 'payg'"))
 
+        if existing and "online_at" not in existing:
+            conn.execute(text("ALTER TABLE account ADD COLUMN online_at DATETIME"))
+
         if existing and "first_seen_traffic" not in existing:
             conn.execute(text("ALTER TABLE account ADD COLUMN first_seen_traffic INTEGER NOT NULL DEFAULT 0"))
             conn.execute(text("ALTER TABLE account ADD COLUMN first_seen_traffic_at DATETIME"))

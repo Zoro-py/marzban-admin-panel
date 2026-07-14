@@ -1,10 +1,33 @@
+from datetime import datetime
+
 from sqlmodel import Session, select
 
 from app.db import engine
 from app.marzban_client import marzban_client
-from app.models import Account, utcnow
+from app.models import Account, OnlineSnapshot, utcnow
 
 PAGE_SIZE = 200
+
+# An account counts as "currently online" if Marzban reported a connection
+# within this many seconds of sync running. Marzban doesn't expose a live
+# online/offline flag directly — only online_at, a last-seen timestamp — so
+# this threshold is this dashboard's own definition, not Marzban's. 3 minutes
+# comfortably covers normal client check-in intervals without counting
+# someone who disconnected minutes ago as still online.
+ONLINE_THRESHOLD_SECONDS = 180
+
+
+def _parse_online_at(value) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    try:
+        # Marzban returns ISO 8601; strip a trailing Z if present since SQLite/
+        # our own datetimes are stored naive-UTC throughout this codebase.
+        return datetime.fromisoformat(str(value).replace("Z", "")).replace(tzinfo=None)
+    except ValueError:
+        return None
 
 
 async def _fetch_all_marzban_users() -> list[dict]:
@@ -33,6 +56,7 @@ async def run_sync() -> dict:
 
     with Session(engine) as session:
         existing = {a.marzban_username: a for a in session.exec(select(Account)).all()}
+        touched: list[Account] = []
 
         for mu in marzban_users:
             username = mu["username"]
@@ -63,8 +87,25 @@ async def run_sync() -> dict:
             account.data_limit = mu.get("data_limit")
             account.expire = mu.get("expire")
             account.status = mu.get("status")
+            account.online_at = _parse_online_at(mu.get("online_at"))
             account.last_synced_at = now
             session.add(account)
+            touched.append(account)
+
+        # Recorded as a side effect of this sync, not a separate poller — a
+        # dedicated online-count poller would mean extra Marzban logins/
+        # requests on top of what sync already makes, working directly against
+        # the "don't request more than necessary" goal. Trend granularity is
+        # therefore exactly the sync interval. Counted from `touched` (every
+        # account Marzban reported just now), not `existing` — that dict was
+        # built before this loop and never gained the ones just created here.
+        now_naive = now.replace(tzinfo=None)
+        online_count = sum(
+            1
+            for a in touched
+            if a.online_at is not None and (now_naive - a.online_at).total_seconds() <= ONLINE_THRESHOLD_SECONDS
+        )
+        session.add(OnlineSnapshot(recorded_at=now, online_count=online_count, total_accounts=len(touched)))
 
         session.commit()
 

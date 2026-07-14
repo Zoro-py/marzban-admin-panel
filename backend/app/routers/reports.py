@@ -7,10 +7,15 @@ from sqlmodel import Session, select
 
 from app.auth import require_auth
 from app.db import get_session
-from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerType, utcnow
+from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerType, OnlineSnapshot, utcnow
 from app.services import compute_balance, effective_rate, rate_is_configured
 
 router = APIRouter(prefix="/api/reports", tags=["reports"], dependencies=[Depends(require_auth)])
+
+# 1 day / 3 days / 1 week / 1 month, as literal option names rather than a
+# free-form hours param — keeps the frontend's range picker and this endpoint
+# in lockstep instead of the UI inventing values the backend doesn't expect.
+ONLINE_HISTORY_RANGES = {"1d": 1, "3d": 3, "1w": 7, "1m": 30}
 
 
 @router.get("/summary")
@@ -241,4 +246,28 @@ def finance(session: Session = Depends(get_session)):
         "charged_by_day": charged_by_day,
         "recent_transactions": recent_transactions,
         "rate_overview": rate_overview,
+    }
+
+
+@router.get("/online-history")
+def online_history(range: str = "1d", session: Session = Depends(get_session)):
+    """Online-accounts-count trend. Points come from OnlineSnapshot, written as
+    a side effect of the regular sync job — there's no separate poller, so the
+    granularity between points is exactly sync_interval_minutes, not real-time.
+    Marzban has no historical online-count endpoint of its own to source this
+    from instead."""
+    days = ONLINE_HISTORY_RANGES.get(range, 1)
+    since = utcnow().replace(tzinfo=None) - timedelta(days=days)
+    stmt = (
+        select(OnlineSnapshot)
+        .where(OnlineSnapshot.recorded_at >= since)
+        .order_by(OnlineSnapshot.recorded_at.asc())
+    )
+    points = session.exec(stmt).all()
+    return {
+        "range": range if range in ONLINE_HISTORY_RANGES else "1d",
+        "points": [
+            {"recorded_at": p.recorded_at, "online_count": p.online_count, "total_accounts": p.total_accounts}
+            for p in points
+        ],
     }

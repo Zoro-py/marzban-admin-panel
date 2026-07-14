@@ -14,8 +14,18 @@ import time
 from typing import Any, Optional
 
 import httpx
+from jose import jwt as jose_jwt
 
 from app.config import settings
+
+# Refresh this long before the token's real expiry (from its own `exp` claim),
+# not exactly at it — clock skew and a request already in flight near the
+# deadline shouldn't turn into an avoidable 401.
+REFRESH_SAFETY_MARGIN_SECONDS = 5 * 60
+# Only used if the token can't be decoded or carries no exp claim at all —
+# Marzban's tokens are normally long-lived (hours to weeks depending on
+# install), so this is a conservative floor, not the expected path.
+FALLBACK_CACHE_SECONDS = 30 * 60
 
 
 class MarzbanAuthError(RuntimeError):
@@ -51,9 +61,27 @@ class MarzbanClient:
 
         data = resp.json()
         self._token = data["access_token"]
-        # Marzban tokens are long-lived; refresh proactively every 30 min regardless.
-        self._token_expires_at = time.monotonic() + 30 * 60
+        self._token_expires_at = self._compute_cache_deadline(self._token)
         return self._token
+
+    @staticmethod
+    def _compute_cache_deadline(token: str) -> float:
+        """Reads the token's own `exp` claim (wall-clock unix timestamp) and
+        converts it to a `time.monotonic()` deadline, so a login every sync
+        cycle only happens when the token is actually about to expire — not
+        on a fixed guessed interval shorter than its real lifetime, which was
+        forcing a fresh Marzban login (and its notification) on every sync run
+        regardless of how long the token was actually still good for."""
+        try:
+            claims = jose_jwt.get_unverified_claims(token)
+            exp = claims.get("exp")
+            if not exp:
+                return time.monotonic() + FALLBACK_CACHE_SECONDS
+            seconds_until_real_expiry = float(exp) - time.time()
+            useful_seconds = seconds_until_real_expiry - REFRESH_SAFETY_MARGIN_SECONDS
+            return time.monotonic() + max(0.0, useful_seconds)
+        except Exception:
+            return time.monotonic() + FALLBACK_CACHE_SECONDS
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         try:

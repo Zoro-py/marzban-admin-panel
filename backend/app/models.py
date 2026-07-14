@@ -94,6 +94,11 @@ class Account(SQLModel, table=True):
     first_seen_traffic: int = 0
     first_seen_traffic_at: Optional[datetime] = None
 
+    # Marzban's own "last connected" timestamp, mirrored by the sync job —
+    # used to derive whether this account is currently online (see
+    # services.ONLINE_THRESHOLD_SECONDS) for the online-accounts trend chart.
+    online_at: Optional[datetime] = None
+
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -133,3 +138,17 @@ class AccountEvent(SQLModel, table=True):
     detail: str
     date: datetime = Field(default_factory=utcnow)
     source: LedgerSource = LedgerSource.web
+
+
+class OnlineSnapshot(SQLModel, table=True):
+    """One point in the online-accounts-count trend — written as a side effect
+    of the regular sync job (every sync_interval_minutes), not a separate
+    poller, since Marzban has no historical online-count endpoint of its own
+    and a dedicated poller would mean extra Marzban logins/requests on top of
+    the ones sync already makes. Trend granularity is therefore exactly the
+    sync interval — documented, not silently assumed, in the reports router."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    recorded_at: datetime = Field(default_factory=utcnow, index=True)
+    online_count: int
+    total_accounts: int

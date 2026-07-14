@@ -15,6 +15,7 @@ import {
 import { reportsApi } from '@/lib/api'
 import { StatCard } from '@/components/StatCard'
 import { Money } from '@/components/Money'
+import { OnlineTrendChart } from '@/components/dashboard/OnlineTrendChart'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
 import { cn, formatToman } from '@/lib/utils'
 
@@ -72,6 +73,8 @@ export function DashboardPage() {
           <StatCard label="Charged this month" value={fin ? formatToman(fin.charged_this_month) : '…'} />
         </Link>
       </div>
+
+      <OnlineTrendChart />
 
       <div className="rounded-lg border border-border bg-card">
         <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
