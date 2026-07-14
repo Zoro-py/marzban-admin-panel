@@ -124,7 +124,7 @@ def summary(
             continue
         pending = 0.0
         for a in accounts_by_group.get(g.id, []):
-            billable_gb = max(0, a.lifetime_used_traffic - a.usage_baseline) / (1024**3)
+            billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
             pending += billable_gb * effective_rate(session, a, g)
         groups_due_for_settlement.append(
             {

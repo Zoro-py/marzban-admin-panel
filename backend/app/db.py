@@ -112,6 +112,50 @@ def _run_lightweight_migrations() -> None:
                 {"ids": accounts_to_rebaseline},
             )
 
+        # Billing basis changed from lifetime_used_traffic to used_traffic (see
+        # Account.usage_baseline's docstring) — used_traffic matches exactly
+        # what Marzban itself shows as an account's current usage, which is
+        # what an operator looking at both screens side by side expects to
+        # see reflected here; lifetime_used_traffic (a separate, still-shown
+        # "all-time total" figure) survives Marzban resets but doesn't match
+        # what Marzban displays as the primary number. This needs a genuine
+        # one-time migration, not a self-limiting WHERE clause like the fixes
+        # above: an account that's ALREADY been settled has a usage_baseline
+        # value that was captured against the OLD field (lifetime_used_traffic)
+        # and is meaningless compared against the NEW one (used_traffic) — it
+        # must be re-baselined to used_traffic exactly once, and never again
+        # (re-applying "baseline = used_traffic now" on every later startup
+        # would silently erase any real usage accrued between a genuine settle
+        # and the next restart). Never-settled accounts need no action here:
+        # their baseline is already 0 from the fix above, which is correct
+        # under either field (0 means "everything since account creation is
+        # billable" regardless of which counter that's measured against).
+        conn.execute(text("CREATE TABLE IF NOT EXISTS _migration_marker (key VARCHAR PRIMARY KEY, applied_at DATETIME)"))
+        already_rebaselined = conn.execute(
+            text("SELECT 1 FROM _migration_marker WHERE key = 'used_traffic_billing_basis'")
+        ).first()
+        if not already_rebaselined:
+            settled_group_ids = {
+                row[0] for row in conn.execute(text('SELECT id FROM "group" WHERE last_settled_at IS NOT NULL'))
+            }
+            settled_account_ids = [
+                row[0]
+                for row in conn.execute(text("SELECT id, group_id FROM account"))
+                if (row[1] in settled_group_ids if row[1] is not None else row[0] in ever_charged_account_ids)
+            ]
+            if settled_account_ids:
+                conn.execute(
+                    text("UPDATE account SET usage_baseline = used_traffic WHERE id IN :ids").bindparams(
+                        bindparam("ids", expanding=True)
+                    ),
+                    {"ids": settled_account_ids},
+                )
+            now3 = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
+            conn.execute(
+                text("INSERT INTO _migration_marker (key, applied_at) VALUES ('used_traffic_billing_basis', :now)"),
+                {"now": now3},
+            )
+
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)

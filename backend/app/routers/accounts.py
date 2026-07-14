@@ -244,7 +244,7 @@ def get_account_invoice(account_id: int, session: Session = Depends(get_session)
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "Account not found")
-    billable_bytes = max(0, account.lifetime_used_traffic - account.usage_baseline)
+    billable_bytes = max(0, account.used_traffic - account.usage_baseline)
     billable_gb = billable_bytes / (1024**3)
     rate = effective_rate(session, account)
     return {
@@ -264,7 +264,7 @@ def settle_account(account_id: int, session: Session = Depends(get_session)):
     if account.group_id is not None:
         raise HTTPException(400, "This account is billed through its group — use /api/groups/{group_id}/settle")
 
-    billable_bytes = max(0, account.lifetime_used_traffic - account.usage_baseline)
+    billable_bytes = max(0, account.used_traffic - account.usage_baseline)
     billable_gb = billable_bytes / (1024**3)
     rate = effective_rate(session, account)
     amount = round(billable_gb * rate, 2)
@@ -282,7 +282,7 @@ def settle_account(account_id: int, session: Session = Depends(get_session)):
             )
         )
 
-    account.usage_baseline = account.lifetime_used_traffic
+    account.usage_baseline = account.used_traffic
     account.usage_baseline_at = now
     session.add(account)
     session.commit()
@@ -304,7 +304,7 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
 
     charge_amount = body.charge_amount
     if charge_amount is None and account.billing_mode == BillingMode.payg:
-        billable_bytes = max(0, account.lifetime_used_traffic - account.usage_baseline)
+        billable_bytes = max(0, account.used_traffic - account.usage_baseline)
         billable_gb = billable_bytes / (1024**3)
         charge_amount = round(billable_gb * effective_rate(session, account), 2)
 
@@ -339,7 +339,7 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
     account.status = marzban_user.get("status", account.status)
     # Reset always rolls the billing baseline forward too, regardless of billing_mode
     # or whether a charge was posted — keeps it consistent if billing_mode changes later.
-    account.usage_baseline = account.lifetime_used_traffic
+    account.usage_baseline = account.used_traffic
     account.usage_baseline_at = now
     account.last_synced_at = now
     session.add(account)

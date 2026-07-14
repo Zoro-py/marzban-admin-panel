@@ -99,6 +99,7 @@ async def run_sync() -> dict:
             # the operator can see it happened and decide whether to invoice.
             prev_data_limit = account.data_limit
             prev_expire = account.expire
+            prev_used_traffic = account.used_traffic
 
             account.used_traffic = mu.get("used_traffic", 0)
             account.lifetime_used_traffic = mu.get("lifetime_used_traffic", 0)
@@ -138,6 +139,37 @@ async def run_sync() -> dict:
                             source=LedgerSource.sync,
                         )
                     )
+
+                # Billing is based on used_traffic (see models.py's Account.usage_baseline),
+                # which assumes resets only ever happen through this dashboard's own
+                # reset/settle endpoints — those update used_traffic immediately, so
+                # sync never sees a "surprise" drop from its own actions. A drop sync
+                # DOES see therefore means the account was reset directly in Marzban,
+                # outside this dashboard entirely. Whatever had accrued since the last
+                # baseline is now unrecoverable from Marzban's own data (used_traffic
+                # already reflects the new, post-reset cycle) — this can't be backfilled
+                # as a charge (no way to know if the operator already collected for it
+                # by some other means), but it's surfaced here rather than silently
+                # vanishing, and the baseline is snapped forward so future accrual is
+                # tracked correctly from this point on instead of going permanently
+                # negative (clamped to 0 forever, silently under-billing every cycle
+                # after this one too).
+                if prev_used_traffic > account.used_traffic:
+                    unbilled_gb = max(0, prev_used_traffic - account.usage_baseline) / (1024**3)
+                    detail = "Usage was reset outside this dashboard (directly in Marzban)."
+                    if unbilled_gb > 0:
+                        detail += f" ~{unbilled_gb:.2f} GB was accrued but not yet billed at that point — invoice manually if needed."
+                    session.add(
+                        AccountEvent(
+                            account_id=account.id,
+                            action="external_usage_reset",
+                            detail=detail,
+                            date=now,
+                            source=LedgerSource.sync,
+                        )
+                    )
+                    account.usage_baseline = account.used_traffic
+                    account.usage_baseline_at = now
 
         # Recorded as a side effect of this sync, not a separate poller — a
         # dedicated online-count poller would mean extra Marzban logins/

@@ -20,7 +20,7 @@ def _invoice_lines(session: Session, accounts: list[Account], group: Group) -> l
     accounts."""
     lines = []
     for a in accounts:
-        billable_bytes = max(0, a.lifetime_used_traffic - a.usage_baseline)
+        billable_bytes = max(0, a.used_traffic - a.usage_baseline)
         billable_gb = billable_bytes / (1024**3)
         rate = effective_rate(session, a, group)
         lines.append(
@@ -114,9 +114,11 @@ def get_group_accounts(group_id: int, session: Session = Depends(get_session)):
 @router.get("/{group_id}/invoice")
 def get_group_invoice(group_id: int, session: Session = Depends(get_session)):
     """Usage-based invoice preview for the current, not-yet-settled cycle:
-    each member account's usage since the group's last settlement (lifetime_used_traffic
-    minus that account's usage_baseline), times its effective rate. Purely a read —
-    use POST /{group_id}/settle to actually charge it and roll the cycle forward."""
+    each member account's usage since the group's last settlement (used_traffic
+    minus that account's usage_baseline — Marzban's own "current usage" figure,
+    matching what the operator sees in Marzban directly), times its effective
+    rate. Purely a read — use POST /{group_id}/settle to actually charge it and
+    roll the cycle forward."""
     group = session.get(Group, group_id)
     if not group:
         raise HTTPException(404, "Group not found")
@@ -159,7 +161,7 @@ def settle_group(group_id: int, session: Session = Depends(get_session)):
         )
 
     for a in accounts:
-        a.usage_baseline = a.lifetime_used_traffic
+        a.usage_baseline = a.used_traffic
         a.usage_baseline_at = now
         session.add(a)
 

@@ -77,10 +77,15 @@ class Account(SQLModel, table=True):
     status: Optional[str] = None
     last_synced_at: Optional[datetime] = None
 
-    # `lifetime_used_traffic` value as of the last pay-as-you-go settlement (individual
-    # or as part of a group). Billable usage for the current cycle = lifetime - baseline.
-    # Using lifetime_used_traffic (monotonic, survives Marzban data_limit resets) rather
-    # than used_traffic avoids silently re-billing usage across a reset boundary.
+    # `used_traffic` value as of the last pay-as-you-go settlement (individual
+    # or as part of a group). Billable usage for the current cycle = used_traffic
+    # - baseline. Matches Marzban's own "current usage" figure directly — what
+    # the operator sees in Marzban is what gets billed, no separate "lifetime"
+    # concept the operator never asked for. Requires that resets only ever
+    # happen through this dashboard (data_limit_reset_strategy = no_reset in
+    # Marzban); if Marzban itself auto-resets used_traffic between syncs, the
+    # accrued-but-unbilled amount at that moment needs to be caught by
+    # sync_job.py's external-reset detection rather than this field alone.
     usage_baseline: int = 0
     usage_baseline_at: Optional[datetime] = None
 
