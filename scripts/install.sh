@@ -380,21 +380,26 @@ EOF
 # *before* a cert exists — certbot's HTTP-01 challenge needs port 80 to
 # already be serving something real) otherwise.
 #
+# cert_dir is passed in rather than derived from `domain` — request_certs
+# calls `certbot -d PANEL_DOMAIN -d API_DOMAIN` together, so certbot issues
+# ONE certificate covering both as SANs and stores it under only the FIRST
+# domain's directory; there is no separate .../live/API_DOMAIN/. Deriving
+# cert_dir from each call's own domain (an earlier version of this function
+# did) meant the check always failed for the API domain specifically, so its
+# vhost silently got no 443 block at all — nginx then fell back to treating
+# the *panel* vhost's 443 block as the implicit default for the port, and
+# every HTTPS request to the API domain got proxied to the frontend
+# container instead of the backend. Confirmed live: an OPTIONS preflight to
+# the API domain came back from the frontend's own nginx (port 8011), not
+# the backend, which is exactly what that fallback produces.
+#
 # This function is what write_nginx_configs re-runs on every single install.sh
 # invocation, including a routine redeploy where a cert already exists from
 # a previous run — so it must independently reconstruct the exact same SSL
 # config certbot would have written, every time, rather than only writing the
 # plain HTTP block and assuming SSL config, once added, stays untouched.
-# It does NOT: an earlier version of this script always overwrote the config
-# with the plain HTTP-only template unconditionally, which silently deleted
-# the listen-443 block certbot had added on the *first* run, on every
-# *subsequent* run — since the already-issued certificate file on disk made
-# the separate certbot step skip itself (correctly — the cert didn't need
-# reissuing), nothing ever re-added the now-missing 443 block. Confirmed this
-# exact failure against a real nginx before writing the fix below.
 _write_site_config() {
-  local domain="$1" upstream_port="$2" conf_name="$3"
-  local cert_dir="/etc/letsencrypt/live/$domain"
+  local domain="$1" upstream_port="$2" conf_name="$3" cert_dir="$4"
 
   if [ -f "$cert_dir/fullchain.pem" ]; then
     cat > "/etc/nginx/sites-available/${conf_name}.conf" <<EOF
@@ -442,8 +447,12 @@ EOF
 write_nginx_configs() {
   info "Writing nginx server blocks"
 
-  _write_site_config "$PANEL_DOMAIN" 8011 panel
-  _write_site_config "$API_DOMAIN" 8010 api
+  # Both vhosts share one certificate (see request_certs — issued for both
+  # domains together), stored under the first (panel) domain's directory.
+  local cert_dir="/etc/letsencrypt/live/$PANEL_DOMAIN"
+
+  _write_site_config "$PANEL_DOMAIN" 8011 panel "$cert_dir"
+  _write_site_config "$API_DOMAIN" 8010 api "$cert_dir"
 
   ln -sf /etc/nginx/sites-available/panel.conf /etc/nginx/sites-enabled/panel.conf
   ln -sf /etc/nginx/sites-available/api.conf /etc/nginx/sites-enabled/api.conf
