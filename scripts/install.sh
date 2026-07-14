@@ -227,7 +227,19 @@ collect_config() {
 
   verify_marzban_login
 
-  BOT_TOKEN=$(ask_secret_required "Telegram bot token (from @BotFather)")
+  # Format-validated, not just non-blank: pasting a secret into a masked
+  # `read -s` prompt over SSH can get mangled by the terminal (bracketed-paste
+  # artifacts have been observed to duplicate the token into itself) — this
+  # writes silently-broken garbage into .env with no error until the bot
+  # container crash-loops on "InvalidToken" much later. A real Telegram bot
+  # token is always digits, a colon, then a 35-char secret — reject anything
+  # else immediately, right where the operator can just retype it.
+  while true; do
+    BOT_TOKEN=$(ask_secret_required "Telegram bot token (from @BotFather)")
+    [[ "$BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]{30,40}$ ]] && break
+    echo "That doesn't look like a Telegram bot token (expected digits:35-characters, e.g. 123456789:AAExxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx)." >&2
+    echo "If you pasted it, try typing it or pasting via your terminal's paste (not middle-click), then try again." >&2
+  done
 
   while true; do
     ADMIN_CHAT_ID=$(ask_required "Your Telegram numeric chat id (from @userinfobot)")
