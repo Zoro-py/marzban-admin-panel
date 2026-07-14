@@ -90,7 +90,12 @@ async def create_account(body: AccountCreateRequest, session: Session = Depends(
         lifetime_used_traffic=marzban_user.get("lifetime_used_traffic", 0),
         first_seen_traffic=marzban_user.get("lifetime_used_traffic", 0),
         first_seen_traffic_at=now,
-        usage_baseline=marzban_user.get("lifetime_used_traffic", 0),
+        # This account was just created via marzban_client.create_user() above,
+        # so its lifetime usage is always genuinely 0 here — usage_baseline is
+        # deliberately left at the model default (0) rather than mirrored from
+        # lifetime, matching sync_job.py's policy (see its comment): billing
+        # should never start from "whatever Marzban already reports," only
+        # from real observed usage.
         usage_baseline_at=now,
         data_limit=marzban_user.get("data_limit"),
         expire=marzban_user.get("expire"),

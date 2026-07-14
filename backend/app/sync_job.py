@@ -4,7 +4,7 @@ from sqlmodel import Session, select
 
 from app.db import engine
 from app.marzban_client import marzban_client
-from app.models import Account, OnlineSnapshot, utcnow
+from app.models import Account, AccountEvent, LedgerSource, OnlineSnapshot, utcnow
 
 PAGE_SIZE = 200
 
@@ -63,24 +63,42 @@ async def run_sync() -> dict:
             account = existing.get(username)
             if account is None:
                 account = Account(marzban_username=username)
-                # Baseline BOTH the monthly-average-usage window AND the billing
-                # cycle at whatever Marzban already reports as this user's
-                # lifetime total. Without this, a reseller onboarding an existing
-                # Marzban install with months of real pre-existing history would
-                # have that entire history counted as "billable this cycle" on
-                # the very first settle — usage_baseline defaults to 0, so
-                # billable = lifetime_used_traffic - 0 = the account's ENTIRE
-                # lifetime usage, not just usage since this dashboard started
-                # tracking it. Both baselines start from the same point: the
-                # moment this account first appeared here.
+                # first_seen_traffic baselines the MONTHLY-AVERAGE-USAGE
+                # ESTIMATE (a display figure) at this account's lifetime total
+                # right now — averaging in months of pre-existing history
+                # would produce a nonsensical inflated rate, since that usage
+                # didn't happen "recently."
                 lifetime = mu.get("lifetime_used_traffic", 0)
                 account.first_seen_traffic = lifetime
                 account.first_seen_traffic_at = now
-                account.usage_baseline = lifetime
-                account.usage_baseline_at = now
+
+                # usage_baseline is a DIFFERENT thing: what BILLING is measured
+                # from. Deliberately left at the model default (0), NOT set to
+                # `lifetime` — a reseller onboarding an existing Marzban
+                # install has real, unpaid usage on day one, and the whole
+                # point of this dashboard is to make that visible as debt, not
+                # hide it because it predates the first sync that happened to
+                # notice the account. (An earlier version of this code set it
+                # to `lifetime` here on the "don't double-bill" theory that
+                # pre-existing usage might already have been paid for outside
+                # the system — in practice this made real debt disappear by
+                # default, the opposite of what a billing system should do.)
                 created += 1
             else:
                 updated += 1
+
+            # Captured before overwriting, for the external-change check below.
+            # A change made THROUGH this dashboard's own Adjust endpoint is
+            # never visible here: that endpoint already writes the new value
+            # immediately, so by the time sync runs next, old == new and
+            # nothing fires. Anything sync itself detects as a diff therefore
+            # happened somewhere sync doesn't control — i.e. directly in
+            # Marzban — which is exactly the "resilience to out-of-band
+            # changes" gap: this doesn't bill for it (there's no agreed price
+            # to infer), but it makes it visible in the account's History so
+            # the operator can see it happened and decide whether to invoice.
+            prev_data_limit = account.data_limit
+            prev_expire = account.expire
 
             account.used_traffic = mu.get("used_traffic", 0)
             account.lifetime_used_traffic = mu.get("lifetime_used_traffic", 0)
@@ -91,6 +109,35 @@ async def run_sync() -> dict:
             account.last_synced_at = now
             session.add(account)
             touched.append(account)
+
+            if account.id is not None:
+                # Only compare when BOTH values are real numbers — None means
+                # "unlimited"/"never expires" in Marzban's own semantics, not
+                # zero, so a None-involved transition is a plan CHANGE (e.g.
+                # limited -> unlimited), not a comparable "increase," and
+                # treating None as 0 would produce a nonsense multi-year delta.
+                if prev_data_limit is not None and account.data_limit is not None and prev_data_limit < account.data_limit:
+                    added_gb = (account.data_limit - prev_data_limit) / (1024**3)
+                    session.add(
+                        AccountEvent(
+                            account_id=account.id,
+                            action="external_data_limit_increase",
+                            detail=f"+{added_gb:.2f} GB added outside this dashboard (in Marzban directly)",
+                            date=now,
+                            source=LedgerSource.sync,
+                        )
+                    )
+                if prev_expire is not None and account.expire is not None and prev_expire < account.expire:
+                    added_days = (account.expire - prev_expire) / 86400
+                    session.add(
+                        AccountEvent(
+                            account_id=account.id,
+                            action="external_expire_extend",
+                            detail=f"+{added_days:.1f} days added outside this dashboard (in Marzban directly)",
+                            date=now,
+                            source=LedgerSource.sync,
+                        )
+                    )
 
         # Recorded as a side effect of this sync, not a separate poller — a
         # dedicated online-count poller would mean extra Marzban logins/
