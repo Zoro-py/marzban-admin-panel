@@ -8,6 +8,7 @@ import { CustomerDetailPage } from '@/pages/CustomerDetailPage'
 import { GroupsPage } from '@/pages/GroupsPage'
 import { GroupDetailPage } from '@/pages/GroupDetailPage'
 import { AccountsPage } from '@/pages/AccountsPage'
+import { FinancePage } from '@/pages/FinancePage'
 
 function App() {
   return (
@@ -21,6 +22,7 @@ function App() {
           <Route path="/groups" element={<GroupsPage />} />
           <Route path="/groups/:id" element={<GroupDetailPage />} />
           <Route path="/accounts" element={<AccountsPage />} />
+          <Route path="/finance" element={<FinancePage />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

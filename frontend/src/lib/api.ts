@@ -1,9 +1,12 @@
 import axios, { AxiosError } from 'axios'
 import type {
   Account,
+  AccountInvoice,
   Balance,
+  BillingMode,
   Customer,
   CustomerWithBalance,
+  FinanceSummary,
   Group,
   GroupInvoice,
   GroupWithBalance,
@@ -96,11 +99,15 @@ export const accountsApi = {
   }) => (await api.post<Account>('/api/accounts', body)).data,
   updateRelationship: async (id: number, body: { customer_id?: number | null; group_id?: number | null; role?: 'primary' | 'sub' }) =>
     (await api.patch<Account>(`/api/accounts/${id}/relationship`, body)).data,
+  updateBilling: async (id: number, body: { rate_per_gb?: number | null; billing_mode?: BillingMode; clear_rate?: boolean }) =>
+    (await api.patch<Account>(`/api/accounts/${id}/billing`, body)).data,
   adjust: async (
     id: number,
     body: { extend_days?: number; extend_gb?: number; set_expire?: number; set_data_limit_gb?: number; note?: string },
   ) => (await api.post<Account>(`/api/accounts/${id}/adjust`, body)).data,
-  invoice: async (id: number) => (await api.get(`/api/accounts/${id}/invoice`)).data,
+  reset: async (id: number, body: { charge_amount?: number; note?: string }) =>
+    (await api.post<Account>(`/api/accounts/${id}/reset`, body)).data,
+  invoice: async (id: number) => (await api.get<AccountInvoice>(`/api/accounts/${id}/invoice`)).data,
   settle: async (id: number) => (await api.post(`/api/accounts/${id}/settle`)).data,
 }
 
@@ -123,6 +130,7 @@ export const ledgerApi = {
 // ---- reports / sync ----
 export const reportsApi = {
   summary: async () => (await api.get<ReportSummary>('/api/reports/summary')).data,
+  finance: async () => (await api.get<FinanceSummary>('/api/reports/finance')).data,
 }
 
 export const syncApi = {

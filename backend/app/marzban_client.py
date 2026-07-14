@@ -100,6 +100,15 @@ class MarzbanClient:
             raise ValueError(f"Marzban modify_user failed ({resp.status_code}): {resp.text}")
         return resp.json()
 
+    async def reset_user(self, username: str) -> dict:
+        """Resets used_traffic to 0 for a new cycle. Marzban does not reset
+        lifetime_used_traffic here — that field is specifically the monotonic
+        counter our own usage_baseline billing math depends on."""
+        resp = await self._request("POST", f"/api/user/{username}/reset")
+        if resp.status_code >= 400:
+            raise ValueError(f"Marzban reset_user failed ({resp.status_code}): {resp.text}")
+        return resp.json()
+
     async def verify_admin_login(self, username: str, password: str) -> bool:
         """One-off credential check against Marzban's own /api/admin/token, used to
         gate this dashboard's login — deliberately independent of the cached

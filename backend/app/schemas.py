@@ -3,7 +3,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel
 
-from app.models import AccountRole, LedgerSource, LedgerType
+from app.models import AccountRole, BillingMode, LedgerSource, LedgerType
 
 # ---- Customer ----------------------------------------------------------
 
@@ -92,6 +92,12 @@ class AccountRelationshipUpdate(BaseModel):
     role: Optional[AccountRole] = None
 
 
+class AccountBillingUpdate(BaseModel):
+    rate_per_gb: Optional[float] = None
+    billing_mode: Optional[BillingMode] = None
+    clear_rate: bool = False  # explicit clear, since rate_per_gb=None is ambiguous with "unset"
+
+
 class AccountAdjustRequest(BaseModel):
     """One flexible endpoint for the 'کم/زیاد کردن زمان' live action.
     Deltas are relative (use a negative number to reduce); `set_*` fields win if provided."""
@@ -103,6 +109,16 @@ class AccountAdjustRequest(BaseModel):
     note: Optional[str] = None
 
 
+class AccountResetRequest(BaseModel):
+    """Resets usage for a new cycle. `charge_amount`, if given, is posted as a
+    charge against the account's customer (the dashboard suggests this amount
+    for payg accounts — GET /api/accounts/{id}/invoice — but never posts it
+    without the operator confirming/editing it first)."""
+
+    charge_amount: Optional[float] = None
+    note: Optional[str] = None
+
+
 class AccountRead(BaseModel):
     id: int
     marzban_username: str
@@ -110,6 +126,7 @@ class AccountRead(BaseModel):
     group_id: Optional[int]
     role: AccountRole
     rate_per_gb: Optional[float]
+    billing_mode: BillingMode
     used_traffic: int
     lifetime_used_traffic: int
     data_limit: Optional[int]

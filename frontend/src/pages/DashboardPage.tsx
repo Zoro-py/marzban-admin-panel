@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Clock, Users, Network, UserX, Wallet } from 'lucide-react'
+import { AlertTriangle, Clock, Users, Network, UserX, Wallet, TrendingUp } from 'lucide-react'
 import { reportsApi } from '@/lib/api'
 import { StatCard } from '@/components/StatCard'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -9,6 +9,7 @@ import { formatToman } from '@/lib/utils'
 
 export function DashboardPage() {
   const { data, isLoading } = useQuery({ queryKey: ['reports', 'summary'], queryFn: reportsApi.summary })
+  const financeQuery = useQuery({ queryKey: ['reports', 'finance'], queryFn: reportsApi.finance })
 
   if (isLoading || !data) {
     return <p className="text-sm text-muted-foreground">Loading…</p>
@@ -21,10 +22,25 @@ export function DashboardPage() {
         <p className="text-sm text-muted-foreground">Live overview across every Marzban account you resell.</p>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
         <StatCard label="Customers" value={data.total_customers} icon={Users} />
         <StatCard label="Accounts" value={data.total_accounts} icon={Network} />
-        <StatCard label="Overdue customers" value={data.overdue_customers.length} icon={Wallet} tone={data.overdue_customers.length ? 'destructive' : 'success'} />
+        <Link to="/finance" className="contents">
+          <StatCard
+            label="Outstanding"
+            value={financeQuery.data ? formatToman(financeQuery.data.total_outstanding) : '…'}
+            icon={Wallet}
+            tone={financeQuery.data && financeQuery.data.total_outstanding > 0 ? 'destructive' : 'success'}
+          />
+        </Link>
+        <Link to="/finance" className="contents">
+          <StatCard
+            label="Revenue this month"
+            value={financeQuery.data ? formatToman(financeQuery.data.revenue_this_month) : '…'}
+            icon={TrendingUp}
+            tone="success"
+          />
+        </Link>
         <StatCard label="Near quota" value={data.near_quota_accounts.length} icon={AlertTriangle} tone={data.near_quota_accounts.length ? 'warning' : 'success'} />
         <StatCard label="Expiring soon" value={data.near_expiry_accounts.length} icon={Clock} tone={data.near_expiry_accounts.length ? 'warning' : 'success'} />
       </div>

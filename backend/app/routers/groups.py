@@ -67,17 +67,21 @@ def get_group_accounts(group_id: int, session: Session = Depends(get_session)):
     return session.exec(select(Account).where(Account.group_id == group_id)).all()
 
 
-def _invoice_lines(accounts: list[Account], rate: float) -> list[dict]:
+def _invoice_lines(accounts: list[Account], group_rate: float) -> list[dict]:
+    """Each account's own rate_per_gb wins over the group's rate when set —
+    this is how a per-account discount (or markup) within a group works."""
     lines = []
     for a in accounts:
         billable_bytes = max(0, a.lifetime_used_traffic - a.usage_baseline)
         billable_gb = billable_bytes / (1024**3)
+        effective_rate = a.rate_per_gb if a.rate_per_gb is not None else group_rate
         lines.append(
             {
                 "account_id": a.id,
                 "marzban_username": a.marzban_username,
                 "billable_gb": round(billable_gb, 3),
-                "amount": round(billable_gb * rate, 2),
+                "rate_per_gb": effective_rate,
+                "amount": round(billable_gb * effective_rate, 2),
             }
         )
     return lines

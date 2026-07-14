@@ -1,6 +1,7 @@
 export type AccountRole = 'primary' | 'sub'
 export type LedgerType = 'charge' | 'credit'
 export type LedgerSource = 'web' | 'bot' | 'sync'
+export type BillingMode = 'prepay' | 'payg'
 
 export interface Customer {
   id: number
@@ -38,6 +39,7 @@ export interface Account {
   group_id: number | null
   role: AccountRole
   rate_per_gb: number | null
+  billing_mode: BillingMode
   used_traffic: number
   lifetime_used_traffic: number
   data_limit: number | null
@@ -45,6 +47,14 @@ export interface Account {
   status: string | null
   last_synced_at: string | null
   created_at: string
+}
+
+export interface AccountInvoice {
+  account_id: number
+  since: string | null
+  billable_gb: number
+  rate_per_gb: number
+  amount: number
 }
 
 export interface LedgerEntry {
@@ -71,6 +81,7 @@ export interface InvoiceLine {
   account_id: number
   marzban_username: string
   billable_gb: number
+  rate_per_gb: number
   amount: number
 }
 
@@ -89,4 +100,34 @@ export interface ReportSummary {
   unassigned_accounts: { account_id: number; marzban_username: string }[]
   total_accounts: number
   total_customers: number
+}
+
+export interface FinanceTransaction {
+  id: number
+  type: LedgerType
+  amount: number
+  date: string
+  note: string | null
+  customer_name: string | null
+  group_name: string | null
+}
+
+export interface RateOverviewRow {
+  account_id: number
+  marzban_username: string
+  customer_name: string | null
+  group_name: string | null
+  rate_per_gb: number | null
+  billing_mode: BillingMode
+  effective_rate_source: 'account' | 'group' | null
+}
+
+export interface FinanceSummary {
+  total_outstanding: number
+  total_credit_balance: number
+  revenue_this_month: number
+  charged_this_month: number
+  revenue_by_day: { date: string; amount: number }[]
+  recent_transactions: FinanceTransaction[]
+  rate_overview: RateOverviewRow[]
 }

@@ -1,9 +1,20 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Self-hosted (no external CDN call, no CSP/privacy concerns) — 'Inter' was
+   referenced in --font-sans before but never actually loaded, so every page
+   was silently rendering in the system-ui fallback the whole time. */
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+@import "@fontsource/inter/400-italic.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
 @theme {
   --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace;
 
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
@@ -109,13 +120,38 @@
   border-color: hsl(var(--border));
 }
 
+html {
+  /* One notch above the Tailwind default (16px) — a data-dense admin panel
+     read at a normal desktop viewing distance benefits from this over the
+     14px browser-default-ish sizing a lot of dashboards default to. */
+  font-size: 16px;
+}
+
 body {
   margin: 0;
   background: hsl(var(--background));
   color: hsl(var(--foreground));
   font-family: var(--font-sans);
+  font-size: 0.9375rem; /* 15px */
+  line-height: 1.55;
+  letter-spacing: -0.006em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'cv11', 'ss01', 'tnum' 1;
+}
+
+h1, h2, h3, h4 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: hsl(var(--foreground));
+}
+
+/* Numbers (money, usage, dates) read better tabular and slightly heavier —
+   applied broadly via .tabular-nums utility class already used throughout;
+   this just makes sure the feature is actually enabled at the font level too. */
+.tabular-nums {
+  font-feature-settings: 'tnum' 1, 'cv11' 1;
 }
 
 #root {

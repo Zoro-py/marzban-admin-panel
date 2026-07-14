@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { LayoutDashboard, Users, Building2, Network, LogOut, RefreshCw } from 'lucide-react'
+import { LayoutDashboard, Users, Building2, Network, LogOut, RefreshCw, Wallet } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useAuth } from '@/lib/auth'
@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { to: '/customers', label: 'Customers', icon: Users },
   { to: '/groups', label: 'Groups', icon: Building2 },
   { to: '/accounts', label: 'Accounts', icon: Network },
+  { to: '/finance', label: 'Finance', icon: Wallet },
 ]
 
 export function AppShell() {
@@ -60,7 +61,7 @@ export function AppShell() {
         </div>
       </aside>
       <main className="flex-1 overflow-auto bg-background">
-        <div className="mx-auto max-w-6xl p-6">
+        <div className="mx-auto max-w-7xl p-6">
           <Outlet />
         </div>
       </main>

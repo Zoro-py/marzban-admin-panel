@@ -9,7 +9,14 @@ from app.config import settings
 from app.db import get_session
 from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_client
 from app.models import Account, AccountEvent, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
-from app.schemas import AccountAdjustRequest, AccountCreateRequest, AccountRead, AccountRelationshipUpdate
+from app.schemas import (
+    AccountAdjustRequest,
+    AccountBillingUpdate,
+    AccountCreateRequest,
+    AccountRead,
+    AccountRelationshipUpdate,
+    AccountResetRequest,
+)
 from app.services import bytes_from_gb
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(require_auth)])
@@ -122,6 +129,33 @@ def update_relationship(account_id: int, body: AccountRelationshipUpdate, sessio
     return account
 
 
+@router.patch("/{account_id}/billing", response_model=AccountRead)
+def update_billing(account_id: int, body: AccountBillingUpdate, session: Session = Depends(get_session)):
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(404, "Account not found")
+
+    if body.clear_rate:
+        account.rate_per_gb = None
+    elif body.rate_per_gb is not None:
+        account.rate_per_gb = body.rate_per_gb
+
+    if body.billing_mode is not None:
+        account.billing_mode = body.billing_mode
+
+    session.add(account)
+    session.add(
+        AccountEvent(
+            account_id=account.id,
+            action="billing_change",
+            detail=f"rate_per_gb={account.rate_per_gb}, billing_mode={account.billing_mode}",
+        )
+    )
+    session.commit()
+    session.refresh(account)
+    return account
+
+
 @router.post("/{account_id}/adjust", response_model=AccountRead)
 async def adjust_account(account_id: int, body: AccountAdjustRequest, session: Session = Depends(get_session)):
     account = session.get(Account, account_id)
@@ -225,3 +259,60 @@ def settle_account(account_id: int, session: Session = Depends(get_session)):
     session.commit()
 
     return {"account_id": account_id, "charged_amount": amount, "settled_at": now}
+
+
+@router.post("/{account_id}/reset", response_model=AccountRead)
+async def reset_account(account_id: int, body: AccountResetRequest, session: Session = Depends(get_session)):
+    """Starts a new usage cycle in Marzban. `charge_amount` (from the dashboard's
+    suggested-then-confirmed flow, GET /invoice for payg accounts) is posted as a
+    charge here — never computed and posted automatically without that confirm step."""
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(404, "Account not found")
+
+    if body.charge_amount and body.charge_amount > 0 and not account.customer_id and not account.group_id:
+        raise HTTPException(400, "Can't charge an unassigned account — assign it to a customer first")
+
+    try:
+        marzban_user = await marzban_client.reset_user(account.marzban_username)
+    except ValueError as exc:
+        raise HTTPException(400, f"Marzban rejected this reset: {exc}")
+    except (MarzbanUnavailable, MarzbanAuthError) as exc:
+        raise HTTPException(502, str(exc))
+
+    now = utcnow()
+    if body.charge_amount and body.charge_amount > 0:
+        session.add(
+            LedgerEntry(
+                type=LedgerType.charge,
+                amount=round(body.charge_amount, 2),
+                customer_id=account.customer_id,
+                group_id=account.group_id,
+                account_id=account.id,
+                note=body.note or f"Usage reset for cycle ending {now.date().isoformat()}",
+                source=LedgerSource.web,
+            )
+        )
+
+    account.used_traffic = marzban_user.get("used_traffic", 0)
+    account.lifetime_used_traffic = marzban_user.get("lifetime_used_traffic", account.lifetime_used_traffic)
+    account.expire = marzban_user.get("expire", account.expire)
+    account.data_limit = marzban_user.get("data_limit", account.data_limit)
+    account.status = marzban_user.get("status", account.status)
+    # Reset always rolls the billing baseline forward too, regardless of billing_mode
+    # or whether a charge was posted — keeps it consistent if billing_mode changes later.
+    account.usage_baseline = account.lifetime_used_traffic
+    account.usage_baseline_at = now
+    account.last_synced_at = now
+    session.add(account)
+
+    session.add(
+        AccountEvent(
+            account_id=account.id,
+            action="reset",
+            detail=f"charge_amount={body.charge_amount}" + (f" | note={body.note}" if body.note else ""),
+        )
+    )
+    session.commit()
+    session.refresh(account)
+    return account

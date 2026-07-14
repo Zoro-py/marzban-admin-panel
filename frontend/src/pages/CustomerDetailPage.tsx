@@ -9,7 +9,10 @@ import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { AdjustAccountDialog } from '@/components/accounts/AdjustAccountDialog'
 import { RelationshipDialog } from '@/components/accounts/RelationshipDialog'
-import { formatBytes, formatDate, formatToman } from '@/lib/utils'
+import { ResetUsageDialog } from '@/components/accounts/ResetUsageDialog'
+import { BillingDialog } from '@/components/accounts/BillingDialog'
+import { UsageBar } from '@/components/UsageBar'
+import { formatDate, formatToman } from '@/lib/utils'
 
 export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -59,8 +62,7 @@ export function CustomerDetailPage() {
               <TableRow>
                 <TableHead>Username</TableHead>
                 <TableHead>Role</TableHead>
-                <TableHead>Used</TableHead>
-                <TableHead>Limit</TableHead>
+                <TableHead>Usage</TableHead>
                 <TableHead>Expires</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
@@ -69,7 +71,7 @@ export function CustomerDetailPage() {
             <TableBody>
               {accountsQuery.data?.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground">
+                  <TableCell colSpan={6} className="text-center text-muted-foreground">
                     No accounts yet.
                   </TableCell>
                 </TableRow>
@@ -80,14 +82,17 @@ export function CustomerDetailPage() {
                   <TableCell>
                     <Badge variant="outline">{a.role}</Badge>
                   </TableCell>
-                  <TableCell>{formatBytes(a.used_traffic)}</TableCell>
-                  <TableCell>{formatBytes(a.data_limit)}</TableCell>
+                  <TableCell>
+                    <UsageBar used={a.used_traffic} limit={a.data_limit} />
+                  </TableCell>
                   <TableCell>{formatDate(a.expire)}</TableCell>
                   <TableCell>
                     <Badge variant={a.status === 'active' ? 'success' : 'outline'}>{a.status ?? 'unknown'}</Badge>
                   </TableCell>
-                  <TableCell className="flex justify-end gap-2">
+                  <TableCell className="flex flex-wrap justify-end gap-2">
                     <AdjustAccountDialog account={a} />
+                    <ResetUsageDialog account={a} />
+                    <BillingDialog account={a} />
                     <RelationshipDialog account={a} />
                   </TableCell>
                 </TableRow>

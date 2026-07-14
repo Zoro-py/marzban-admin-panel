@@ -14,6 +14,11 @@ class AccountRole(str, Enum):
     sub = "sub"
 
 
+class BillingMode(str, Enum):
+    prepay = "prepay"  # charged manually up front when a package is sold (default)
+    payg = "payg"  # pay-as-you-go — a reset/settle bills actual usage since baseline
+
+
 class LedgerType(str, Enum):
     charge = "charge"   # customer/group owes us money (بدهی)
     credit = "credit"   # payment received / credit balance (طلب)
@@ -55,7 +60,8 @@ class Account(SQLModel, table=True):
     customer_id: Optional[int] = Field(default=None, foreign_key="customer.id")
     group_id: Optional[int] = Field(default=None, foreign_key="group.id")
     role: AccountRole = AccountRole.primary
-    rate_per_gb: Optional[float] = None  # per-account rate when not part of a group
+    rate_per_gb: Optional[float] = None  # per-account rate; overrides the group's rate when both are set
+    billing_mode: BillingMode = BillingMode.prepay
 
     # Snapshot of Marzban state, refreshed by the sync job (source of truth is Marzban itself)
     used_traffic: int = 0

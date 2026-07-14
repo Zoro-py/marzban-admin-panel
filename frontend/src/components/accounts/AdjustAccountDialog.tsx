@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { accountsApi, apiErrorMessage } from '@/lib/api'
+import { accountsApi, ledgerApi, apiErrorMessage } from '@/lib/api'
 import type { Account } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -15,38 +15,67 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { formatBytes, formatDate } from '@/lib/utils'
+import { formatBytes, formatDate, formatToman } from '@/lib/utils'
 import { CalendarClock } from 'lucide-react'
 
 const DAY_PRESETS = [-30, -7, 7, 30]
 
 interface AdjustAccountDialogProps {
   account: Account
+  groupRatePerGb?: number | null
   trigger?: React.ReactNode
 }
 
-export function AdjustAccountDialog({ account, trigger }: AdjustAccountDialogProps) {
+export function AdjustAccountDialog({ account, groupRatePerGb, trigger }: AdjustAccountDialogProps) {
   const [open, setOpen] = React.useState(false)
   const [extendDays, setExtendDays] = React.useState('')
   const [extendGb, setExtendGb] = React.useState('')
   const [note, setNote] = React.useState('')
+  const [recordCharge, setRecordCharge] = React.useState(true)
+  const [chargeAmount, setChargeAmount] = React.useState('')
+  const [chargeTouched, setChargeTouched] = React.useState(false)
   const queryClient = useQueryClient()
 
+  const effectiveRate = account.rate_per_gb ?? groupRatePerGb ?? null
+  const canBill = !!(account.customer_id || account.group_id)
+  const suggestedCharge = effectiveRate && extendGb && Number(extendGb) > 0 ? Number(extendGb) * effectiveRate : 0
+
+  React.useEffect(() => {
+    if (!chargeTouched) setChargeAmount(suggestedCharge > 0 ? String(Math.round(suggestedCharge)) : '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestedCharge])
+
   const mutation = useMutation({
-    mutationFn: () =>
-      accountsApi.adjust(account.id, {
+    mutationFn: async () => {
+      const updated = await accountsApi.adjust(account.id, {
         extend_days: extendDays ? Number(extendDays) : undefined,
         extend_gb: extendGb ? Number(extendGb) : undefined,
         note: note || undefined,
-      }),
+      })
+      if (recordCharge && canBill && chargeAmount && Number(chargeAmount) > 0) {
+        await ledgerApi.create({
+          type: 'charge',
+          amount: Number(chargeAmount),
+          customer_id: account.customer_id ?? undefined,
+          group_id: account.group_id ?? undefined,
+          account_id: account.id,
+          note: note || `+${extendGb}GB for ${account.marzban_username}`,
+        })
+      }
+      return updated
+    },
     onSuccess: () => {
       toast.success(`Updated ${account.marzban_username}`)
       queryClient.invalidateQueries({ queryKey: ['accounts'] })
       queryClient.invalidateQueries({ queryKey: ['reports'] })
+      queryClient.invalidateQueries({ queryKey: ['ledger'] })
       setOpen(false)
       setExtendDays('')
       setExtendGb('')
       setNote('')
+      setChargeAmount('')
+      setChargeTouched(false)
+      setRecordCharge(true)
     },
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
@@ -88,6 +117,47 @@ export function AdjustAccountDialog({ account, trigger }: AdjustAccountDialogPro
             <Label htmlFor="extend-gb">GB to add (negative to reduce)</Label>
             <Input id="extend-gb" type="number" value={extendGb} onChange={(e) => setExtendGb(e.target.value)} placeholder="10" />
           </div>
+
+          {Number(extendGb) > 0 && (
+            <div className="rounded-lg border border-border bg-muted/40 p-3">
+              <label className="flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={recordCharge}
+                  disabled={!canBill}
+                  onChange={(e) => setRecordCharge(e.target.checked)}
+                />
+                <span className="flex-1">
+                  {canBill ? (
+                    <>
+                      Also record a debt for this data
+                      {effectiveRate ? (
+                        <span className="text-muted-foreground"> (suggested: {extendGb} GB × {formatToman(effectiveRate)}/GB)</span>
+                      ) : (
+                        <span className="text-muted-foreground"> — no rate set, enter an amount manually</span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-muted-foreground">Assign this account to a customer to bill this data</span>
+                  )}
+                </span>
+              </label>
+              {recordCharge && canBill && (
+                <Input
+                  type="number"
+                  min={0}
+                  className="mt-2"
+                  value={chargeAmount}
+                  onChange={(e) => {
+                    setChargeTouched(true)
+                    setChargeAmount(e.target.value)
+                  }}
+                  placeholder="Amount in Toman"
+                />
+              )}
+            </div>
+          )}
 
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="adjust-note">Note (optional, kept in this account's history)</Label>

@@ -9,8 +9,11 @@ import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { AdjustAccountDialog } from '@/components/accounts/AdjustAccountDialog'
 import { RelationshipDialog } from '@/components/accounts/RelationshipDialog'
+import { ResetUsageDialog } from '@/components/accounts/ResetUsageDialog'
+import { BillingDialog } from '@/components/accounts/BillingDialog'
 import { SettleGroupDialog } from '@/components/groups/SettleGroupDialog'
-import { formatBytes, formatDate, formatToman } from '@/lib/utils'
+import { UsageBar } from '@/components/UsageBar'
+import { formatDate, formatToman } from '@/lib/utils'
 
 export function GroupDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -63,8 +66,7 @@ export function GroupDetailPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Username</TableHead>
-                <TableHead>Used</TableHead>
-                <TableHead>Limit</TableHead>
+                <TableHead>Usage</TableHead>
                 <TableHead>Expires</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
@@ -73,7 +75,7 @@ export function GroupDetailPage() {
             <TableBody>
               {accountsQuery.data?.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center text-muted-foreground">
+                  <TableCell colSpan={5} className="text-center text-muted-foreground">
                     No accounts in this group yet.
                   </TableCell>
                 </TableRow>
@@ -81,14 +83,17 @@ export function GroupDetailPage() {
               {accountsQuery.data?.map((a) => (
                 <TableRow key={a.id}>
                   <TableCell className="font-mono">{a.marzban_username}</TableCell>
-                  <TableCell>{formatBytes(a.used_traffic)}</TableCell>
-                  <TableCell>{formatBytes(a.data_limit)}</TableCell>
+                  <TableCell>
+                    <UsageBar used={a.used_traffic} limit={a.data_limit} />
+                  </TableCell>
                   <TableCell>{formatDate(a.expire)}</TableCell>
                   <TableCell>
                     <Badge variant={a.status === 'active' ? 'success' : 'outline'}>{a.status ?? 'unknown'}</Badge>
                   </TableCell>
-                  <TableCell className="flex justify-end gap-2">
-                    <AdjustAccountDialog account={a} />
+                  <TableCell className="flex flex-wrap justify-end gap-2">
+                    <AdjustAccountDialog account={a} groupRatePerGb={group.rate_per_gb} />
+                    <ResetUsageDialog account={a} />
+                    <BillingDialog account={a} groupRatePerGb={group.rate_per_gb} />
                     <RelationshipDialog account={a} />
                   </TableCell>
                 </TableRow>
