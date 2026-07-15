@@ -18,6 +18,7 @@ from app.schemas import (
     AccountRelationshipUpdate,
     AccountResetRequest,
     AccountRow,
+    AccountSettleRequest,
 )
 from app.services import billable_bytes, bytes_from_gb, effective_billing_mode, effective_rate, enrich_accounts
 
@@ -259,12 +260,18 @@ def get_account_invoice(account_id: int, session: Session = Depends(get_session)
 
 
 @router.post("/{account_id}/settle")
-def settle_account(account_id: int, session: Session = Depends(get_session)):
+def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRequest(), session: Session = Depends(get_session)):
     """Charges this standalone account for whatever it currently owes — usage
     since the last settle for payg, or the package (data_limit) itself for
     prepay (see services.billable_bytes) — and rolls the matching baseline
     forward. The one-click "Settle" action: no manual GB/price entry, always
-    charges exactly the amount already shown as this account's pending."""
+    charges exactly the amount already shown as this account's pending.
+
+    This POSTS A CHARGE — the debt becomes formal/real, which is why the
+    balance goes red afterward if `mark_paid` isn't set: nothing has been
+    paid yet, only billed. Pass mark_paid=True when the operator is
+    collecting payment in the same moment (the common case) to also post a
+    matching credit, netting the balance back to 0 (settled)."""
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "Account not found")
@@ -278,6 +285,11 @@ def settle_account(account_id: int, session: Session = Depends(get_session)):
     amount = round(billable_gb * rate, 2)
 
     now = utcnow()
+    cycle_note = (
+        f"Package settlement for cycle ending {now.date().isoformat()}"
+        if mode == BillingMode.prepay
+        else f"Usage settlement for cycle ending {now.date().isoformat()}"
+    )
     if amount > 0:
         session.add(
             LedgerEntry(
@@ -285,14 +297,21 @@ def settle_account(account_id: int, session: Session = Depends(get_session)):
                 amount=amount,
                 customer_id=account.customer_id,
                 account_id=account.id,
-                note=(
-                    f"Package settlement for cycle ending {now.date().isoformat()}"
-                    if mode == BillingMode.prepay
-                    else f"Usage settlement for cycle ending {now.date().isoformat()}"
-                ),
+                note=cycle_note,
                 source=LedgerSource.web,
             )
         )
+        if body.mark_paid:
+            session.add(
+                LedgerEntry(
+                    type=LedgerType.credit,
+                    amount=amount,
+                    customer_id=account.customer_id,
+                    account_id=account.id,
+                    note=f"Payment received at settlement ({now.date().isoformat()})",
+                    source=LedgerSource.web,
+                )
+            )
 
     if mode == BillingMode.payg:
         account.usage_baseline = account.used_traffic

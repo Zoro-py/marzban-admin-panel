@@ -115,7 +115,7 @@ export const groupsApi = {
   ) => (await api.patch<Group>(`/api/groups/${id}`, body)).data,
   accounts: async (id: number) => (await api.get<AccountRow[]>(`/api/groups/${id}/accounts`)).data,
   invoice: async (id: number) => (await api.get<GroupInvoice>(`/api/groups/${id}/invoice`)).data,
-  settle: async (id: number) => (await api.post(`/api/groups/${id}/settle`)).data,
+  settle: async (id: number, body?: { mark_paid?: boolean }) => (await api.post(`/api/groups/${id}/settle`, body ?? {})).data,
   resetCycle: async (id: number) => (await api.post(`/api/groups/${id}/reset-cycle`)).data,
 }
 
@@ -146,7 +146,7 @@ export const accountsApi = {
   reset: async (id: number, body: { charge_amount?: number; note?: string }) =>
     (await api.post<Account>(`/api/accounts/${id}/reset`, body)).data,
   invoice: async (id: number) => (await api.get<AccountInvoice>(`/api/accounts/${id}/invoice`)).data,
-  settle: async (id: number) => (await api.post(`/api/accounts/${id}/settle`)).data,
+  settle: async (id: number, body?: { mark_paid?: boolean }) => (await api.post(`/api/accounts/${id}/settle`, body ?? {})).data,
   events: async (id: number) => (await api.get<AccountEvent[]>(`/api/accounts/${id}/events`)).data,
 }
 

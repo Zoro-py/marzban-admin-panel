@@ -311,7 +311,9 @@ function AccountTableRow({
       </TableCell>
       <TableCell className="text-right">
         {a.payer_balance === 0 && a.pending_amount <= 0 ? (
-          <span className="text-xs text-muted-foreground">—</span>
+          // "settled", not a bare dash — a dash reads as "no data", which is
+          // ambiguous with a genuinely paid-off account (0 owed, 0 credit).
+          <span className="text-xs text-muted-foreground">settled</span>
         ) : (
           <span className="flex flex-col items-end gap-0.5">
             {a.payer_balance !== 0 && <Money amount={a.payer_balance} className="text-xs" />}
@@ -321,7 +323,12 @@ function AccountTableRow({
                 {/* Only standalone accounts settle individually — a grouped
                     account's pending is settled via its group's own button. */}
                 {a.group_id === null && (
-                  <SettleAccountButton accountId={a.id} username={a.marzban_username} amount={a.pending_amount} />
+                  <SettleAccountButton
+                    accountId={a.id}
+                    username={a.marzban_username}
+                    amount={a.pending_amount}
+                    currentBalance={a.payer_balance}
+                  />
                 )}
               </span>
             )}

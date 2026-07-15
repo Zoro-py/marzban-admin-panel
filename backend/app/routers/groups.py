@@ -6,7 +6,7 @@ from sqlmodel import Session, select
 from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
-from app.schemas import AccountRow, GroupCreate, GroupRead, GroupUpdate, GroupWithBalance
+from app.schemas import AccountRow, GroupCreate, GroupRead, GroupSettleRequest, GroupUpdate, GroupWithBalance
 from app.services import billable_bytes, compute_balance, effective_rate, enrich_accounts
 
 router = APIRouter(prefix="/api/groups", tags=["groups"], dependencies=[Depends(require_auth)])
@@ -138,12 +138,17 @@ def get_group_invoice(group_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/{group_id}/settle")
-def settle_group(group_id: int, session: Session = Depends(get_session)):
+def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(), session: Session = Depends(get_session)):
     """Posts one `charge` ledger entry for the current cycle's total amount
     (usage-based for payg, package-based for prepay — see
     services.billable_bytes) against the group's representative customer,
     then rolls every member account's billing baseline forward so the next
-    cycle starts from zero billable amount."""
+    cycle starts from zero billable amount.
+
+    This POSTS A CHARGE, not a payment record — pass mark_paid=True when the
+    representative customer is paying in the same moment, to also post a
+    matching credit so the balance nets back to 0 (settled) instead of
+    showing as still owed."""
     group = session.get(Group, group_id)
     if not group:
         raise HTTPException(404, "Group not found")
@@ -153,6 +158,11 @@ def settle_group(group_id: int, session: Session = Depends(get_session)):
     total_amount = round(sum(line["amount"] for line in lines), 2)
 
     now = utcnow()
+    cycle_note = (
+        f"Package settlement for cycle ending {now.date().isoformat()}"
+        if group.billing_mode == BillingMode.prepay
+        else f"Usage settlement for cycle ending {now.date().isoformat()}"
+    )
     if total_amount > 0:
         session.add(
             LedgerEntry(
@@ -160,14 +170,21 @@ def settle_group(group_id: int, session: Session = Depends(get_session)):
                 amount=total_amount,
                 customer_id=group.representative_customer_id,
                 group_id=group.id,
-                note=(
-                    f"Package settlement for cycle ending {now.date().isoformat()}"
-                    if group.billing_mode == BillingMode.prepay
-                    else f"Usage settlement for cycle ending {now.date().isoformat()}"
-                ),
+                note=cycle_note,
                 source=LedgerSource.web,
             )
         )
+        if body.mark_paid:
+            session.add(
+                LedgerEntry(
+                    type=LedgerType.credit,
+                    amount=total_amount,
+                    customer_id=group.representative_customer_id,
+                    group_id=group.id,
+                    note=f"Payment received at settlement ({now.date().isoformat()})",
+                    source=LedgerSource.web,
+                )
+            )
 
     for a in accounts:
         if group.billing_mode == BillingMode.payg:

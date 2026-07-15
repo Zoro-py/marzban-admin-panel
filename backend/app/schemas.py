@@ -56,6 +56,15 @@ class GroupUpdate(BaseModel):
     billing_mode: Optional[BillingMode] = None
 
 
+class GroupSettleRequest(BaseModel):
+    """Settling posts a CHARGE — the debt becomes formal/real, not a record
+    that payment was received. mark_paid additionally posts a matching
+    credit in the same call, netting the balance back to 0 (settled) — for
+    the common "they paid me right now" case."""
+
+    mark_paid: bool = False
+
+
 class GroupRead(BaseModel):
     id: int
     name: str
@@ -129,6 +138,17 @@ class AccountAdjustRequest(BaseModel):
     set_expire: Optional[int] = None
     set_data_limit_gb: Optional[float] = None
     note: Optional[str] = None
+
+
+class AccountSettleRequest(BaseModel):
+    """Settling posts a CHARGE (the debt becomes real/formal) — it is not, by
+    itself, a record that payment was received. mark_paid additionally posts
+    a matching credit in the same call, netting the balance back to 0
+    (shown as settled, not owed) — for the common "they paid me right now"
+    case, so the operator doesn't have to charge, then separately go find
+    the payment-recording UI and type the same amount in by hand."""
+
+    mark_paid: bool = False
 
 
 class AccountResetRequest(BaseModel):

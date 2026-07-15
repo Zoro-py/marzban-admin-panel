@@ -95,7 +95,7 @@ export function GroupDetailPage() {
           <LedgerActionDialog groupId={groupId} currentBalance={group.balance} />
           <NewAccountDialog defaultGroupId={groupId} />
           {group.billing_mode === 'payg' && <ResetGroupCycleDialog groupId={groupId} />}
-          <SettleGroupDialog groupId={groupId} />
+          <SettleGroupDialog groupId={groupId} currentBalance={group.balance} />
         </div>
       </div>
 

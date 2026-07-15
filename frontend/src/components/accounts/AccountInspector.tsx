@@ -15,6 +15,7 @@ import {
   X,
 } from 'lucide-react'
 import { accountsApi, customersApi, groupsApi, ledgerApi, apiErrorMessage } from '@/lib/api'
+import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
 import type { AccountRow, AccountRole, BillingMode, LedgerType } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -410,15 +411,6 @@ function ResetSection({ account, canBill }: { account: AccountRow; canBill: bool
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
-  const settleMutation = useMutation({
-    mutationFn: () => accountsApi.settle(account.id),
-    onSuccess: (r: { charged_amount: number }) => {
-      toast.success(`Settled — charged ${formatToman(r.charged_amount)}`)
-      invalidate()
-    },
-    onError: (err) => toast.error(apiErrorMessage(err)),
-  })
-
   const canSettleStandalone = account.group_id === null && canBill
 
   return (
@@ -454,16 +446,22 @@ function ResetSection({ account, canBill }: { account: AccountRow; canBill: bool
         <Button size="sm" variant="outline" className="flex-1" onClick={() => resetMutation.mutate()} disabled={resetMutation.isPending}>
           {resetMutation.isPending ? 'Resetting…' : chargeAmount ? `Reset & charge ${formatToman(Number(chargeAmount))}` : 'Reset only'}
         </Button>
-        {canSettleStandalone && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => settleMutation.mutate()}
-            disabled={settleMutation.isPending || !invoiceQuery.data || invoiceQuery.data.amount <= 0}
-            title="Post the current pending amount as a charge and roll the billing baseline forward, without resetting the quota in Marzban"
-          >
-            Charge without reset
-          </Button>
+        {canSettleStandalone && invoiceQuery.data && invoiceQuery.data.amount > 0 && (
+          <SettleAccountButton
+            accountId={account.id}
+            username={account.marzban_username}
+            amount={invoiceQuery.data.amount}
+            currentBalance={account.payer_balance}
+            trigger={
+              <Button
+                size="sm"
+                variant="ghost"
+                title="Post the current pending amount as a charge and roll the billing baseline forward, without resetting the quota in Marzban"
+              >
+                Charge without reset
+              </Button>
+            }
+          />
         )}
       </div>
     </Section>
