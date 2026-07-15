@@ -159,14 +159,18 @@ def enrich_accounts(session: Session, accounts: list[Account]) -> list:
 
         eff_mode = effective_billing_mode(session, a, group)
         # Unbilled usage-based preview for THIS account specifically — same
-        # shape as groups.py's _invoice_lines, so a grouped payg member with
-        # real usage shows something even though payer_balance (real, posted
-        # ledger debt) stays 0 until the group is actually settled.
-        if eff_mode == BillingMode.payg:
-            billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
-            pending = round(billable_gb * effective_rate(session, a, group), 2)
-        else:
-            pending = 0.0
+        # shape as groups.py's _invoice_lines. Computed for every account
+        # regardless of billing_mode: this is only an ESTIMATE (usage × rate,
+        # never posted to the ledger by itself), not an actual charge — a
+        # prepay account still only owes real money once the operator
+        # explicitly charges it (invoice, adjust, reset, settle), same as
+        # before. Without this, a grouped payg member showed something even
+        # though payer_balance (real, posted debt) stays 0 until the group is
+        # settled, while every prepay/standalone account showed nothing at
+        # all despite real, visible usage — this makes the preview consistent
+        # across both.
+        billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
+        pending = round(billable_gb * effective_rate(session, a, group), 2)
 
         rows.append(
             AccountRow(

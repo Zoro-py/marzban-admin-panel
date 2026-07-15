@@ -107,14 +107,16 @@ def summary(
     # by billing_cycle_days (that field only says WHEN a cycle nominally ends,
     # not whether there's already a real balance sitting unpaid before that
     # date). Two distinct figures, both shown when present:
-    #   - pending_amount: payg-only, usage accrued but not yet even charged
-    #     (a preview — settling turns this into a real ledger charge)
-    #   - balance: ALREADY charged, not yet paid, for EITHER billing mode —
-    #     a prepay group's debt only ever exists as balance (it has no
-    #     usage-based pending concept), so excluding prepay from this section
-    #     (as an earlier version of this endpoint did) made prepay debt
-    #     invisible here even though it's exactly the kind of thing "who
-    #     currently owes me money" should include.
+    #   - pending_amount: usage accrued since the last settle, at each
+    #     member's effective rate — an ESTIMATE, never posted to the ledger by
+    #     itself (settling turns it into a real charge). Computed for every
+    #     group regardless of billing_mode, matching the group detail page's
+    #     own "Pending" stat (_with_balance/_invoice_lines in groups.py,
+    #     which never gated on billing_mode either) — a prepay group still
+    #     only OWES money once actually settled/charged, but seeing what its
+    #     usage is currently worth beforehand is exactly the same kind of
+    #     preview a payg group already got.
+    #   - balance: ALREADY charged, not yet paid, for EITHER billing mode.
     # is_due (cycle elapsed) is a secondary signal per entry, not a gate.
     now_dt = utcnow().replace(tzinfo=None)
     accounts_by_group: dict[int, list[Account]] = defaultdict(list)
@@ -125,10 +127,9 @@ def summary(
     pending_settlement = []
     for g in groups.values():
         pending = 0.0
-        if g.billing_mode == BillingMode.payg:
-            for a in accounts_by_group.get(g.id, []):
-                billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
-                pending += billable_gb * effective_rate(session, a, g)
+        for a in accounts_by_group.get(g.id, []):
+            billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
+            pending += billable_gb * effective_rate(session, a, g)
         charge, credit = compute_balance(session, group_id=g.id)
         balance = round(charge - credit, 2)
         pending = round(pending, 2)
@@ -150,13 +151,15 @@ def summary(
             }
         )
 
-    # Standalone (non-grouped) accounts: only their own payg pending amount is
-    # shown here, deliberately not their customer's `balance` — that balance
-    # belongs to the CUSTOMER (already visible via overdue_customers above),
-    # and a customer with several accounts would have the same number show up
-    # once per account here, looking like separate debts instead of one.
+    # Standalone (non-grouped) accounts: their own usage-based pending amount
+    # is shown here, regardless of billing_mode — same estimate-not-a-charge
+    # reasoning as groups above. Deliberately NOT their customer's `balance`
+    # here — that balance belongs to the CUSTOMER (already visible via
+    # overdue_customers above), and a customer with several accounts would
+    # have the same number show up once per account here, looking like
+    # separate debts instead of one.
     for a in accounts:
-        if a.group_id is not None or a.billing_mode != BillingMode.payg:
+        if a.group_id is not None:
             continue
         billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
         pending = round(billable_gb * effective_rate(session, a, None), 2)
