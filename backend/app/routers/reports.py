@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerType, OnlineSnapshot, utcnow
-from app.services import compute_balance, effective_billing_mode, effective_rate, rate_is_configured
+from app.services import billable_bytes, compute_balance, effective_billing_mode, effective_rate, rate_is_configured
 
 router = APIRouter(prefix="/api/reports", tags=["reports"], dependencies=[Depends(require_auth)])
 
@@ -128,7 +128,9 @@ def summary(
     for g in groups.values():
         pending = 0.0
         for a in accounts_by_group.get(g.id, []):
-            billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
+            # group's mode wins for a grouped account — see billable_bytes:
+            # payg bills usage, prepay bills the package (data_limit) itself.
+            billable_gb = billable_bytes(a, g.billing_mode) / (1024**3)
             pending += billable_gb * effective_rate(session, a, g)
         charge, credit = compute_balance(session, group_id=g.id)
         balance = round(charge - credit, 2)
@@ -161,7 +163,7 @@ def summary(
     for a in accounts:
         if a.group_id is not None:
             continue
-        billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
+        billable_gb = billable_bytes(a, a.billing_mode) / (1024**3)
         pending = round(billable_gb * effective_rate(session, a, None), 2)
         if pending <= 0:
             continue

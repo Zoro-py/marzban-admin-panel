@@ -19,7 +19,7 @@ from app.schemas import (
     AccountResetRequest,
     AccountRow,
 )
-from app.services import bytes_from_gb, effective_billing_mode, effective_rate, enrich_accounts
+from app.services import billable_bytes, bytes_from_gb, effective_billing_mode, effective_rate, enrich_accounts
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(require_auth)])
 
@@ -240,16 +240,18 @@ def get_account_events(account_id: int, limit: int = 50, session: Session = Depe
 
 @router.get("/{account_id}/invoice")
 def get_account_invoice(account_id: int, session: Session = Depends(get_session)):
-    """Standalone (non-group) pay-as-you-go preview for one account."""
+    """Standalone (non-group) preview for one account — what /settle would
+    charge right now: usage since the last settle for payg, or the package
+    (data_limit) itself for prepay (see services.billable_bytes)."""
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "Account not found")
-    billable_bytes = max(0, account.used_traffic - account.usage_baseline)
-    billable_gb = billable_bytes / (1024**3)
+    mode = effective_billing_mode(session, account)
+    billable_gb = billable_bytes(account, mode) / (1024**3)
     rate = effective_rate(session, account)
     return {
         "account_id": account_id,
-        "since": account.usage_baseline_at,
+        "since": account.usage_baseline_at if mode == BillingMode.payg else None,
         "billable_gb": round(billable_gb, 3),
         "rate_per_gb": rate,
         "amount": round(billable_gb * rate, 2),
@@ -258,14 +260,20 @@ def get_account_invoice(account_id: int, session: Session = Depends(get_session)
 
 @router.post("/{account_id}/settle")
 def settle_account(account_id: int, session: Session = Depends(get_session)):
+    """Charges this standalone account for whatever it currently owes — usage
+    since the last settle for payg, or the package (data_limit) itself for
+    prepay (see services.billable_bytes) — and rolls the matching baseline
+    forward. The one-click "Settle" action: no manual GB/price entry, always
+    charges exactly the amount already shown as this account's pending."""
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "Account not found")
     if account.group_id is not None:
         raise HTTPException(400, "This account is billed through its group — use /api/groups/{group_id}/settle")
 
-    billable_bytes = max(0, account.used_traffic - account.usage_baseline)
-    billable_gb = billable_bytes / (1024**3)
+    mode = effective_billing_mode(session, account)
+    billable = billable_bytes(account, mode)
+    billable_gb = billable / (1024**3)
     rate = effective_rate(session, account)
     amount = round(billable_gb * rate, 2)
 
@@ -277,13 +285,20 @@ def settle_account(account_id: int, session: Session = Depends(get_session)):
                 amount=amount,
                 customer_id=account.customer_id,
                 account_id=account.id,
-                note=f"Usage settlement for cycle ending {now.date().isoformat()}",
+                note=(
+                    f"Package settlement for cycle ending {now.date().isoformat()}"
+                    if mode == BillingMode.prepay
+                    else f"Usage settlement for cycle ending {now.date().isoformat()}"
+                ),
                 source=LedgerSource.web,
             )
         )
 
-    account.usage_baseline = account.used_traffic
-    account.usage_baseline_at = now
+    if mode == BillingMode.payg:
+        account.usage_baseline = account.used_traffic
+        account.usage_baseline_at = now
+    else:
+        account.billed_data_limit = account.data_limit or 0
     session.add(account)
     session.commit()
 
@@ -310,8 +325,8 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
 
     charge_amount = body.charge_amount
     if charge_amount is None and effective_billing_mode(session, account) == BillingMode.payg:
-        billable_bytes = max(0, account.used_traffic - account.usage_baseline)
-        billable_gb = billable_bytes / (1024**3)
+        billable = max(0, account.used_traffic - account.usage_baseline)
+        billable_gb = billable / (1024**3)
         charge_amount = round(billable_gb * effective_rate(session, account), 2)
 
     if charge_amount and charge_amount > 0 and not account.customer_id and not account.group_id:

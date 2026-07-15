@@ -16,6 +16,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { SearchableSelect } from '@/components/ui/searchable-select'
 import { Building2 } from 'lucide-react'
 
 export function NewGroupDialog() {
@@ -75,18 +76,13 @@ export function NewGroupDialog() {
               Who actually gets billed for this group's usage — pick an existing customer, or create one first from
               the Customers tab. A customer can own accounts directly AND represent a group at the same time.
             </p>
-            <Select value={repId} onValueChange={setRepId}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select a customer" />
-              </SelectTrigger>
-              <SelectContent>
-                {customersQuery.data?.map((c) => (
-                  <SelectItem key={c.id} value={String(c.id)}>
-                    {c.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <SearchableSelect
+              value={repId}
+              onValueChange={setRepId}
+              placeholder="Select a customer"
+              searchPlaceholder="Search customers…"
+              options={(customersQuery.data ?? []).map((c) => ({ value: String(c.id), label: c.name }))}
+            />
           </div>
 
           <div className="flex flex-col gap-1.5">

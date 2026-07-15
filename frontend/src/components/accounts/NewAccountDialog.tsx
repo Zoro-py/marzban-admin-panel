@@ -14,7 +14,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { SearchableSelect } from '@/components/ui/searchable-select'
 import { UserPlus } from 'lucide-react'
 
 const NONE = '__none__'
@@ -86,35 +86,29 @@ export function NewAccountDialog({ defaultCustomerId, defaultGroupId, trigger }:
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1.5">
               <Label>Customer</Label>
-              <Select value={customerId} onValueChange={setCustomerId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Unassigned" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE}>Unassigned</SelectItem>
-                  {customersQuery.data?.map((c) => (
-                    <SelectItem key={c.id} value={String(c.id)}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSelect
+                value={customerId}
+                onValueChange={setCustomerId}
+                placeholder="Unassigned"
+                searchPlaceholder="Search customers…"
+                options={[
+                  { value: NONE, label: 'Unassigned' },
+                  ...(customersQuery.data ?? []).map((c) => ({ value: String(c.id), label: c.name })),
+                ]}
+              />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Group (pay-as-you-go)</Label>
-              <Select value={groupId} onValueChange={setGroupId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="None" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NONE}>None</SelectItem>
-                  {groupsQuery.data?.map((g) => (
-                    <SelectItem key={g.id} value={String(g.id)}>
-                      {g.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSelect
+                value={groupId}
+                onValueChange={setGroupId}
+                placeholder="None"
+                searchPlaceholder="Search groups…"
+                options={[
+                  { value: NONE, label: 'None' },
+                  ...(groupsQuery.data ?? []).map((g) => ({ value: String(g.id), label: g.name })),
+                ]}
+              />
             </div>
           </div>
 

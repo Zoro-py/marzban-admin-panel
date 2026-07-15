@@ -28,6 +28,22 @@ def bytes_from_gb(gb: float) -> int:
     return round(gb * GB)
 
 
+def billable_bytes(account: Account, mode: BillingMode) -> int:
+    """payg bills what was actually USED since the last settle (metered:
+    used_traffic - usage_baseline). prepay bills the PACKAGE SIZE itself
+    since the last settle (data_limit - billed_data_limit) — "prepay" means
+    paying for what was sold up front, not for what's been consumed out of
+    it; a customer who bought a 42GB package owes for 42GB the moment it's
+    sold, not only for whatever fraction of it they've used so far. An
+    unlimited (data_limit=None) prepay package has no fixed size to bill
+    automatically — invoice it manually instead."""
+    if mode == BillingMode.payg:
+        return max(0, account.used_traffic - account.usage_baseline)
+    if account.data_limit is None:
+        return 0
+    return max(0, account.data_limit - account.billed_data_limit)
+
+
 def get_settings(session: Session) -> AppSettings:
     settings = session.get(AppSettings, 1)
     if settings is None:
@@ -158,18 +174,14 @@ def enrich_accounts(session: Session, accounts: list[Account]) -> list:
         group = groups.get(a.group_id) if a.group_id else None
 
         eff_mode = effective_billing_mode(session, a, group)
-        # Unbilled usage-based preview for THIS account specifically — same
-        # shape as groups.py's _invoice_lines. Computed for every account
-        # regardless of billing_mode: this is only an ESTIMATE (usage × rate,
-        # never posted to the ledger by itself), not an actual charge — a
-        # prepay account still only owes real money once the operator
-        # explicitly charges it (invoice, adjust, reset, settle), same as
-        # before. Without this, a grouped payg member showed something even
-        # though payer_balance (real, posted debt) stays 0 until the group is
-        # settled, while every prepay/standalone account showed nothing at
-        # all despite real, visible usage — this makes the preview consistent
-        # across both.
-        billable_gb = max(0, a.used_traffic - a.usage_baseline) / (1024**3)
+        # Unbilled preview for THIS account specifically — same shape as
+        # groups.py's _invoice_lines. Computed for every account regardless
+        # of billing_mode: this is only an ESTIMATE, never posted to the
+        # ledger by itself — a prepay account still only owes real money once
+        # the operator explicitly charges it (invoice, adjust, reset,
+        # settle), same as before. See services.billable_bytes: payg bills
+        # what was USED, prepay bills the PACKAGE SIZE itself.
+        billable_gb = billable_bytes(a, eff_mode) / (1024**3)
         pending = round(billable_gb * effective_rate(session, a, group), 2)
 
         rows.append(

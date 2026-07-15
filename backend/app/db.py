@@ -26,6 +26,9 @@ def _run_lightweight_migrations() -> None:
             # a pay-as-you-go group; this keeps their behavior unchanged.
             conn.execute(text("ALTER TABLE \"group\" ADD COLUMN billing_mode VARCHAR NOT NULL DEFAULT 'payg'"))
 
+        if existing and "billed_data_limit" not in existing:
+            conn.execute(text("ALTER TABLE account ADD COLUMN billed_data_limit INTEGER NOT NULL DEFAULT 0"))
+
         if existing and "online_at" not in existing:
             conn.execute(text("ALTER TABLE account ADD COLUMN online_at DATETIME"))
 
@@ -154,6 +157,35 @@ def _run_lightweight_migrations() -> None:
             conn.execute(
                 text("INSERT INTO _migration_marker (key, applied_at) VALUES ('used_traffic_billing_basis', :now)"),
                 {"now": now3},
+            )
+
+        # prepay bills the PACKAGE (data_limit), not usage (see
+        # services.billable_bytes) -- billed_data_limit tracks how much of
+        # the CURRENT package has already been charged for, same role as
+        # usage_baseline plays for payg. It's a brand-new column defaulting
+        # to 0 for every row, which would make every prepay account's full
+        # package show up as newly pending -- correct for one that's
+        # genuinely never been charged, wrong for one already paid via a
+        # manual invoice (or a group settle) before this column existed. Same
+        # "never billed vs already billed" reasoning as the usage_baseline
+        # fix above, reusing ever_charged_account_ids: a genuinely
+        # never-billed account (or one in a never-settled group) is left at 0
+        # (its full package correctly shows as pending); one that's already
+        # been charged is set to its current data_limit (nothing further
+        # pending until the package grows). Self-limiting: once set to a
+        # nonzero value here, or by an actual settle, this stops matching it.
+        settled_group_ids = {
+            row[0] for row in conn.execute(text('SELECT id FROM "group" WHERE last_settled_at IS NOT NULL'))
+        }
+        already_billed_accounts = [
+            row
+            for row in conn.execute(text("SELECT id, group_id, data_limit FROM account WHERE billed_data_limit = 0"))
+            if (row[1] in settled_group_ids if row[1] is not None else row[0] in ever_charged_account_ids)
+        ]
+        for account_id, _group_id, data_limit in already_billed_accounts:
+            conn.execute(
+                text("UPDATE account SET billed_data_limit = :dl WHERE id = :aid"),
+                {"dl": data_limit or 0, "aid": account_id},
             )
 
         # "Every account belongs to one person unless it's deliberately

@@ -5,9 +5,9 @@ from sqlmodel import Session, select
 
 from app.auth import require_auth
 from app.db import get_session
-from app.models import Account, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
+from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
 from app.schemas import AccountRow, GroupCreate, GroupRead, GroupUpdate, GroupWithBalance
-from app.services import compute_balance, effective_rate, enrich_accounts
+from app.services import billable_bytes, compute_balance, effective_rate, enrich_accounts
 
 router = APIRouter(prefix="/api/groups", tags=["groups"], dependencies=[Depends(require_auth)])
 
@@ -17,11 +17,14 @@ def _invoice_lines(session: Session, accounts: list[Account], group: Group) -> l
     dashboard-wide default (see services.effective_rate) — this is how a
     per-account discount (or markup) within a group works, and how a global
     default rate actually reaches group billing instead of only standalone
-    accounts."""
+    accounts. Billable volume is the GROUP's mode for every member,
+    regardless of that member's own billing_mode field (see
+    services.billable_bytes / services.effective_billing_mode) — payg bills
+    usage since the last settle, prepay bills each member's package
+    (data_limit) itself."""
     lines = []
     for a in accounts:
-        billable_bytes = max(0, a.used_traffic - a.usage_baseline)
-        billable_gb = billable_bytes / (1024**3)
+        billable_gb = billable_bytes(a, group.billing_mode) / (1024**3)
         rate = effective_rate(session, a, group)
         lines.append(
             {
@@ -136,9 +139,11 @@ def get_group_invoice(group_id: int, session: Session = Depends(get_session)):
 
 @router.post("/{group_id}/settle")
 def settle_group(group_id: int, session: Session = Depends(get_session)):
-    """Posts one `charge` ledger entry for the current cycle's total usage-based
-    amount against the group's representative customer, then rolls every member
-    account's usage_baseline forward so the next cycle starts from zero billable usage."""
+    """Posts one `charge` ledger entry for the current cycle's total amount
+    (usage-based for payg, package-based for prepay — see
+    services.billable_bytes) against the group's representative customer,
+    then rolls every member account's billing baseline forward so the next
+    cycle starts from zero billable amount."""
     group = session.get(Group, group_id)
     if not group:
         raise HTTPException(404, "Group not found")
@@ -155,14 +160,21 @@ def settle_group(group_id: int, session: Session = Depends(get_session)):
                 amount=total_amount,
                 customer_id=group.representative_customer_id,
                 group_id=group.id,
-                note=f"Usage settlement for cycle ending {now.date().isoformat()}",
+                note=(
+                    f"Package settlement for cycle ending {now.date().isoformat()}"
+                    if group.billing_mode == BillingMode.prepay
+                    else f"Usage settlement for cycle ending {now.date().isoformat()}"
+                ),
                 source=LedgerSource.web,
             )
         )
 
     for a in accounts:
-        a.usage_baseline = a.used_traffic
-        a.usage_baseline_at = now
+        if group.billing_mode == BillingMode.payg:
+            a.usage_baseline = a.used_traffic
+            a.usage_baseline_at = now
+        else:
+            a.billed_data_limit = a.data_limit or 0
         session.add(a)
 
     group.last_settled_at = now
@@ -189,8 +201,11 @@ def reset_group_cycle(group_id: int, session: Session = Depends(get_session)):
 
     now = utcnow()
     for a in accounts:
-        a.usage_baseline = a.used_traffic
-        a.usage_baseline_at = now
+        if group.billing_mode == BillingMode.payg:
+            a.usage_baseline = a.used_traffic
+            a.usage_baseline_at = now
+        else:
+            a.billed_data_limit = a.data_limit or 0
         session.add(a)
 
     group.last_settled_at = now

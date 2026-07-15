@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { SortableHeader, nextSort, type SortState } from '@/components/ui/sortable-header'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
+import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
 import { AccountsBoard } from '@/components/accounts/AccountsBoard'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
 import { UsageBar } from '@/components/UsageBar'
@@ -315,7 +316,14 @@ function AccountTableRow({
           <span className="flex flex-col items-end gap-0.5">
             {a.payer_balance !== 0 && <Money amount={a.payer_balance} className="text-xs" />}
             {a.pending_amount > 0 && (
-              <span className="text-[11px] font-medium text-warning">{formatToman(a.pending_amount)} pending</span>
+              <span className="flex items-center gap-2">
+                <span className="text-[11px] font-medium text-warning">{formatToman(a.pending_amount)} pending</span>
+                {/* Only standalone accounts settle individually — a grouped
+                    account's pending is settled via its group's own button. */}
+                {a.group_id === null && (
+                  <SettleAccountButton accountId={a.id} username={a.marzban_username} amount={a.pending_amount} />
+                )}
+              </span>
             )}
           </span>
         )}

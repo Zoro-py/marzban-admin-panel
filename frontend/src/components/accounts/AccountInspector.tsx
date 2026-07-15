@@ -20,6 +20,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { SearchableSelect } from '@/components/ui/searchable-select'
 import { Badge } from '@/components/ui/badge'
 import { UsageBar } from '@/components/UsageBar'
 import { Money } from '@/components/Money'
@@ -386,7 +387,6 @@ function ResetSection({ account, canBill }: { account: AccountRow; canBill: bool
   const invoiceQuery = useQuery({
     queryKey: ['account', account.id, 'invoice'],
     queryFn: () => accountsApi.invoice(account.id),
-    enabled: isPayg,
   })
 
   React.useEffect(() => {
@@ -419,28 +419,26 @@ function ResetSection({ account, canBill }: { account: AccountRow; canBill: bool
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
-  const canSettleStandalone = isPayg && account.group_id === null && canBill
+  const canSettleStandalone = account.group_id === null && canBill
 
   return (
     <Section icon={RotateCcw} title="Reset usage cycle">
-      {isPayg && (
-        <div className="rounded-md border border-border bg-muted/40 p-2.5 text-xs">
-          {invoiceQuery.isLoading ? (
-            <span className="text-muted-foreground">Calculating usage since last settlement…</span>
-          ) : invoiceQuery.data ? (
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-muted-foreground">
-                {invoiceQuery.data.billable_gb} GB × {formatToman(invoiceQuery.data.rate_per_gb)}/GB since{' '}
-                {invoiceQuery.data.since ? formatDate(invoiceQuery.data.since) : 'the start'}
-              </span>
-              <span className="font-semibold tabular-nums">{formatToman(invoiceQuery.data.amount)}</span>
-            </div>
-          ) : null}
-        </div>
-      )}
+      <div className="rounded-md border border-border bg-muted/40 p-2.5 text-xs">
+        {invoiceQuery.isLoading ? (
+          <span className="text-muted-foreground">Calculating pending amount…</span>
+        ) : invoiceQuery.data ? (
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-muted-foreground">
+              {invoiceQuery.data.billable_gb} GB × {formatToman(invoiceQuery.data.rate_per_gb)}/GB
+              {isPayg ? ` since ${invoiceQuery.data.since ? formatDate(invoiceQuery.data.since) : 'the start'}` : ' (this package)'}
+            </span>
+            <span className="font-semibold tabular-nums">{formatToman(invoiceQuery.data.amount)}</span>
+          </div>
+        ) : null}
+      </div>
       <p className="text-[11px] leading-relaxed text-muted-foreground">
-        Sets used traffic back to 0 in Marzban and starts a new billing cycle.
-        {isPayg ? ' The suggested charge above is prefilled — edit or clear it before confirming.' : ''}
+        Sets used traffic back to 0 in Marzban and starts a new billing cycle. The suggested charge above is
+        prefilled — edit or clear it before confirming.
       </p>
       <div className="grid grid-cols-2 gap-3">
         <Input
@@ -462,7 +460,7 @@ function ResetSection({ account, canBill }: { account: AccountRow; canBill: bool
             variant="ghost"
             onClick={() => settleMutation.mutate()}
             disabled={settleMutation.isPending || !invoiceQuery.data || invoiceQuery.data.amount <= 0}
-            title="Post the accrued usage as a charge and roll the cycle forward, without resetting the quota in Marzban"
+            title="Post the current pending amount as a charge and roll the billing baseline forward, without resetting the quota in Marzban"
           >
             Charge without reset
           </Button>
@@ -627,35 +625,29 @@ function OwnershipSection({ account }: { account: AccountRow }) {
     <Section icon={Link2} title="Ownership">
       <div className="flex flex-col gap-1.5">
         <Label className="text-xs">Customer</Label>
-        <Select value={customerId} onValueChange={setCustomerId}>
-          <SelectTrigger>
-            <SelectValue placeholder="Unassigned" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={NONE}>Unassigned</SelectItem>
-            {customersQuery.data?.map((c) => (
-              <SelectItem key={c.id} value={String(c.id)}>
-                {c.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <SearchableSelect
+          value={customerId}
+          onValueChange={setCustomerId}
+          placeholder="Unassigned"
+          searchPlaceholder="Search customers…"
+          options={[
+            { value: NONE, label: 'Unassigned' },
+            ...(customersQuery.data ?? []).map((c) => ({ value: String(c.id), label: c.name })),
+          ]}
+        />
       </div>
       <div className="flex flex-col gap-1.5">
         <Label className="text-xs">Group (billed together)</Label>
-        <Select value={groupId} onValueChange={setGroupId}>
-          <SelectTrigger>
-            <SelectValue placeholder="None" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={NONE}>None</SelectItem>
-            {groupsQuery.data?.map((g) => (
-              <SelectItem key={g.id} value={String(g.id)}>
-                {g.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <SearchableSelect
+          value={groupId}
+          onValueChange={setGroupId}
+          placeholder="None"
+          searchPlaceholder="Search groups…"
+          options={[
+            { value: NONE, label: 'None' },
+            ...(groupsQuery.data ?? []).map((g) => ({ value: String(g.id), label: g.name })),
+          ]}
+        />
       </div>
       <div className="flex flex-col gap-1.5">
         <Label className="text-xs">Role</Label>

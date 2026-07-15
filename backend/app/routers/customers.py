@@ -13,11 +13,29 @@ from app.services import compute_balance, enrich_accounts
 router = APIRouter(prefix="/api/customers", tags=["customers"], dependencies=[Depends(require_auth)])
 
 
-def _represented_groups(session: Session) -> dict[int, list[str]]:
-    by_rep: dict[int, list[str]] = defaultdict(list)
+def _represented_groups(session: Session) -> dict[int, list[Group]]:
+    by_rep: dict[int, list[Group]] = defaultdict(list)
     for g in session.exec(select(Group)).all():
-        by_rep[g.representative_customer_id].append(g.name)
+        by_rep[g.representative_customer_id].append(g)
     return by_rep
+
+
+def _account_count(session: Session, customer_id: int, represented_groups: list[Group]) -> int:
+    """Direct accounts (customer_id == this customer) PLUS every account
+    belonging to a group this customer represents — a representative
+    customer's whole reason for existing is to bill that group, so counting
+    only direct ownership made a customer who clearly manages a full group
+    show up as having "0 accounts", which reads as broken rather than as the
+    deliberate "billed via the group, not directly" distinction it actually
+    is (still shown separately, correctly, on the customer detail page)."""
+    direct = session.exec(select(func.count()).select_from(Account).where(Account.customer_id == customer_id)).one()
+    if not represented_groups:
+        return direct
+    group_ids = [g.id for g in represented_groups]
+    via_groups = session.exec(
+        select(func.count()).select_from(Account).where(Account.group_id.in_(group_ids))
+    ).one()
+    return direct + via_groups
 
 
 @router.get("", response_model=list[CustomerWithBalance])
@@ -27,15 +45,13 @@ def list_customers(session: Session = Depends(get_session)):
     result = []
     for c in customers:
         charge, credit = compute_balance(session, customer_id=c.id)
-        account_count = session.exec(
-            select(func.count()).select_from(Account).where(Account.customer_id == c.id)
-        ).one()
+        groups_for_c = rep_groups.get(c.id, [])
         result.append(
             CustomerWithBalance(
                 **c.model_dump(),
                 balance=charge - credit,
-                account_count=account_count,
-                represented_group_names=rep_groups.get(c.id, []),
+                account_count=_account_count(session, c.id, groups_for_c),
+                represented_group_names=[g.name for g in groups_for_c],
             )
         )
     return result
@@ -56,15 +72,13 @@ def get_customer(customer_id: int, session: Session = Depends(get_session)):
     if not customer:
         raise HTTPException(404, "Customer not found")
     charge, credit = compute_balance(session, customer_id=customer_id)
-    account_count = session.exec(
-        select(func.count()).select_from(Account).where(Account.customer_id == customer_id)
-    ).one()
     rep_groups = _represented_groups(session)
+    groups_for_c = rep_groups.get(customer_id, [])
     return CustomerWithBalance(
         **customer.model_dump(),
         balance=charge - credit,
-        account_count=account_count,
-        represented_group_names=rep_groups.get(customer_id, []),
+        account_count=_account_count(session, customer_id, groups_for_c),
+        represented_group_names=[g.name for g in groups_for_c],
     )
 
 

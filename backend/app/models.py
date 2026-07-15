@@ -89,6 +89,18 @@ class Account(SQLModel, table=True):
     usage_baseline: int = 0
     usage_baseline_at: Optional[datetime] = None
 
+    # prepay's equivalent of usage_baseline: how much of this account's
+    # CURRENT data_limit (package size) has already been charged for.
+    # "prepay" means paying for the package that was SOLD, not metering
+    # consumption within it — billable = data_limit - billed_data_limit,
+    # never used_traffic. Kept as a separate field rather than reusing
+    # usage_baseline: sync_job.py's external-usage-reset detection updates
+    # usage_baseline whenever used_traffic drops unexpectedly, which has
+    # nothing to do with how much of a PACKAGE has been paid for — conflating
+    # the two would let an unrelated usage event silently corrupt package
+    # billing for a prepay account.
+    billed_data_limit: int = 0
+
     # Baseline captured ONCE, immutably, the moment this account is first observed
     # locally (dashboard create, or sync discovering a pre-existing Marzban user) —
     # never touched again after that (unlike usage_baseline, which rolls forward on
