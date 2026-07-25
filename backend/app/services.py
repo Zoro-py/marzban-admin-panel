@@ -5,15 +5,28 @@ from sqlmodel import Session, select
 from app.models import Account, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerType, utcnow
 
 
-def compute_balance(session: Session, *, customer_id: Optional[int] = None, group_id: Optional[int] = None) -> tuple[float, float]:
-    """Returns (total_charge, total_credit) for a customer or a group."""
-    if (customer_id is None) == (group_id is None):
-        raise ValueError("compute_balance needs exactly one of customer_id/group_id")
+def compute_balance(
+    session: Session,
+    *,
+    customer_id: Optional[int] = None,
+    group_id: Optional[int] = None,
+    account_id: Optional[int] = None,
+) -> tuple[float, float]:
+    """Returns (total_charge, total_credit) for a customer, a group, or one
+    specific account within a group (see payer_balance in enrich_accounts:
+    a grouped member's own balance is scoped to entries attributed to THAT
+    account_id, not every entry sharing the group_id — a payment recorded
+    for one member must net against that member's own charges, not the
+    whole group's shared pool)."""
+    if sum(x is not None for x in (customer_id, group_id, account_id)) != 1:
+        raise ValueError("compute_balance needs exactly one of customer_id/group_id/account_id")
 
-    stmt = select(LedgerEntry)
-    stmt = stmt.where(LedgerEntry.customer_id == customer_id) if customer_id is not None else stmt.where(
-        LedgerEntry.group_id == group_id
-    )
+    if customer_id is not None:
+        stmt = select(LedgerEntry).where(LedgerEntry.customer_id == customer_id)
+    elif group_id is not None:
+        stmt = select(LedgerEntry).where(LedgerEntry.group_id == group_id)
+    else:
+        stmt = select(LedgerEntry).where(LedgerEntry.account_id == account_id)
     entries = session.exec(stmt).all()
 
     total_charge = sum(e.amount for e in entries if e.type == LedgerType.charge)
@@ -128,17 +141,27 @@ def enrich_accounts(session: Session, accounts: list[Account]) -> list:
     customers = {c.id: c for c in session.exec(select(Customer)).all()}
     groups = {g.id: g for g in session.exec(select(Group)).all()}
 
-    # Cache balances per payer (customer_id or group_id) so N accounts sharing
-    # one customer/group only compute that balance once, not N times.
+    # Cache customer balances (shared across every account owned by that
+    # customer) so N accounts sharing one customer only compute it once, not
+    # N times. A grouped account's own balance is NOT cacheable the same way
+    # — it's scoped to that specific account_id, not shared with siblings —
+    # see payer_balance below.
     customer_balance_cache: dict[int, float] = {}
-    group_balance_cache: dict[int, float] = {}
 
     def payer_balance(a: Account) -> float:
+        # A grouped account's OWN debt: entries attributed specifically to
+        # this account_id (e.g. a settle that charged this member their fair
+        # share, or a payment recorded against this member individually) —
+        # NOT the group's whole shared pool (compute_balance(group_id=...)),
+        # which would show the same number for every member regardless of
+        # who actually paid. The group's own aggregate balance (still the
+        # true total, including any genuinely unattributed group-level
+        # entries) is computed separately via compute_balance(group_id=...)
+        # wherever the GROUP itself is displayed (see groups.py's
+        # _with_balance) — untouched by this.
         if a.group_id is not None:
-            if a.group_id not in group_balance_cache:
-                charge, credit = compute_balance(session, group_id=a.group_id)
-                group_balance_cache[a.group_id] = charge - credit
-            return group_balance_cache[a.group_id]
+            charge, credit = compute_balance(session, account_id=a.id)
+            return charge - credit
         if a.customer_id is not None:
             if a.customer_id not in customer_balance_cache:
                 charge, credit = compute_balance(session, customer_id=a.customer_id)

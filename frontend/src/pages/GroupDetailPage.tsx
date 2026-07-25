@@ -17,6 +17,7 @@ import { GroupSettingsDialog } from '@/components/groups/GroupSettingsDialog'
 import { UsageBar } from '@/components/UsageBar'
 import { StatusDot } from '@/components/StatusDot'
 import { StatCard } from '@/components/StatCard'
+import { Money } from '@/components/Money'
 import { cn, daysUntil, formatDate, formatToman } from '@/lib/utils'
 
 export function GroupDetailPage() {
@@ -148,13 +149,28 @@ export function GroupDetailPage() {
                   </Tooltip>
                 </span>
               </TableHead>
+              <TableHead>
+                <span className="flex items-center gap-1">
+                  Balance
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Info className="h-3 w-3 cursor-help" />
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-xs">
+                      This member's own posted debt — charges and payments recorded specifically for this account,
+                      separate from the group's shared total above. Settling the whole group charges everyone
+                      together; recording a payment on one account only affects that account.
+                    </TooltipContent>
+                  </Tooltip>
+                </span>
+              </TableHead>
               <TableHead>Expires</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {accountsQuery.data?.length === 0 && (
               <TableRow>
-                <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
+                <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
                   No accounts in this group yet.
                 </TableCell>
               </TableRow>
@@ -182,6 +198,9 @@ export function GroupDetailPage() {
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}
+                  </TableCell>
+                  <TableCell>
+                    <Money amount={a.payer_balance} zero="settled" className="text-xs" />
                   </TableCell>
                   <TableCell>
                     {a.expire === null ? (
