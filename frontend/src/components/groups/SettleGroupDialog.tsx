@@ -48,7 +48,12 @@ export function SettleGroupDialog({ groupId, currentBalance }: { groupId: number
   })
 
   const amount = invoiceQuery.data?.total_amount ?? 0
-  const resultingBalance = currentBalance + amount - (markPaid ? amount : 0)
+  // Marking it paid records a payment per member for whatever each still owes
+  // after their charge (see settle_group), so a member who already paid
+  // individually isn't credited twice. Exact whenever no member is carrying
+  // a credit; otherwise the real result lands at or below this.
+  const owedAfterCharge = currentBalance + amount
+  const resultingBalance = markPaid ? Math.min(0, owedAfterCharge) : owedAfterCharge
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -106,8 +111,8 @@ export function SettleGroupDialog({ groupId, currentBalance }: { groupId: number
           <span className="flex-1">
             <span className="font-medium">Payment received now too</span>
             <p className="mt-0.5 text-muted-foreground">
-              Check this if the representative customer is paying right now — also posts a matching credit so the
-              balance below ends up settled, not owed.
+              Check this if the representative customer is paying right now — records a payment per member for
+              whatever each still owes, so members who already paid individually aren't charged for it twice.
             </p>
           </span>
         </label>

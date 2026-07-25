@@ -64,7 +64,11 @@ export function SettleAccountButton({
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
-  const resultingBalance = currentBalance + amount - (markPaid ? amount : 0)
+  // Marking it paid credits whatever is still OUTSTANDING after the charge
+  // (not the charge amount blindly — see settle_account), so an account
+  // already in credit lands at settled rather than being credited twice.
+  const owedAfterCharge = currentBalance + amount
+  const resultingBalance = markPaid ? Math.min(0, owedAfterCharge) : owedAfterCharge
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -94,8 +98,9 @@ export function SettleAccountButton({
           <span className="flex-1">
             <span className="font-medium">Payment received now too</span>
             <p className="mt-0.5 text-muted-foreground">
-              Check this if they're paying you right now — also posts a matching credit so the balance below ends
-              up settled, not owed. Leave unchecked if you're billing them for later collection.
+              Check this if they're paying you right now — also records a payment for whatever is still outstanding
+              after this charge, so the balance below ends up settled. Leave unchecked if you're billing them for
+              later collection.
             </p>
           </span>
         </label>

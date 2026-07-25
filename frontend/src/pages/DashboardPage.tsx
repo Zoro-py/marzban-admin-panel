@@ -189,17 +189,7 @@ export function DashboardPage() {
                           {' · '}
                         </>
                       )}
-                      {/* Prepay groups only ever carry `balance` (no usage-based
-                          pending concept); payg groups can carry both — already
-                          charged debt sitting unpaid, plus unbilled usage since
-                          the last settle. Show whichever are non-zero. */}
-                      {p.balance > 0 && (
-                        <span className="font-medium text-destructive">{formatToman(p.balance)} owed</span>
-                      )}
-                      {p.balance > 0 && p.pending_amount > 0 && ' · '}
-                      {p.pending_amount > 0 && (
-                        <span className="font-medium text-warning">{formatToman(p.pending_amount)} pending</span>
-                      )}
+                      <QueueAmount netOwed={p.net_owed} pending={p.pending_amount} />
                     </span>
                   </Link>
                 ) : (
@@ -210,7 +200,9 @@ export function DashboardPage() {
                     className="flex items-center justify-between gap-3 px-4 py-1.5 text-left text-[13px] hover:bg-muted/50"
                   >
                     <span className="truncate font-mono text-xs font-medium">{p.name}</span>
-                    <span className="shrink-0 text-xs font-medium text-warning">{formatToman(p.pending_amount)} pending</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      <QueueAmount netOwed={p.net_owed} pending={p.pending_amount} />
+                    </span>
                   </button>
                 ),
               )}
@@ -243,6 +235,25 @@ export function DashboardPage() {
         )}
       </div>
     </div>
+  )
+}
+
+/** What this entity owes right now (posted debt + not-yet-invoiced usage,
+ * netted — see AccountRow.net_owed), with the uninvoiced part named
+ * separately only as a secondary note. Showing the two as competing figures
+ * made an entity that had just been paid off still read as owing. */
+function QueueAmount({ netOwed, pending }: { netOwed: number; pending: number }) {
+  return (
+    <>
+      {netOwed > 0 ? (
+        <span className="font-medium text-destructive">{formatToman(netOwed)} owed</span>
+      ) : netOwed < 0 ? (
+        <span className="font-medium text-credit">{formatToman(Math.abs(netOwed))} cr</span>
+      ) : (
+        <span>settled</span>
+      )}
+      {pending > 0 && <span className="text-muted-foreground"> · {formatToman(pending)} to invoice</span>}
+    </>
   )
 }
 

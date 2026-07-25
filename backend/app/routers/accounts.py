@@ -20,7 +20,14 @@ from app.schemas import (
     AccountRow,
     AccountSettleRequest,
 )
-from app.services import billable_bytes, bytes_from_gb, effective_billing_mode, effective_rate, enrich_accounts
+from app.services import (
+    billable_bytes,
+    bytes_from_gb,
+    compute_balance,
+    effective_billing_mode,
+    effective_rate,
+    enrich_accounts,
+)
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(require_auth)])
 
@@ -271,7 +278,7 @@ def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRe
     balance goes red afterward if `mark_paid` isn't set: nothing has been
     paid yet, only billed. Pass mark_paid=True when the operator is
     collecting payment in the same moment (the common case) to also post a
-    matching credit, netting the balance back to 0 (settled)."""
+    credit that clears whatever is still outstanding after this charge."""
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "Account not found")
@@ -283,6 +290,14 @@ def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRe
     billable_gb = billable / (1024**3)
     rate = effective_rate(session, account)
     amount = round(billable_gb * rate, 2)
+
+    # Read BEFORE adding the charge below: compute_balance issues a SELECT,
+    # which autoflushes pending adds, so reading afterwards would already
+    # include the charge and make the intent of this number ambiguous.
+    prior_balance = 0.0
+    if body.mark_paid and account.customer_id is not None:
+        prior_charge, prior_credit = compute_balance(session, customer_id=account.customer_id)
+        prior_balance = prior_charge - prior_credit
 
     now = utcnow()
     cycle_note = (
@@ -302,16 +317,25 @@ def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRe
             )
         )
         if body.mark_paid:
-            session.add(
-                LedgerEntry(
-                    type=LedgerType.credit,
-                    amount=amount,
-                    customer_id=account.customer_id,
-                    account_id=account.id,
-                    note=f"Payment received at settlement ({now.date().isoformat()})",
-                    source=LedgerSource.web,
+            # Credit what's actually still OUTSTANDING after this charge, not
+            # the charge amount blindly: an account already carrying a credit
+            # (they prepaid, or paid before the usage was invoiced) would
+            # otherwise be handed that credit a second time — settling a
+            # 243,916 charge on someone 230,000 in credit would leave them
+            # 230,000 in credit instead of settled. max(0, ...) because an
+            # account still in credit after the charge has nothing left to pay.
+            credit_amount = round(max(0.0, prior_balance + amount), 2)
+            if credit_amount > 0:
+                session.add(
+                    LedgerEntry(
+                        type=LedgerType.credit,
+                        amount=credit_amount,
+                        customer_id=account.customer_id,
+                        account_id=account.id,
+                        note=f"Payment received at settlement ({now.date().isoformat()})",
+                        source=LedgerSource.web,
+                    )
                 )
-            )
 
     if mode == BillingMode.payg:
         account.usage_baseline = account.used_traffic

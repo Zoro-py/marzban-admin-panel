@@ -151,14 +151,14 @@ export function GroupDetailPage() {
               </TableHead>
               <TableHead>
                 <span className="flex items-center gap-1">
-                  Balance
+                  Owes now
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Info className="h-3 w-3 cursor-help" />
                     </TooltipTrigger>
                     <TooltipContent className="max-w-xs">
-                      This member's own posted debt — charges and payments recorded specifically for this account,
-                      separate from the group's shared total above. Settling the whole group charges everyone
+                      What this member owes right now — their own posted charges and payments, plus their share of
+                      the usage above that hasn't been invoiced yet. Settling the whole group charges everyone
                       together; recording a payment on one account only affects that account.
                     </TooltipContent>
                   </Tooltip>
@@ -200,7 +200,7 @@ export function GroupDetailPage() {
                     )}
                   </TableCell>
                   <TableCell>
-                    <Money amount={a.payer_balance} zero="settled" className="text-xs" />
+                    <Money amount={a.net_owed} zero="settled" className="text-xs" />
                   </TableCell>
                   <TableCell>
                     {a.expire === null ? (

@@ -45,7 +45,7 @@ function matchesView(a: AccountRow, view: View): boolean {
     case 'unassigned':
       return a.customer_id === null && a.group_id === null
     case 'debt':
-      return a.payer_balance > 0 || a.pending_amount > 0
+      return a.net_owed > 0
     case 'payg':
       return a.effective_billing_mode === 'payg'
     case 'no_rate':
@@ -310,30 +310,31 @@ function AccountTableRow({
         )}
       </TableCell>
       <TableCell className="text-right">
-        {a.payer_balance === 0 && a.pending_amount <= 0 ? (
-          // "settled", not a bare dash — a dash reads as "no data", which is
-          // ambiguous with a genuinely paid-off account (0 owed, 0 credit).
-          <span className="text-xs text-muted-foreground">settled</span>
-        ) : (
-          <span className="flex flex-col items-end gap-0.5">
-            {a.payer_balance !== 0 && <Money amount={a.payer_balance} className="text-xs" />}
-            {a.pending_amount > 0 && (
-              <span className="flex items-center gap-2">
-                <span className="text-[11px] font-medium text-warning">{formatToman(a.pending_amount)} pending</span>
-                {/* Only standalone accounts settle individually — a grouped
-                    account's pending is settled via its group's own button. */}
-                {a.group_id === null && (
-                  <SettleAccountButton
-                    accountId={a.id}
-                    username={a.marzban_username}
-                    amount={a.pending_amount}
-                    currentBalance={a.payer_balance}
-                  />
-                )}
+        {/* ONE number: what they owe right now (posted debt + not-yet-invoiced
+            usage, netted). Showing those two parts as separate competing
+            figures made an account that had just been paid off still read as
+            owing the full unbilled amount. "settled" rather than a bare dash
+            for zero — a dash reads as "no data". */}
+        <span className="flex flex-col items-end gap-0.5">
+          <Money amount={a.net_owed} zero="settled" className="text-xs" />
+          {a.pending_amount > 0 && (
+            <span className="flex items-center gap-2">
+              <span className="text-[11px] text-muted-foreground">
+                {formatToman(a.pending_amount)} not invoiced yet
               </span>
-            )}
-          </span>
-        )}
+              {/* Only standalone accounts settle individually — a grouped
+                  account's pending is settled via its group's own button. */}
+              {a.group_id === null && (
+                <SettleAccountButton
+                  accountId={a.id}
+                  username={a.marzban_username}
+                  amount={a.pending_amount}
+                  currentBalance={a.payer_balance}
+                />
+              )}
+            </span>
+          )}
+        </span>
       </TableCell>
     </TableRow>
   )
@@ -351,7 +352,7 @@ function compareBy(key: string, a: AccountRow, b: AccountRow): number {
       return pctA - pctB
     }
     case 'balance':
-      return (a.payer_balance + a.pending_amount) - (b.payer_balance + b.pending_amount)
+      return a.net_owed - b.net_owed
     case 'rate':
       return a.effective_rate - b.effective_rate
     case 'expires':

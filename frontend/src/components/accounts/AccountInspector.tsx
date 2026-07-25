@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { accountsApi, customersApi, groupsApi, ledgerApi, apiErrorMessage } from '@/lib/api'
 import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
+import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import type { AccountRow, AccountRole, BillingMode, LedgerType } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -163,13 +164,57 @@ function InspectorBody({ account, onClose }: { account: AccountRow; onClose: () 
                 'free'
               )}
             </span>
-            <span className="text-muted-foreground">{account.group_id ? "Group's balance" : 'Balance'}</span>
+            {/* ONE figure: posted debt + not-yet-invoiced usage, netted. See
+                AccountRow.net_owed — showing those two separately made an
+                account that had just been paid off still read as owing. */}
+            <span className="text-muted-foreground">Owes now</span>
             <span className="text-right">
-              <Money amount={account.payer_balance} zero="settled" />
+              <Money amount={account.net_owed} zero="settled" />
             </span>
+            {account.pending_amount > 0 && (
+              <>
+                <span className="pl-2 text-muted-foreground/70">not invoiced yet</span>
+                <span className="text-right tabular-nums text-muted-foreground/70">
+                  {formatToman(account.pending_amount)}
+                </span>
+              </>
+            )}
             <span className="text-muted-foreground">Last synced</span>
             <span className="text-right text-muted-foreground">{formatAgo(account.last_synced_at)}</span>
           </div>
+
+          {/* Money in/out for THIS account, in Toman, entered directly — the
+              GB × rate form below is for selling volume, and having it be the
+              only way in meant recording a payment required reverse-engineering
+              a GB figure that multiplied out to the amount received. */}
+          {canBill && (
+            <div className="flex gap-2">
+              <LedgerActionDialog
+                accountId={account.id}
+                customerId={account.customer_id ?? undefined}
+                groupId={account.group_id ?? undefined}
+                defaultType="credit"
+                currentBalance={account.net_owed}
+                trigger={
+                  <Button size="sm" variant="outline" className="flex-1">
+                    Record payment
+                  </Button>
+                }
+              />
+              <LedgerActionDialog
+                accountId={account.id}
+                customerId={account.customer_id ?? undefined}
+                groupId={account.group_id ?? undefined}
+                defaultType="charge"
+                currentBalance={account.net_owed}
+                trigger={
+                  <Button size="sm" variant="ghost">
+                    Add debt
+                  </Button>
+                }
+              />
+            </div>
+          )}
         </div>
 
         <AdjustSection account={account} canBill={canBill} />
@@ -474,16 +519,30 @@ function InvoiceSection({ account, canBill }: { account: AccountRow; canBill: bo
   const [price, setPrice] = React.useState(account.effective_rate ? String(account.effective_rate) : '')
   const [period, setPeriod] = React.useState('')
   const [note, setNote] = React.useState('')
+  // The amount is the source of truth, NOT the GB × rate product. GB × rate
+  // merely fills it in as a convenience for "sold N GB at the usual rate" —
+  // any real figure (a rounded price, a discount, an odd cash amount) can be
+  // typed straight in, instead of hunting for a GB number that happens to
+  // multiply out to it.
+  const [amountInput, setAmountInput] = React.useState('')
+  const [amountTouched, setAmountTouched] = React.useState(false)
   const invalidate = useInvalidateAccount(account.id)
 
-  const amount = (Number(volumeGb) || 0) * (Number(price) || 0)
+  const computedFromGb = (Number(volumeGb) || 0) * (Number(price) || 0)
+  React.useEffect(() => {
+    if (!amountTouched) setAmountInput(computedFromGb > 0 ? String(Math.round(computedFromGb)) : '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [computedFromGb])
+
+  const amount = Number(amountInput) || 0
 
   const mutation = useMutation({
     mutationFn: () => {
       // Posts with the account's own customer_id/group_id as-is — never
       // resolving the group's representative as a customer fallback — so the
       // entry shows up in the same balance this account's row displays.
-      const parts = [`${volumeGb || 0} GB × ${formatToman(Number(price) || 0)}/GB`]
+      const parts: string[] = []
+      if (Number(volumeGb) > 0) parts.push(`${volumeGb} GB × ${formatToman(Number(price) || 0)}/GB`)
       if (period) parts.push(`for ${period}`)
       if (note) parts.push(`— ${note}`)
       return ledgerApi.create({
@@ -492,7 +551,7 @@ function InvoiceSection({ account, canBill }: { account: AccountRow; canBill: bo
         customer_id: account.customer_id ?? undefined,
         group_id: account.group_id ?? undefined,
         account_id: account.id,
-        note: parts.join(' '),
+        note: parts.join(' ') || undefined,
       })
     },
     onSuccess: () => {
@@ -501,6 +560,8 @@ function InvoiceSection({ account, canBill }: { account: AccountRow; canBill: bo
       setVolumeGb('')
       setPeriod('')
       setNote('')
+      setAmountInput('')
+      setAmountTouched(false)
     },
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
@@ -528,9 +589,23 @@ function InvoiceSection({ account, canBill }: { account: AccountRow; canBill: bo
           </button>
         ))}
       </div>
+      <div className="flex flex-col gap-1.5">
+        <Label className="text-xs" htmlFor="insp-inv-amount">Amount (Toman)</Label>
+        <Input
+          id="insp-inv-amount"
+          type="number"
+          min={0}
+          value={amountInput}
+          onChange={(e) => {
+            setAmountTouched(true)
+            setAmountInput(e.target.value)
+          }}
+          placeholder="150000"
+        />
+      </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="flex flex-col gap-1.5">
-          <Label className="text-xs" htmlFor="insp-inv-gb">Volume (GB)</Label>
+          <Label className="text-xs" htmlFor="insp-inv-gb">Volume (GB) — optional</Label>
           <Input id="insp-inv-gb" type="number" min={0} value={volumeGb} onChange={(e) => setVolumeGb(e.target.value)} placeholder="0" />
         </div>
         <div className="flex flex-col gap-1.5">
@@ -538,6 +613,9 @@ function InvoiceSection({ account, canBill }: { account: AccountRow; canBill: bo
           <Input id="insp-inv-price" type="number" min={0} value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0" />
         </div>
       </div>
+      <p className="text-[11px] text-muted-foreground">
+        Filling volume × price just calculates the amount above for you — edit it directly for any other figure.
+      </p>
       <div className="grid grid-cols-2 gap-3">
         <Input value={period} onChange={(e) => setPeriod(e.target.value)} placeholder="Period, e.g. Mordad 1405" />
         <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note — optional" />

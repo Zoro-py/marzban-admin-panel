@@ -204,15 +204,24 @@ class AccountRow(AccountRead):
     # operator can legitimately price an account at 0 (comp/free) — that's
     # rate_configured=True, effective_rate=0, distinct from never-configured.
     rate_configured: bool
-    # Balance of whoever actually pays for this account (its customer, or its
-    # group's representative customer) — not a per-account ledger slice, since
-    # billing is modeled at the customer/group level, not the account level.
+    # POSTED ledger balance scoped to this account alone — see
+    # services.account_scoped_balance for exactly what counts. Prefer
+    # net_owed for display; this is the "already invoiced" half of it.
     payer_balance: float
-    # This account's own unbilled usage-based amount since its last settle —
-    # 0 for prepay. payer_balance only reflects REAL posted charges, which for
-    # a grouped account stays 0 until the whole group is settled, so without
-    # this a member with heavy real usage looks debt-free until then.
+    # This account's own unbilled amount since its last settle. payer_balance
+    # only reflects REAL posted charges, which for a grouped account stays 0
+    # until the group is settled, so without this a member with heavy real
+    # usage looks debt-free until then.
     pending_amount: float
+    # THE number to display as "what do they owe me right now":
+    # payer_balance + pending_amount. Showing those two side by side instead
+    # made a customer who had just paid off their debt look like they still
+    # owed the full unbilled amount (a 230,000 credit next to a 243,916
+    # pending, when the honest answer is "13,916 owed"). Netting them is also
+    # STABLE ACROSS SETTLING — settle moves an amount from pending into
+    # payer_balance, leaving this figure unchanged, which is exactly right:
+    # formalizing a bill doesn't change what someone owes.
+    net_owed: float
     # How this account is ACTUALLY billed: its group's mode when it belongs to
     # one (group settle bills every member by the group's mode regardless of
     # their own field — see services.effective_billing_mode), else its own

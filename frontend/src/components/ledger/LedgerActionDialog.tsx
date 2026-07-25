@@ -22,19 +22,31 @@ import { CircleMinus, CirclePlus } from 'lucide-react'
 interface LedgerActionDialogProps {
   customerId?: number
   groupId?: number
+  // Attributes the entry to one specific account. Required to record a
+  // payment for a single member of a group without it landing in the group's
+  // shared pool (see services.compute_balance's account_id scoping) — and
+  // the whole point of exposing this dialog on an account at all: money in
+  // Toman, entered directly, instead of reverse-engineering a GB figure that
+  // multiplies out to the amount actually received.
+  accountId?: number
   trigger?: React.ReactNode
   defaultType?: LedgerType
-  // Current balance (positive = owed to us, negative = credit owed back) —
-  // when given, the dialog can show "pay in full" and a live preview of what
-  // recording this amount would leave as the new balance. Covers item 1 of
-  // the follow-up feedback in full: partial payment (any amount less than the
-  // balance), adding to debt (Debt tab), and recording an overpayment that
-  // leaves a credit owed back (Credit tab, amount > current balance) are all
-  // just this one form — the gap was that none of that was ever explained.
+  // What they owe right now (positive = owed to us, negative = credit owed
+  // back) — when given, the dialog shows "pay in full" and a live preview of
+  // what recording this amount would leave. Pass the NET figure
+  // (AccountRow.net_owed), not just posted debt, so "pay in full" settles
+  // what the operator actually sees on the row.
   currentBalance?: number
 }
 
-export function LedgerActionDialog({ customerId, groupId, trigger, defaultType = 'charge', currentBalance }: LedgerActionDialogProps) {
+export function LedgerActionDialog({
+  customerId,
+  groupId,
+  accountId,
+  trigger,
+  defaultType = 'charge',
+  currentBalance,
+}: LedgerActionDialogProps) {
   const [open, setOpen] = React.useState(false)
   const [type, setType] = React.useState<LedgerType>(defaultType)
   const [amount, setAmount] = React.useState('')
@@ -56,10 +68,13 @@ export function LedgerActionDialog({ customerId, groupId, trigger, defaultType =
         amount: Number(amount),
         customer_id: customerId,
         group_id: groupId,
+        account_id: accountId,
         note: note || undefined,
       }),
     onSuccess: () => {
-      toast.success(type === 'charge' ? 'Debt recorded' : 'Credit recorded')
+      toast.success(type === 'charge' ? 'Debt recorded' : 'Payment recorded')
+      queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      queryClient.invalidateQueries({ queryKey: ['account'] })
       queryClient.invalidateQueries({ queryKey: ['customers'] })
       queryClient.invalidateQueries({ queryKey: ['groups'] })
       queryClient.invalidateQueries({ queryKey: ['ledger'] })

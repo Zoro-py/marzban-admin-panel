@@ -171,6 +171,15 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
         if group.billing_mode == BillingMode.prepay
         else f"Usage settlement for cycle ending {now.date().isoformat()}"
     )
+    # Read every member's prior balance BEFORE adding any entry below:
+    # compute_balance issues a SELECT, which autoflushes pending adds, so
+    # reading inside the loop would start folding in charges just posted.
+    prior_balances: dict[int, float] = {}
+    if body.mark_paid:
+        for line in lines:
+            m_charge, m_credit = compute_balance(session, account_id=line["account_id"])
+            prior_balances[line["account_id"]] = m_charge - m_credit
+
     for line in lines:
         if line["amount"] <= 0:
             continue
@@ -186,17 +195,23 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
             )
         )
         if body.mark_paid:
-            session.add(
-                LedgerEntry(
-                    type=LedgerType.credit,
-                    amount=line["amount"],
-                    customer_id=group.representative_customer_id,
-                    group_id=group.id,
-                    account_id=line["account_id"],
-                    note=f"Payment received at settlement ({now.date().isoformat()})",
-                    source=LedgerSource.web,
+            # Per member, credit only what that member still OWES after this
+            # charge — a member who already paid individually (their credit is
+            # attributed to their own account_id) must not be handed that
+            # credit again. See settle_account for the same reasoning.
+            credit_amount = round(max(0.0, prior_balances.get(line["account_id"], 0.0) + line["amount"]), 2)
+            if credit_amount > 0:
+                session.add(
+                    LedgerEntry(
+                        type=LedgerType.credit,
+                        amount=credit_amount,
+                        customer_id=group.representative_customer_id,
+                        group_id=group.id,
+                        account_id=line["account_id"],
+                        note=f"Payment received at settlement ({now.date().isoformat()})",
+                        source=LedgerSource.web,
+                    )
                 )
-            )
 
     for a in accounts:
         if group.billing_mode == BillingMode.payg:

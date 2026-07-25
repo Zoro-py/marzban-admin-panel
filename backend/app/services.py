@@ -1,5 +1,6 @@
 from typing import Optional
 
+from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
 from app.models import Account, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerType, utcnow
@@ -32,6 +33,43 @@ def compute_balance(
     total_charge = sum(e.amount for e in entries if e.type == LedgerType.charge)
     total_credit = sum(e.amount for e in entries if e.type == LedgerType.credit)
     return total_charge, total_credit
+
+
+def account_scoped_balance(session: Session, account: Account) -> float:
+    """Posted balance for ONE account, without bleeding in money that belongs
+    to something else.
+
+    - Grouped member: only entries attributed to this account_id. Its
+      siblings' charges and payments are theirs, not this one's.
+    - Standalone: entries attributed to this account, PLUS its customer's
+      entries that aren't attributed anywhere else (no account_id, no
+      group_id) — a payment recorded on the customer page is meant for their
+      account. Deliberately NOT the customer's whole balance: a customer who
+      also represents a group carries that group's debt (group settle posts
+      with customer_id set too), which would otherwise show up on their
+      personal account as if they owed it twice.
+    """
+    if account.group_id is not None:
+        charge, credit = compute_balance(session, account_id=account.id)
+        return charge - credit
+    if account.customer_id is None:
+        return 0.0
+
+    entries = session.exec(
+        select(LedgerEntry).where(
+            or_(
+                LedgerEntry.account_id == account.id,
+                and_(
+                    LedgerEntry.customer_id == account.customer_id,
+                    LedgerEntry.account_id.is_(None),
+                    LedgerEntry.group_id.is_(None),
+                ),
+            )
+        )
+    ).all()
+    charge = sum(e.amount for e in entries if e.type == LedgerType.charge)
+    credit = sum(e.amount for e in entries if e.type == LedgerType.credit)
+    return charge - credit
 
 
 GB = 1024**3
@@ -141,34 +179,6 @@ def enrich_accounts(session: Session, accounts: list[Account]) -> list:
     customers = {c.id: c for c in session.exec(select(Customer)).all()}
     groups = {g.id: g for g in session.exec(select(Group)).all()}
 
-    # Cache customer balances (shared across every account owned by that
-    # customer) so N accounts sharing one customer only compute it once, not
-    # N times. A grouped account's own balance is NOT cacheable the same way
-    # — it's scoped to that specific account_id, not shared with siblings —
-    # see payer_balance below.
-    customer_balance_cache: dict[int, float] = {}
-
-    def payer_balance(a: Account) -> float:
-        # A grouped account's OWN debt: entries attributed specifically to
-        # this account_id (e.g. a settle that charged this member their fair
-        # share, or a payment recorded against this member individually) —
-        # NOT the group's whole shared pool (compute_balance(group_id=...)),
-        # which would show the same number for every member regardless of
-        # who actually paid. The group's own aggregate balance (still the
-        # true total, including any genuinely unattributed group-level
-        # entries) is computed separately via compute_balance(group_id=...)
-        # wherever the GROUP itself is displayed (see groups.py's
-        # _with_balance) — untouched by this.
-        if a.group_id is not None:
-            charge, credit = compute_balance(session, account_id=a.id)
-            return charge - credit
-        if a.customer_id is not None:
-            if a.customer_id not in customer_balance_cache:
-                charge, credit = compute_balance(session, customer_id=a.customer_id)
-                customer_balance_cache[a.customer_id] = charge - credit
-            return customer_balance_cache[a.customer_id]
-        return 0.0
-
     # created_at/first_seen_traffic_at round-trip through SQLite as naive even
     # though utcnow() produces an aware datetime (same quirk documented in
     # reports.py) — strip tzinfo here too so the subtraction below doesn't raise.
@@ -206,6 +216,7 @@ def enrich_accounts(session: Session, accounts: list[Account]) -> list:
         # what was USED, prepay bills the PACKAGE SIZE itself.
         billable_gb = billable_bytes(a, eff_mode) / (1024**3)
         pending = round(billable_gb * effective_rate(session, a, group), 2)
+        balance = round(account_scoped_balance(session, a), 2)
 
         rows.append(
             AccountRow(
@@ -214,8 +225,12 @@ def enrich_accounts(session: Session, accounts: list[Account]) -> list:
                 group_name=group.name if group else None,
                 effective_rate=effective_rate(session, a, group),
                 rate_configured=rate_is_configured(session, a, group),
-                payer_balance=round(payer_balance(a), 2),
+                payer_balance=balance,
                 pending_amount=pending,
+                # Posted debt and unbilled usage are the same debt at two
+                # stages, not two separate debts — a payment already made
+                # must count against usage not yet invoiced.
+                net_owed=round(balance + pending, 2),
                 effective_billing_mode=eff_mode,
                 monthly_avg_usage_gb=monthly_avg_usage_gb,
                 usage_confidence=usage_confidence,

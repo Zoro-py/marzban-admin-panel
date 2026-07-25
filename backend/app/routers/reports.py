@@ -8,7 +8,14 @@ from sqlmodel import Session, select
 from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerType, OnlineSnapshot, utcnow
-from app.services import billable_bytes, compute_balance, effective_billing_mode, effective_rate, rate_is_configured
+from app.services import (
+    account_scoped_balance,
+    billable_bytes,
+    compute_balance,
+    effective_billing_mode,
+    effective_rate,
+    rate_is_configured,
+)
 
 router = APIRouter(prefix="/api/reports", tags=["reports"], dependencies=[Depends(require_auth)])
 
@@ -148,24 +155,29 @@ def summary(
                 "billing_mode": g.billing_mode,
                 "pending_amount": pending,
                 "balance": balance,
+                # What they actually owe right now — see AccountRow.net_owed:
+                # posted debt and not-yet-invoiced usage are the same debt at
+                # two stages, so a payment already made has to count against
+                # usage not yet billed.
+                "net_owed": round(balance + pending, 2),
                 "is_due": is_due,
                 "days_overdue": round((now_dt - next_due_at).total_seconds() / 86400, 1) if is_due else None,
             }
         )
 
-    # Standalone (non-grouped) accounts: their own usage-based pending amount
-    # is shown here, regardless of billing_mode — same estimate-not-a-charge
-    # reasoning as groups above. Deliberately NOT their customer's `balance`
-    # here — that balance belongs to the CUSTOMER (already visible via
-    # overdue_customers above), and a customer with several accounts would
-    # have the same number show up once per account here, looking like
-    # separate debts instead of one.
+    # Standalone (non-grouped) accounts. `balance` comes from the same
+    # account_scoped_balance() the Accounts table uses, so clicking through
+    # from here can't contradict what the dashboard just said.
     for a in accounts:
         if a.group_id is not None:
             continue
         billable_gb = billable_bytes(a, a.billing_mode) / (1024**3)
         pending = round(billable_gb * effective_rate(session, a, None), 2)
-        if pending <= 0:
+        balance = round(account_scoped_balance(session, a), 2)
+        net = round(balance + pending, 2)
+        # Nothing pending AND nothing owed -> not a queue item. A negative net
+        # (they're in credit) isn't either: that's not something to chase.
+        if pending <= 0 and net <= 0:
             continue
         pending_settlement.append(
             {
@@ -174,13 +186,14 @@ def summary(
                 "name": a.marzban_username,
                 "billing_mode": a.billing_mode,
                 "pending_amount": pending,
-                "balance": 0.0,
+                "balance": balance,
+                "net_owed": net,
                 "is_due": None,
                 "days_overdue": None,
             }
         )
 
-    pending_settlement.sort(key=lambda x: -(x["pending_amount"] + x["balance"]))
+    pending_settlement.sort(key=lambda x: -x["net_owed"])
     total_pending = round(sum(x["pending_amount"] for x in pending_settlement), 2)
 
     return {

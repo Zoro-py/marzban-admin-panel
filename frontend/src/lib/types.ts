@@ -72,12 +72,15 @@ export interface AccountRow extends Account {
   // explicit 0 (comp/free account) is rate_configured=true, distinct from
   // never-configured.
   rate_configured: boolean
+  // POSTED ledger entries only — prefer net_owed for display.
   payer_balance: number
-  // This account's own unbilled usage-based amount since its last settle —
-  // always 0 for prepay. payer_balance alone stays 0 for a grouped account
-  // until the whole group is settled, so this is what makes a member with
-  // real usage show as owing something before that happens.
+  // Unbilled amount since the last settle (not yet a real ledger charge).
   pending_amount: number
+  // THE figure to show as "what do they owe": payer_balance + pending_amount.
+  // Posted debt and not-yet-invoiced usage are the same debt at two stages,
+  // so showing them as two competing numbers made someone who had just paid
+  // look like they still owed the full unbilled amount.
+  net_owed: number
   // How this account is ACTUALLY billed: its group's mode when grouped
   // (group settle bills every member by the group's mode regardless of their
   // own field), else its own billing_mode. Use this, not the raw
@@ -145,15 +148,13 @@ export interface ReportSummary {
     id: number
     name: string
     billing_mode: BillingMode
-    // Unbilled usage-based preview since the last settle (payg groups/accounts
-    // only — always 0 for prepay, which has no usage-driven cycle).
+    // Unbilled amount since the last settle (not yet a real ledger charge).
     pending_amount: number
-    // Real posted debt (charges minus credits). Populated for groups (both
-    // prepay and payg — group-scoped balance never overlaps another entity's).
-    // Always 0 for standalone accounts: their debt is customer-level and
-    // already surfaced via overdue_customers, so repeating it here per-account
-    // would double-count the same debt across every account a customer owns.
+    // Real posted debt (charges minus credits) for this entity.
     balance: number
+    // balance + pending_amount — what they actually owe right now, and the
+    // figure this queue is sorted by.
+    net_owed: number
     is_due: boolean | null
     days_overdue: number | null
   }[]
