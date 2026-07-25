@@ -1,75 +1,164 @@
+from collections import defaultdict
 from typing import Optional
 
-from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
 from app.models import Account, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerType, utcnow
 
+# ══════════════════════════════════════════════════════════════ the money model
+#
+# ONE OWNER PER ENTRY. Every LedgerEntry is owned by exactly one scope,
+# resolved in this order:
+#
+#     account_id set     -> that account's own money
+#     else group_id set  -> group-level money not tied to any one member
+#     else customer_id   -> customer-level money not tied to any account
+#
+# The other FK columns are still written and still drive the ledger/history
+# views, but they are NEVER summed into a balance. An entry counted at two
+# levels at once is precisely how one member's payment could flip their whole
+# group into being a creditor: the payment landed in the group's pooled total
+# while the matching charge sat somewhere else, so the two never cancelled.
+#
+# ROLL-UPS ARE SUMS OF THE LEVEL BELOW — never an independent re-query that
+# could overlap, miss, or drift:
+#
+#     account   = its own entries            (+ its uninvoiced usage, for net)
+#     group     = Σ members + group-only entries
+#     customer  = Σ directly-owned accounts + Σ represented groups
+#                 + customer-only entries
+#
+# Because each level is defined as the sum of the level below it, a group's
+# figure can never disagree with the member rows printed underneath it. That
+# consistency is the whole point — it is a structural guarantee, not something
+# each screen has to remember to reproduce.
+#
+# Two figures exist at every level and are always shown NETTED, never side by
+# side (see AccountRow.net_owed):
+#     posted  — already invoiced (real ledger entries)
+#     pending — accrued but not yet invoiced
+#     net     = posted + pending  ("owes now")
+# Settling moves an amount from pending to posted, leaving net unchanged,
+# which is correct: formalising a bill doesn't change what someone owes.
 
-def compute_balance(
-    session: Session,
-    *,
-    customer_id: Optional[int] = None,
-    group_id: Optional[int] = None,
-    account_id: Optional[int] = None,
-) -> tuple[float, float]:
-    """Returns (total_charge, total_credit) for a customer, a group, or one
-    specific account within a group (see payer_balance in enrich_accounts:
-    a grouped member's own balance is scoped to entries attributed to THAT
-    account_id, not every entry sharing the group_id — a payment recorded
-    for one member must net against that member's own charges, not the
-    whole group's shared pool)."""
-    if sum(x is not None for x in (customer_id, group_id, account_id)) != 1:
-        raise ValueError("compute_balance needs exactly one of customer_id/group_id/account_id")
 
-    if customer_id is not None:
-        stmt = select(LedgerEntry).where(LedgerEntry.customer_id == customer_id)
-    elif group_id is not None:
-        stmt = select(LedgerEntry).where(LedgerEntry.group_id == group_id)
-    else:
-        stmt = select(LedgerEntry).where(LedgerEntry.account_id == account_id)
-    entries = session.exec(stmt).all()
-
-    total_charge = sum(e.amount for e in entries if e.type == LedgerType.charge)
-    total_credit = sum(e.amount for e in entries if e.type == LedgerType.credit)
-    return total_charge, total_credit
+def _signed(entry: LedgerEntry) -> float:
+    """Charges are positive (they owe us), credits negative (we owe them)."""
+    return entry.amount if entry.type == LedgerType.charge else -entry.amount
 
 
-def account_scoped_balance(session: Session, account: Account) -> float:
-    """Posted balance for ONE account, without bleeding in money that belongs
-    to something else.
+class MoneyBook:
+    """Answers "what does X owe right now" for accounts, groups and customers
+    off a single consistent snapshot.
 
-    - Grouped member: only entries attributed to this account_id. Its
-      siblings' charges and payments are theirs, not this one's.
-    - Standalone: entries attributed to this account, PLUS its customer's
-      entries that aren't attributed anywhere else (no account_id, no
-      group_id) — a payment recorded on the customer page is meant for their
-      account. Deliberately NOT the customer's whole balance: a customer who
-      also represents a group carries that group's debt (group settle posts
-      with customer_id set too), which would otherwise show up on their
-      personal account as if they owed it twice.
+    Built once per request and passed around, so every figure on a page comes
+    from the same read — two numbers on the same screen cannot disagree
+    because one of them was computed a query later than the other.
     """
-    if account.group_id is not None:
-        charge, credit = compute_balance(session, account_id=account.id)
-        return charge - credit
-    if account.customer_id is None:
-        return 0.0
 
+    def __init__(self, session: Session):
+        self.session = session
+        self._accounts = session.exec(select(Account)).all()
+        self._groups = {g.id: g for g in session.exec(select(Group)).all()}
+
+        # Each entry bucketed exactly once, by its single owning scope.
+        self._posted_by_account: dict[int, float] = defaultdict(float)
+        self._posted_group_only: dict[int, float] = defaultdict(float)
+        self._posted_customer_only: dict[int, float] = defaultdict(float)
+        for e in session.exec(select(LedgerEntry)).all():
+            amount = _signed(e)
+            if e.account_id is not None:
+                self._posted_by_account[e.account_id] += amount
+            elif e.group_id is not None:
+                self._posted_group_only[e.group_id] += amount
+            elif e.customer_id is not None:
+                self._posted_customer_only[e.customer_id] += amount
+            # An entry with no owner at all belongs to nobody and is left out
+            # of every balance, rather than being quietly attached to whatever
+            # scope happened to be asking.
+
+        self._members: dict[int, list[Account]] = defaultdict(list)
+        self._owned_directly: dict[int, list[Account]] = defaultdict(list)
+        for a in self._accounts:
+            if a.group_id is not None:
+                self._members[a.group_id].append(a)
+            elif a.customer_id is not None:
+                # Grouped accounts roll up through their GROUP (which rolls up
+                # to its representative), never also through their own
+                # customer — that would be the same double count again.
+                self._owned_directly[a.customer_id].append(a)
+
+        self._pending_cache: dict[int, float] = {}
+
+    # ------------------------------------------------------------- accounts
+    def account_posted(self, account: Account) -> float:
+        return self._posted_by_account.get(account.id, 0.0)
+
+    def account_pending(self, account: Account) -> float:
+        """Accrued but not yet invoiced, at this account's effective rate."""
+        if account.id not in self._pending_cache:
+            group = self._groups.get(account.group_id) if account.group_id else None
+            mode = effective_billing_mode(self.session, account, group)
+            billable_gb = billable_bytes(account, mode) / GB
+            self._pending_cache[account.id] = round(billable_gb * effective_rate(self.session, account, group), 2)
+        return self._pending_cache[account.id]
+
+    def account_net(self, account: Account) -> float:
+        return round(self.account_posted(account) + self.account_pending(account), 2)
+
+    # --------------------------------------------------------------- groups
+    def group_members(self, group: Group) -> list[Account]:
+        return self._members.get(group.id, [])
+
+    def group_posted(self, group: Group) -> float:
+        members = sum(self.account_posted(a) for a in self.group_members(group))
+        return round(members + self._posted_group_only.get(group.id, 0.0), 2)
+
+    def group_pending(self, group: Group) -> float:
+        return round(sum(self.account_pending(a) for a in self.group_members(group)), 2)
+
+    def group_net(self, group: Group) -> float:
+        return round(self.group_posted(group) + self.group_pending(group), 2)
+
+    # ------------------------------------------------------------ customers
+    def customer_accounts(self, customer: Customer) -> list[Account]:
+        """Accounts this customer pays for directly (not via a group)."""
+        return self._owned_directly.get(customer.id, [])
+
+    def represented_groups(self, customer: Customer) -> list[Group]:
+        return [g for g in self._groups.values() if g.representative_customer_id == customer.id]
+
+    def customer_posted(self, customer: Customer) -> float:
+        total = sum(self.account_posted(a) for a in self.customer_accounts(customer))
+        total += sum(self.group_posted(g) for g in self.represented_groups(customer))
+        total += self._posted_customer_only.get(customer.id, 0.0)
+        return round(total, 2)
+
+    def customer_pending(self, customer: Customer) -> float:
+        total = sum(self.account_pending(a) for a in self.customer_accounts(customer))
+        total += sum(self.group_pending(g) for g in self.represented_groups(customer))
+        return round(total, 2)
+
+    def customer_net(self, customer: Customer) -> float:
+        return round(self.customer_posted(customer) + self.customer_pending(customer), 2)
+
+
+def account_posted_balance(session: Session, account_id: int) -> float:
+    """One account's posted balance, read directly — for the settle endpoints,
+    which need this mid-transaction and shouldn't pay for a whole MoneyBook."""
+    entries = session.exec(select(LedgerEntry).where(LedgerEntry.account_id == account_id)).all()
+    return sum(_signed(e) for e in entries)
+
+
+def group_only_posted_balance(session: Session, group_id: int) -> float:
+    """The part of a group's posted balance that belongs to the group itself
+    rather than to any one member (a setup fee, an adjustment). Settling a
+    group and marking it paid has to clear this too, or "paid in full" would
+    leave the group still owing money it had no member to attribute it to."""
     entries = session.exec(
-        select(LedgerEntry).where(
-            or_(
-                LedgerEntry.account_id == account.id,
-                and_(
-                    LedgerEntry.customer_id == account.customer_id,
-                    LedgerEntry.account_id.is_(None),
-                    LedgerEntry.group_id.is_(None),
-                ),
-            )
-        )
+        select(LedgerEntry).where(LedgerEntry.group_id == group_id, LedgerEntry.account_id.is_(None))
     ).all()
-    charge = sum(e.amount for e in entries if e.type == LedgerType.charge)
-    credit = sum(e.amount for e in entries if e.type == LedgerType.credit)
-    return charge - credit
+    return sum(_signed(e) for e in entries)
 
 
 GB = 1024**3
@@ -168,14 +257,19 @@ MIN_USAGE_SAMPLE_DAYS = 3.0
 FULL_CONFIDENCE_DAYS = 30.0
 
 
-def enrich_accounts(session: Session, accounts: list[Account]) -> list:
+def enrich_accounts(session: Session, accounts: list[Account], book: Optional[MoneyBook] = None) -> list:
     """Builds the AccountRow shape (balance, effective rate, monthly-average
     usage, etc.) shared by every endpoint that lists accounts — accounts.py's
     own list/detail routes, and customers.py/groups.py's account sub-lists —
     so all of them agree on the same resolved numbers instead of each screen
-    computing (or failing to compute) its own version."""
+    computing (or failing to compute) its own version.
+
+    Pass an existing `book` when the caller already built one (a group page
+    also needs the group's own totals), so the rows and the header total come
+    from the same snapshot."""
     from app.schemas import AccountRead, AccountRow  # local import: schemas imports nothing from here, avoids a cycle
 
+    book = book or MoneyBook(session)
     customers = {c.id: c for c in session.exec(select(Customer)).all()}
     groups = {g.id: g for g in session.exec(select(Group)).all()}
 
@@ -207,16 +301,11 @@ def enrich_accounts(session: Session, accounts: list[Account]) -> list:
         group = groups.get(a.group_id) if a.group_id else None
 
         eff_mode = effective_billing_mode(session, a, group)
-        # Unbilled preview for THIS account specifically — same shape as
-        # groups.py's _invoice_lines. Computed for every account regardless
-        # of billing_mode: this is only an ESTIMATE, never posted to the
-        # ledger by itself — a prepay account still only owes real money once
-        # the operator explicitly charges it (invoice, adjust, reset,
-        # settle), same as before. See services.billable_bytes: payg bills
-        # what was USED, prepay bills the PACKAGE SIZE itself.
-        billable_gb = billable_bytes(a, eff_mode) / (1024**3)
-        pending = round(billable_gb * effective_rate(session, a, group), 2)
-        balance = round(account_scoped_balance(session, a), 2)
+        # All three come from the one MoneyBook snapshot — see its docstring
+        # for why posted/pending/net are defined the way they are, and why
+        # every screen must read them from here rather than re-deriving.
+        pending = book.account_pending(a)
+        balance = round(book.account_posted(a), 2)
 
         rows.append(
             AccountRow(

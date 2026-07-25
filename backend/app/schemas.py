@@ -29,7 +29,12 @@ class CustomerRead(BaseModel):
 
 
 class CustomerWithBalance(CustomerRead):
-    balance: float  # positive = customer owes us (بدهی), negative = we owe them (طلب)
+    # Roll-up of the accounts they own plus the groups they represent (see
+    # services.MoneyBook). POSTED only; prefer net_owed for display.
+    balance: float
+    # balance + everything not yet invoiced across those same accounts and
+    # groups — what this customer owes right now.
+    net_owed: float  # positive = customer owes us (بدهی), negative = we owe them (طلب)
     account_count: int
     # Names of groups this customer is the billing representative for —
     # computed from Group rows (never from the manual is_group_rep flag, which
@@ -77,7 +82,13 @@ class GroupRead(BaseModel):
 
 
 class GroupWithBalance(GroupRead):
+    # Roll-up of this group's members plus any group-level entry not tied to
+    # one member — see services.MoneyBook. POSTED only; prefer net_owed.
     balance: float
+    # balance + pending_amount: what the group owes right now, and exactly the
+    # sum of the members' own net_owed. Guaranteed to reconcile with the rows
+    # shown underneath it because it is literally computed as their sum.
+    net_owed: float
     account_count: int
     # Marzban's own used_traffic counter, summed — NOT what should drive
     # billing (see current_cycle_used_bytes for that): Marzban can reset this

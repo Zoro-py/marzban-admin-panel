@@ -21,9 +21,9 @@ from app.schemas import (
     AccountSettleRequest,
 )
 from app.services import (
+    account_posted_balance,
     billable_bytes,
     bytes_from_gb,
-    compute_balance,
     effective_billing_mode,
     effective_rate,
     enrich_accounts,
@@ -291,13 +291,12 @@ def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRe
     rate = effective_rate(session, account)
     amount = round(billable_gb * rate, 2)
 
-    # Read BEFORE adding the charge below: compute_balance issues a SELECT,
-    # which autoflushes pending adds, so reading afterwards would already
-    # include the charge and make the intent of this number ambiguous.
+    # Read BEFORE adding the charge below: this issues a SELECT, which
+    # autoflushes pending adds, so reading afterwards would already include
+    # the charge and make the intent of this number ambiguous.
     prior_balance = 0.0
-    if body.mark_paid and account.customer_id is not None:
-        prior_charge, prior_credit = compute_balance(session, customer_id=account.customer_id)
-        prior_balance = prior_charge - prior_credit
+    if body.mark_paid:
+        prior_balance = account_posted_balance(session, account.id)
 
     now = utcnow()
     cycle_note = (
@@ -316,26 +315,31 @@ def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRe
                 source=LedgerSource.web,
             )
         )
-        if body.mark_paid:
-            # Credit what's actually still OUTSTANDING after this charge, not
-            # the charge amount blindly: an account already carrying a credit
-            # (they prepaid, or paid before the usage was invoiced) would
-            # otherwise be handed that credit a second time — settling a
-            # 243,916 charge on someone 230,000 in credit would leave them
-            # 230,000 in credit instead of settled. max(0, ...) because an
-            # account still in credit after the charge has nothing left to pay.
-            credit_amount = round(max(0.0, prior_balance + amount), 2)
-            if credit_amount > 0:
-                session.add(
-                    LedgerEntry(
-                        type=LedgerType.credit,
-                        amount=credit_amount,
-                        customer_id=account.customer_id,
-                        account_id=account.id,
-                        note=f"Payment received at settlement ({now.date().isoformat()})",
-                        source=LedgerSource.web,
-                    )
+    if body.mark_paid:
+        # Credit whatever is still OUTSTANDING once this charge lands — which
+        # is NOT the charge amount:
+        #  - an account already carrying a credit (they prepaid, or paid
+        #    before the usage was invoiced) would otherwise be handed that
+        #    credit a second time: settling a 243,916 charge on someone
+        #    230,000 in credit would leave them 230,000 in credit, not settled;
+        #  - an account carrying unpaid debt from an earlier cycle must still
+        #    be cleared even when this cycle adds nothing to charge, or
+        #    "payment received" would silently do nothing while the dialog's
+        #    preview promised a settled balance.
+        # max(0, ...) because an account still in credit afterwards has
+        # nothing left to pay.
+        credit_amount = round(max(0.0, prior_balance + amount), 2)
+        if credit_amount > 0:
+            session.add(
+                LedgerEntry(
+                    type=LedgerType.credit,
+                    amount=credit_amount,
+                    customer_id=account.customer_id,
+                    account_id=account.id,
+                    note=f"Payment received at settlement ({now.date().isoformat()})",
+                    source=LedgerSource.web,
                 )
+            )
 
     if mode == BillingMode.payg:
         account.usage_baseline = account.used_traffic

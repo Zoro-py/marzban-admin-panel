@@ -7,7 +7,7 @@ from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, Customer, Group, LedgerEntry
 from app.schemas import BalanceRead, LedgerCreate, LedgerRead
-from app.services import compute_balance
+from app.services import MoneyBook
 
 router = APIRouter(prefix="/api/ledger", tags=["ledger"], dependencies=[Depends(require_auth)])
 
@@ -59,11 +59,27 @@ def get_balance(
     if (customer_id is None) == (group_id is None):
         raise HTTPException(400, "Provide exactly one of customer_id or group_id")
 
-    charge, credit = compute_balance(session, customer_id=customer_id, group_id=group_id)
+    # Roll-ups, not a raw scan of rows carrying this id — see
+    # services.MoneyBook for why those two are not the same thing.
+    book = MoneyBook(session)
+    if customer_id is not None:
+        customer = session.get(Customer, customer_id)
+        if not customer:
+            raise HTTPException(404, "customer_id not found")
+        balance = book.customer_posted(customer)
+    else:
+        group = session.get(Group, group_id)
+        if not group:
+            raise HTTPException(404, "group_id not found")
+        balance = book.group_posted(group)
+
+    # total_charge/total_credit are reported as the netted balance split into
+    # its sign, rather than gross sums: a roll-up has no single meaningful
+    # gross figure once it spans several accounts and groups.
     return BalanceRead(
         entity_type="customer" if customer_id is not None else "group",
         entity_id=customer_id if customer_id is not None else group_id,
-        total_charge=charge,
-        total_credit=credit,
-        balance=charge - credit,
+        total_charge=max(0.0, balance),
+        total_credit=max(0.0, -balance),
+        balance=balance,
     )

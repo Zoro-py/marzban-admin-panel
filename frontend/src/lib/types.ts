@@ -12,7 +12,11 @@ export interface Customer {
 }
 
 export interface CustomerWithBalance extends Customer {
+  // POSTED only — roll-up of the accounts they own plus the groups they
+  // represent. Prefer net_owed for display.
   balance: number
+  // What they owe right now, including usage not yet invoiced.
+  net_owed: number
   account_count: number
   // Groups this customer is the billing representative for (computed
   // server-side from Group rows, not the manual is_group_rep flag).
@@ -31,7 +35,13 @@ export interface Group {
 }
 
 export interface GroupWithBalance extends Group {
+  // POSTED only — roll-up of this group's members plus any group-level entry
+  // not tied to one member. Prefer net_owed for display.
   balance: number
+  // balance + pending_amount: what the group owes right now, and exactly the
+  // sum of its members' own net_owed — guaranteed to reconcile with the
+  // member rows shown underneath it.
+  net_owed: number
   account_count: number
   // Marzban's own used_traffic counter, summed — NOT what drives billing.
   total_used_traffic: number

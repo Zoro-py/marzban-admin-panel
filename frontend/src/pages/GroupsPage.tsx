@@ -34,8 +34,8 @@ export function GroupsPage() {
               <TableHead className="text-right">Members</TableHead>
               <TableHead>Usage this cycle</TableHead>
               <TableHead className="text-right">Rate</TableHead>
-              <TableHead className="text-right">Pending</TableHead>
-              <TableHead className="text-right">Balance</TableHead>
+              <TableHead className="text-right">Not invoiced</TableHead>
+              <TableHead className="text-right">Owes now</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -93,7 +93,7 @@ export function GroupsPage() {
                   <Money amount={g.pending_amount} kind="pending" className="text-xs" />
                 </TableCell>
                 <TableCell className="text-right">
-                  <Money amount={g.balance} zero="settled" className="text-xs" />
+                  <Money amount={g.net_owed} zero="settled" className="text-xs" />
                 </TableCell>
               </TableRow>
             ))}

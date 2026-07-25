@@ -40,10 +40,19 @@ export function CustomerDetailPage() {
         </div>
         <div className="flex items-center gap-3">
           <div className="text-right">
-            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Balance</p>
-            <Money amount={customer.balance} zero="settled" className="text-sm" />
+            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Owes now</p>
+            <Money amount={customer.net_owed} zero="settled" className="text-sm" />
           </div>
-          <LedgerActionDialog customerId={customerId} currentBalance={customer.balance} />
+          {/* When this customer pays for exactly one account, attribute the
+              entry to it — otherwise the money sits at customer level while
+              the account row still reads as owing. With several accounts
+              there's no honest way to guess the split, so it stays
+              customer-level and only the header figure moves. */}
+          <LedgerActionDialog
+            customerId={customerId}
+            accountId={accountsQuery.data?.length === 1 ? accountsQuery.data[0].id : undefined}
+            currentBalance={customer.net_owed}
+          />
           <NewAccountDialog defaultCustomerId={customerId} />
         </div>
       </div>

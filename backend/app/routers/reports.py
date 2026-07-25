@@ -8,14 +8,7 @@ from sqlmodel import Session, select
 from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerType, OnlineSnapshot, utcnow
-from app.services import (
-    account_scoped_balance,
-    billable_bytes,
-    compute_balance,
-    effective_billing_mode,
-    effective_rate,
-    rate_is_configured,
-)
+from app.services import MoneyBook, effective_billing_mode, effective_rate, rate_is_configured
 
 router = APIRouter(prefix="/api/reports", tags=["reports"], dependencies=[Depends(require_auth)])
 
@@ -31,11 +24,13 @@ def summary(
     expiry_days_threshold: int = 3,
     session: Session = Depends(get_session),
 ):
+    book = MoneyBook(session)
     customers = session.exec(select(Customer)).all()
+    # "In debt" means what they owe NOW (invoiced or not), same definition as
+    # every other screen — see services.MoneyBook.
     overdue_customers = []
     for c in customers:
-        charge, credit = compute_balance(session, customer_id=c.id)
-        balance = charge - credit
+        balance = book.customer_net(c)
         if balance > 0:
             overdue_customers.append({"customer_id": c.id, "name": c.name, "balance": balance})
     overdue_customers.sort(key=lambda x: -x["balance"])
@@ -126,23 +121,15 @@ def summary(
     #   - balance: ALREADY charged, not yet paid, for EITHER billing mode.
     # is_due (cycle elapsed) is a secondary signal per entry, not a gate.
     now_dt = utcnow().replace(tzinfo=None)
-    accounts_by_group: dict[int, list[Account]] = defaultdict(list)
-    for a in accounts:
-        if a.group_id is not None:
-            accounts_by_group[a.group_id].append(a)
 
     pending_settlement = []
     for g in groups.values():
-        pending = 0.0
-        for a in accounts_by_group.get(g.id, []):
-            # group's mode wins for a grouped account — see billable_bytes:
-            # payg bills usage, prepay bills the package (data_limit) itself.
-            billable_gb = billable_bytes(a, g.billing_mode) / (1024**3)
-            pending += billable_gb * effective_rate(session, a, g)
-        charge, credit = compute_balance(session, group_id=g.id)
-        balance = round(charge - credit, 2)
-        pending = round(pending, 2)
-        if pending <= 0 and balance <= 0:
+        # Roll-ups from the shared MoneyBook, so a group's line here matches
+        # its own page and the member rows on it exactly.
+        pending = book.group_pending(g)
+        balance = book.group_posted(g)
+        net = book.group_net(g)
+        if pending <= 0 and net <= 0:
             continue
         cycle_start = g.last_settled_at or g.created_at
         next_due_at = cycle_start + timedelta(days=g.billing_cycle_days)
@@ -159,22 +146,21 @@ def summary(
                 # posted debt and not-yet-invoiced usage are the same debt at
                 # two stages, so a payment already made has to count against
                 # usage not yet billed.
-                "net_owed": round(balance + pending, 2),
+                "net_owed": net,
                 "is_due": is_due,
                 "days_overdue": round((now_dt - next_due_at).total_seconds() / 86400, 1) if is_due else None,
             }
         )
 
-    # Standalone (non-grouped) accounts. `balance` comes from the same
-    # account_scoped_balance() the Accounts table uses, so clicking through
-    # from here can't contradict what the dashboard just said.
+    # Standalone (non-grouped) accounts, straight off the same MoneyBook the
+    # Accounts table reads, so clicking through from here can't contradict
+    # what the dashboard just said.
     for a in accounts:
         if a.group_id is not None:
             continue
-        billable_gb = billable_bytes(a, a.billing_mode) / (1024**3)
-        pending = round(billable_gb * effective_rate(session, a, None), 2)
-        balance = round(account_scoped_balance(session, a), 2)
-        net = round(balance + pending, 2)
+        pending = book.account_pending(a)
+        balance = round(book.account_posted(a), 2)
+        net = book.account_net(a)
         # Nothing pending AND nothing owed -> not a queue item. A negative net
         # (they're in credit) isn't either: that's not something to chase.
         if pending <= 0 and net <= 0:
@@ -217,12 +203,16 @@ def finance(session: Session = Depends(get_session)):
     outstanding/owed-back across everyone, this month's revenue vs. billed,
     a day-by-day revenue trend for the last 30 days, recent transactions, and
     every configured rate in one place."""
+    book = MoneyBook(session)
     customers = session.exec(select(Customer)).all()
+    # Summed over CUSTOMERS specifically — that level's roll-up already
+    # includes the accounts they own and the groups they represent, each
+    # exactly once (see services.MoneyBook), so nothing is counted twice and
+    # nothing owned by an unassigned account is silently dropped.
     total_outstanding = 0.0
     total_credit_balance = 0.0
     for c in customers:
-        charge, credit = compute_balance(session, customer_id=c.id)
-        balance = charge - credit
+        balance = book.customer_net(c)
         if balance > 0:
             total_outstanding += balance
         else:

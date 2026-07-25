@@ -1,14 +1,13 @@
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, Customer, Group
 from app.schemas import AccountRow, CustomerCreate, CustomerRead, CustomerUpdate, CustomerWithBalance
-from app.services import compute_balance, enrich_accounts
+from app.services import MoneyBook, enrich_accounts
 
 router = APIRouter(prefix="/api/customers", tags=["customers"], dependencies=[Depends(require_auth)])
 
@@ -20,41 +19,39 @@ def _represented_groups(session: Session) -> dict[int, list[Group]]:
     return by_rep
 
 
-def _account_count(session: Session, customer_id: int, represented_groups: list[Group]) -> int:
-    """Direct accounts (customer_id == this customer) PLUS every account
-    belonging to a group this customer represents — a representative
-    customer's whole reason for existing is to bill that group, so counting
-    only direct ownership made a customer who clearly manages a full group
-    show up as having "0 accounts", which reads as broken rather than as the
-    deliberate "billed via the group, not directly" distinction it actually
-    is (still shown separately, correctly, on the customer detail page)."""
-    direct = session.exec(select(func.count()).select_from(Account).where(Account.customer_id == customer_id)).one()
-    if not represented_groups:
-        return direct
-    group_ids = [g.id for g in represented_groups]
-    via_groups = session.exec(
-        select(func.count()).select_from(Account).where(Account.group_id.in_(group_ids))
-    ).one()
-    return direct + via_groups
+def _account_count(book: MoneyBook, customer: Customer, represented_groups: list[Group]) -> int:
+    """Accounts this customer pays for: the ones they own directly, plus every
+    member of a group they represent — a representative customer's whole
+    reason for existing is to bill that group, so counting only direct
+    ownership made a customer who clearly manages a full group show up as
+    having "0 accounts", which reads as broken rather than as the deliberate
+    "billed via the group, not directly" distinction it actually is (still
+    shown separately, correctly, on the customer detail page). Same split the
+    balance roll-up uses, so the count and the money always agree."""
+    direct = len(book.customer_accounts(customer))
+    return direct + sum(len(book.group_members(g)) for g in represented_groups)
+
+
+def _with_balance(book: MoneyBook, c: Customer, groups_for_c: list[Group]) -> CustomerWithBalance:
+    return CustomerWithBalance(
+        **c.model_dump(),
+        # Roll-up of the accounts they own plus the groups they represent —
+        # see services.MoneyBook. Reading this customer's own ledger rows
+        # instead would both miss group money and double-count it, since a
+        # group settle writes the representative's customer_id too.
+        balance=book.customer_posted(c),
+        net_owed=book.customer_net(c),
+        account_count=_account_count(book, c, groups_for_c),
+        represented_group_names=[g.name for g in groups_for_c],
+    )
 
 
 @router.get("", response_model=list[CustomerWithBalance])
 def list_customers(session: Session = Depends(get_session)):
+    book = MoneyBook(session)
     customers = session.exec(select(Customer)).all()
     rep_groups = _represented_groups(session)
-    result = []
-    for c in customers:
-        charge, credit = compute_balance(session, customer_id=c.id)
-        groups_for_c = rep_groups.get(c.id, [])
-        result.append(
-            CustomerWithBalance(
-                **c.model_dump(),
-                balance=charge - credit,
-                account_count=_account_count(session, c.id, groups_for_c),
-                represented_group_names=[g.name for g in groups_for_c],
-            )
-        )
-    return result
+    return [_with_balance(book, c, rep_groups.get(c.id, [])) for c in customers]
 
 
 @router.post("", response_model=CustomerRead)
@@ -71,15 +68,8 @@ def get_customer(customer_id: int, session: Session = Depends(get_session)):
     customer = session.get(Customer, customer_id)
     if not customer:
         raise HTTPException(404, "Customer not found")
-    charge, credit = compute_balance(session, customer_id=customer_id)
     rep_groups = _represented_groups(session)
-    groups_for_c = rep_groups.get(customer_id, [])
-    return CustomerWithBalance(
-        **customer.model_dump(),
-        balance=charge - credit,
-        account_count=_account_count(session, customer_id, groups_for_c),
-        represented_group_names=[g.name for g in groups_for_c],
-    )
+    return _with_balance(MoneyBook(session), customer, rep_groups.get(customer_id, []))
 
 
 @router.patch("/{customer_id}", response_model=CustomerRead)

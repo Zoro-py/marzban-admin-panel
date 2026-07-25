@@ -93,7 +93,7 @@ export function GroupDetailPage() {
         </div>
         <div className="flex items-center gap-2">
           <GroupSettingsDialog group={group} />
-          <LedgerActionDialog groupId={groupId} currentBalance={group.balance} />
+          <LedgerActionDialog groupId={groupId} currentBalance={group.net_owed} />
           <NewAccountDialog defaultGroupId={groupId} />
           {group.billing_mode === 'payg' && <ResetGroupCycleDialog groupId={groupId} />}
           <SettleGroupDialog groupId={groupId} currentBalance={group.balance} />
@@ -105,17 +105,24 @@ export function GroupDetailPage() {
           label="Usage this cycle"
           value={`${(group.current_cycle_used_bytes / 1024 ** 3).toFixed(2)} GB`}
         />
+        {/* ONE money figure, and it is exactly the sum of the Owes now column
+            below (guaranteed server-side — see MoneyBook). Showing "pending"
+            and "settled balance" as two separate cards is what let this page
+            claim the group was 270,000 in credit while every member row under
+            it still owed money. */}
         <StatCard
-          label="Pending (not yet charged)"
-          value={formatToman(group.pending_amount)}
-          tone={group.pending_amount > 0 ? 'warning' : 'default'}
+          label="Owes now"
+          value={
+            group.net_owed === 0
+              ? 'settled'
+              : `${formatToman(Math.abs(group.net_owed))}${group.net_owed < 0 ? ' cr' : ''}`
+          }
+          tone={group.net_owed > 0 ? 'destructive' : group.net_owed < 0 ? 'credit' : 'success'}
         />
         <StatCard
-          label="Settled balance"
-          value={
-            group.balance === 0 ? 'settled' : `${formatToman(Math.abs(group.balance))}${group.balance < 0 ? ' cr' : ''}`
-          }
-          tone={group.balance > 0 ? 'destructive' : group.balance < 0 ? 'credit' : 'success'}
+          label="Not invoiced yet"
+          value={formatToman(group.pending_amount)}
+          tone={group.pending_amount > 0 ? 'warning' : 'default'}
         />
         <StatCard label="Members" value={group.account_count} />
       </div>

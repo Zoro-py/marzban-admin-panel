@@ -46,7 +46,7 @@ export function CustomersPage() {
               <TableHead>Contact</TableHead>
               <TableHead>Represents</TableHead>
               <TableHead className="text-right">Accounts</TableHead>
-              <TableHead className="text-right">Balance</TableHead>
+              <TableHead className="text-right">Owes now</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -83,7 +83,7 @@ export function CustomersPage() {
                 </TableCell>
                 <TableCell className="text-right tabular-nums">{c.account_count}</TableCell>
                 <TableCell className="text-right">
-                  <Money amount={c.balance} zero="settled" className="text-xs" />
+                  <Money amount={c.net_owed} zero="settled" className="text-xs" />
                 </TableCell>
               </TableRow>
             ))}

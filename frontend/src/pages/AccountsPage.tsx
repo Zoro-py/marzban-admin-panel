@@ -6,6 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { SortableHeader, nextSort, type SortState } from '@/components/ui/sortable-header'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
@@ -311,28 +312,41 @@ function AccountTableRow({
       </TableCell>
       <TableCell className="text-right">
         {/* ONE number: what they owe right now (posted debt + not-yet-invoiced
-            usage, netted). Showing those two parts as separate competing
-            figures made an account that had just been paid off still read as
-            owing the full unbilled amount. "settled" rather than a bare dash
-            for zero — a dash reads as "no data". */}
+            usage, netted). "settled" rather than a bare dash for zero — a dash
+            reads as "no data". The uninvoiced part is NOT printed alongside it:
+            on an account that has already paid, "243,916 not invoiced yet"
+            under "13,916 owed" reads as a contradiction, because in isolation
+            it omits the payment that cancels most of it. The full arithmetic
+            lives in the tooltip, where it always reconciles. */}
         <span className="flex flex-col items-end gap-0.5">
-          <Money amount={a.net_owed} zero="settled" className="text-xs" />
-          {a.pending_amount > 0 && (
-            <span className="flex items-center gap-2">
-              <span className="text-[11px] text-muted-foreground">
-                {formatToman(a.pending_amount)} not invoiced yet
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="cursor-help">
+                <Money amount={a.net_owed} zero="settled" className="text-xs" />
               </span>
-              {/* Only standalone accounts settle individually — a grouped
-                  account's pending is settled via its group's own button. */}
-              {a.group_id === null && (
-                <SettleAccountButton
-                  accountId={a.id}
-                  username={a.marzban_username}
-                  amount={a.pending_amount}
-                  currentBalance={a.payer_balance}
-                />
-              )}
-            </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <span className="flex flex-col gap-0.5 text-xs tabular-nums">
+                <span>{formatToman(a.pending_amount)} usage not invoiced yet</span>
+                <span>
+                  {a.payer_balance >= 0 ? '+ ' : '− '}
+                  {formatToman(Math.abs(a.payer_balance))} {a.payer_balance >= 0 ? 'invoiced, unpaid' : 'already paid'}
+                </span>
+                <span className="border-t border-border/50 pt-0.5 font-medium">
+                  = {formatToman(a.net_owed)} owed
+                </span>
+              </span>
+            </TooltipContent>
+          </Tooltip>
+          {/* Only standalone accounts settle individually — a grouped
+              account's pending is settled via its group's own button. */}
+          {a.pending_amount > 0 && a.group_id === null && (
+            <SettleAccountButton
+              accountId={a.id}
+              username={a.marzban_username}
+              amount={a.pending_amount}
+              currentBalance={a.payer_balance}
+            />
           )}
         </span>
       </TableCell>
