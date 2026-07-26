@@ -19,7 +19,7 @@ import { UsageBar } from '@/components/UsageBar'
 import { StatusDot } from '@/components/StatusDot'
 import { StatCard } from '@/components/StatCard'
 import { Money } from '@/components/Money'
-import { bidiLtrSpan, bidiRtlLine, cn, daysUntil, formatDate, formatToman } from '@/lib/utils'
+import { cn, daysUntil, formatDate, formatToman } from '@/lib/utils'
 
 const INVOICE_INCLUDE_GB_KEY = 'invoice-include-gb'
 
@@ -73,20 +73,31 @@ export function GroupDetailPage() {
    * cycle" column uses, so the invoice can't disagree with the page it was
    * copied from.
    *
-   * Every line goes through bidiRtlLine, and every username through
-   * bidiLtrSpan (see lib/utils.ts for the full explanation): usernames here
-   * are always Latin, so a plain "• name: amount" line has its first
-   * strong-directional character be the name, which silently flips that
-   * whole line's reading direction to LTR while the title/total lines (which
-   * start with a Persian word) stay RTL — the two disagree line to line,
-   * which is what actually made this unreadable, not the mixed script by
-   * itself. */
+   * EVERY LINE LEADS WITH A PERSIAN WORD, DELIBERATELY — this is a plain-text
+   * message with no formatting available, and usernames here are always
+   * Latin. Per the Unicode bidi algorithm's own P2/P3 rule, a line's reading
+   * direction is set by its first STRONG-directional character (bullets,
+   * digits and punctuation are neutral and get skipped over); a line built
+   * as "name: amount" has the Latin name as that first strong character and
+   * silently reads as left-to-right, which is what actually made the earlier
+   * version of this message unreadable except for the title/total lines
+   * (which already happened to start with a Persian word). The amount now
+   * comes BEFORE the name specifically so "تومان" is that first strong
+   * character — this is the same mechanism that already made the title and
+   * total lines correct, just applied on purpose everywhere instead of by
+   * accident on two lines.
+   *
+   * A previous version of this fix used invisible Unicode bidi-isolate
+   * control characters (RLI/LRI/PDI) instead of rewording. Do not go back to
+   * that: it was confirmed in production to render as visible stray marks
+   * around every name in at least one real client, which is a strictly worse
+   * failure than the original bug — this plain reordering needs no Unicode
+   * feature support from whatever the message eventually gets pasted into. */
   async function copyInvoice() {
     setCopying(true)
     try {
       const members = accountsQuery.data ?? []
       const toman = (n: number) => `${Math.round(n).toLocaleString('fa-IR')} تومان`
-      const name = (username: string) => bidiLtrSpan(username)
       const gbNote = (accountId: number) => {
         if (!includeGb) return ''
         const gb = billableByAccount.get(accountId)?.billable_gb
@@ -98,20 +109,20 @@ export function GroupDetailPage() {
       const inCredit = members.filter((m) => m.net_owed < 0)
       const settledCount = members.length - owing.length - inCredit.length
 
-      const body: string[] = owing.map((m) => bidiRtlLine(`• ${name(m.marzban_username)}: ${toman(m.net_owed)}${gbNote(m.id)}`))
-      if (owing.length === 0) body.push(bidiRtlLine('• همه اعضا تسویه هستند.'))
+      const body: string[] = owing.map((m) => `• ${toman(m.net_owed)}: ${m.marzban_username}${gbNote(m.id)}`)
+      if (owing.length === 0) body.push('• همه اعضا تسویه هستند.')
       for (const m of inCredit) {
-        body.push(bidiRtlLine(`• ${name(m.marzban_username)}: ${toman(Math.abs(m.net_owed))} طلبکار`))
+        body.push(`• طلبکار ${toman(Math.abs(m.net_owed))}: ${m.marzban_username}`)
       }
-      if (settledCount > 0) body.push(bidiRtlLine(`• ${settledCount.toLocaleString('fa-IR')} نفر تسویه‌شده`))
+      if (settledCount > 0) body.push(`• ${settledCount.toLocaleString('fa-IR')} نفر تسویه‌شده`)
 
       const text = [
-        bidiRtlLine(`صورتحساب گروه «${name(group.name)}»`),
-        bidiRtlLine(`تاریخ: ${new Date().toLocaleDateString('fa-IR')}`),
+        `صورتحساب گروه «${group.name}»`,
+        `تاریخ: ${new Date().toLocaleDateString('fa-IR')}`,
         '',
         ...body,
         '',
-        bidiRtlLine(`جمع کل: ${toman(group.net_owed)}`),
+        `جمع کل: ${toman(group.net_owed)}`,
       ].join('\n')
 
       await navigator.clipboard.writeText(text)
