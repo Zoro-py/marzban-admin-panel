@@ -38,7 +38,7 @@ export function CustomerDetailPage() {
           <h1 className="text-lg font-semibold tracking-tight">{customer.name}</h1>
           <p className="text-xs text-muted-foreground">{customer.contact ?? 'No contact info'}</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <div className="text-right">
             <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Owes now</p>
             <Money amount={customer.net_owed} zero="settled" className="text-sm" />
@@ -86,9 +86,9 @@ export function CustomerDetailPage() {
           <TableHeader>
             <TableRow>
               <TableHead>Account</TableHead>
-              <TableHead>Role</TableHead>
+              <TableHead className="hidden md:table-cell">Role</TableHead>
               <TableHead>Usage</TableHead>
-              <TableHead>Expires</TableHead>
+              <TableHead className="hidden sm:table-cell">Expires</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -109,13 +109,13 @@ export function CustomerDetailPage() {
                       <span className="font-mono text-xs font-medium">{a.marzban_username}</span>
                     </span>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="hidden md:table-cell">
                     <span className="text-xs text-muted-foreground">{a.role === 'primary' ? 'primary' : 'sub-account'}</span>
                   </TableCell>
                   <TableCell>
                     <UsageBar used={a.used_traffic} limit={a.data_limit} compact />
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="hidden sm:table-cell">
                     {a.expire === null ? (
                       <span className="text-xs text-muted-foreground">never</span>
                     ) : (
@@ -148,7 +148,7 @@ export function CustomerDetailPage() {
             <TableRow>
               <TableHead>Date</TableHead>
               <TableHead>Type</TableHead>
-              <TableHead>Note</TableHead>
+              <TableHead className="hidden md:table-cell">Note</TableHead>
               <TableHead className="text-right">Amount</TableHead>
             </TableRow>
           </TableHeader>
@@ -168,7 +168,7 @@ export function CustomerDetailPage() {
                     {entry.type === 'charge' ? 'debt' : 'payment'}
                   </Badge>
                 </TableCell>
-                <TableCell className="max-w-[320px] truncate text-muted-foreground" title={entry.note ?? undefined}>
+                <TableCell className="hidden max-w-[320px] truncate text-muted-foreground md:table-cell" title={entry.note ?? undefined}>
                   {entry.note ?? '—'}
                 </TableCell>
                 <TableCell className="text-right">

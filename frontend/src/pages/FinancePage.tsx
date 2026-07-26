@@ -52,7 +52,7 @@ export function FinancePage() {
               <TableRow>
                 <TableHead>Date</TableHead>
                 <TableHead>Who</TableHead>
-                <TableHead>Type</TableHead>
+                <TableHead className="hidden sm:table-cell">Type</TableHead>
                 <TableHead className="text-right">Amount</TableHead>
               </TableRow>
             </TableHeader>
@@ -70,7 +70,7 @@ export function FinancePage() {
                   <TableCell className="max-w-[160px] truncate" title={t.customer_name ?? t.group_name ?? undefined}>
                     {t.customer_name ?? t.group_name ?? '—'}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="hidden sm:table-cell">
                     <Badge variant={t.type === 'charge' ? 'destructive' : 'success'}>
                       {t.type === 'charge' ? 'debt' : 'payment'}
                     </Badge>
@@ -100,8 +100,8 @@ export function FinancePage() {
             <TableHeader>
               <TableRow>
                 <TableHead>Account</TableHead>
-                <TableHead>Owner</TableHead>
-                <TableHead>Mode</TableHead>
+                <TableHead className="hidden sm:table-cell">Owner</TableHead>
+                <TableHead className="hidden md:table-cell">Mode</TableHead>
                 <TableHead className="text-right">Rate</TableHead>
               </TableRow>
             </TableHeader>
@@ -116,10 +116,10 @@ export function FinancePage() {
               {data.rate_overview.map((r) => (
                 <TableRow key={r.account_id} className="cursor-pointer" onClick={() => openAccount(r.account_id)}>
                   <TableCell className="font-mono text-xs">{r.marzban_username}</TableCell>
-                  <TableCell className="max-w-[120px] truncate text-muted-foreground">
+                  <TableCell className="hidden max-w-[120px] truncate text-muted-foreground sm:table-cell">
                     {r.customer_name ?? r.group_name ?? '—'}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="hidden md:table-cell">
                     <span className="text-xs text-muted-foreground">{r.billing_mode === 'payg' ? 'pay-as-you-go' : 'prepay'}</span>
                   </TableCell>
                   <TableCell className="text-right">

@@ -109,8 +109,8 @@ export function AccountsPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0">
           <h1 className="text-lg font-semibold tracking-tight">Accounts</h1>
           <p className="text-xs text-muted-foreground">
             Every Marzban user, with synced usage. Click a row for details &amp; actions.
@@ -151,16 +151,16 @@ export function AccountsPage() {
 
         <TabsContent value="table" className="mt-3 flex flex-col gap-3">
           <div className="flex items-center gap-3">
-            <div className="relative max-w-xs flex-1">
+            <div className="relative flex-1 sm:max-w-xs">
               <Search className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Filter by username, customer, or group…"
+                placeholder="Filter accounts…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-8"
               />
             </div>
-            <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
               {filtered.length} of {accountsQuery.data?.length ?? 0}
             </span>
           </div>
@@ -169,13 +169,17 @@ export function AccountsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  {/* Account, usage and what they owe survive at every width —
+                      the rest drop out progressively rather than forcing a
+                      seven-column table to be side-scrolled on a phone. The
+                      hidden owner reappears under the username below. */}
                   <SortableHeader label="Account" sortKey="username" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} />
-                  <SortableHeader label="Billed to" sortKey="owner" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} />
+                  <SortableHeader label="Billed to" sortKey="owner" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} className="hidden md:table-cell" />
                   <SortableHeader label="Usage" sortKey="usage_pct" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} />
-                  <TableHead>Avg/mo</TableHead>
-                  <SortableHeader label="Expires" sortKey="expires" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} />
-                  <SortableHeader label="Rate" sortKey="rate" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} className="text-right" align="right" />
-                  <SortableHeader label="Balance" sortKey="balance" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} className="text-right" align="right" />
+                  <TableHead className="hidden xl:table-cell">Avg/mo</TableHead>
+                  <SortableHeader label="Expires" sortKey="expires" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} className="hidden sm:table-cell" />
+                  <SortableHeader label="Rate" sortKey="rate" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} className="hidden text-right lg:table-cell" align="right" />
+                  <SortableHeader label="Owes now" sortKey="balance" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} className="text-right" align="right" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -236,10 +240,17 @@ function AccountTableRow({
       <TableCell>
         <span className="flex items-center gap-2">
           <StatusDot status={a.status} />
-          <span className="font-mono text-xs font-medium">{a.marzban_username}</span>
+          <span className="flex min-w-0 flex-col leading-tight">
+            <span className="truncate font-mono text-xs font-medium">{a.marzban_username}</span>
+            {/* Owner moves in here once its own column is hidden, so a phone
+                still answers "whose account is this?". */}
+            <span className="truncate text-[11px] text-muted-foreground md:hidden">
+              {a.customer_name ?? groupName ?? a.group_name ?? 'unassigned'}
+            </span>
+          </span>
         </span>
       </TableCell>
-      <TableCell>
+      <TableCell className="hidden md:table-cell">
         {a.customer_id || a.group_id ? (
           <span className="flex flex-col leading-tight">
             {a.customer_id && (
@@ -268,7 +279,7 @@ function AccountTableRow({
       <TableCell>
         <UsageBar used={a.used_traffic} limit={a.data_limit} compact />
       </TableCell>
-      <TableCell>
+      <TableCell className="hidden xl:table-cell">
         {a.usage_confidence === 'insufficient_data' ? (
           <span className="text-[11px] text-muted-foreground/60">—</span>
         ) : (
@@ -285,7 +296,7 @@ function AccountTableRow({
           </span>
         )}
       </TableCell>
-      <TableCell>
+      <TableCell className="hidden sm:table-cell">
         {a.expire === null ? (
           <span className="text-xs text-muted-foreground">never</span>
         ) : (
@@ -301,7 +312,7 @@ function AccountTableRow({
           </span>
         )}
       </TableCell>
-      <TableCell className="text-right">
+      <TableCell className="hidden text-right lg:table-cell">
         {!a.rate_configured ? (
           <Badge variant="warning">not set</Badge>
         ) : a.effective_rate > 0 ? (

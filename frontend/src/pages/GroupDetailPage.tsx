@@ -43,22 +43,44 @@ export function GroupDetailPage() {
 
   const group = groupQuery.data
 
-  // One-click summary of what this cycle would charge, ready to paste into a
-  // chat with the customer.
-  async function copySummary() {
+  /** The message the operator actually sends the group's lead to collect
+   * money: who owes what right now, and the total. Written in Persian with
+   * Persian numerals because it is pasted straight into a chat with the
+   * customer, not read inside this panel.
+   *
+   * Deliberately per-member OWED, not per-member usage: usage is what an
+   * amount is derived from, not what anyone is being asked to pay, and once
+   * someone has partly paid the two stop matching (48.8 GB of usage next to
+   * "13,916 owed" reads as an error). Members who are square are summarised
+   * as a count rather than listed, so the list is only people to chase. */
+  async function copyInvoice() {
     setCopying(true)
     try {
-      const invoice = await groupsApi.invoice(groupId)
-      const lines = invoice.lines
-        .filter((l) => l.billable_gb > 0)
-        .map((l) => `${l.marzban_username}: ${l.billable_gb} GB => ${formatToman(l.amount)}`)
+      const members = accountsQuery.data ?? []
+      const toman = (n: number) => `${Math.round(n).toLocaleString('fa-IR')} تومان`
+
+      const owing = members.filter((m) => m.net_owed > 0).sort((a, b) => b.net_owed - a.net_owed)
+      const inCredit = members.filter((m) => m.net_owed < 0)
+      const settledCount = members.length - owing.length - inCredit.length
+
+      const body: string[] = owing.map((m) => `• ${m.marzban_username}: ${toman(m.net_owed)}`)
+      if (owing.length === 0) body.push('• همه اعضا تسویه هستند.')
+      for (const m of inCredit) {
+        body.push(`• ${m.marzban_username}: ${toman(Math.abs(m.net_owed))} طلبکار`)
+      }
+      if (settledCount > 0) body.push(`• ${settledCount.toLocaleString('fa-IR')} نفر تسویه‌شده`)
+
       const text = [
-        `${group.name} — usage since ${group.last_settled_at ? formatDate(group.last_settled_at) : 'the start'}`,
-        ...lines,
-        `Total: ${formatToman(invoice.total_amount)}`,
+        `صورتحساب گروه «${group.name}»`,
+        `تاریخ: ${new Date().toLocaleDateString('fa-IR')}`,
+        '',
+        ...body,
+        '',
+        `جمع کل: ${toman(group.net_owed)}`,
       ].join('\n')
+
       await navigator.clipboard.writeText(text)
-      toast.success('Summary copied to clipboard')
+      toast.success('Invoice copied — ready to send')
     } catch (err) {
       toast.error(apiErrorMessage(err))
     } finally {
@@ -73,8 +95,8 @@ export function GroupDetailPage() {
       </Link>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-lg font-semibold tracking-tight">{group.name}</h1>
             <Badge variant={group.billing_mode === 'payg' ? 'warning' : 'secondary'}>
               {group.billing_mode === 'payg' ? 'pay-as-you-go' : 'prepay'}
@@ -91,7 +113,7 @@ export function GroupDetailPage() {
             {formatDate(group.next_due_at)}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <GroupSettingsDialog group={group} />
           <LedgerActionDialog groupId={groupId} currentBalance={group.net_owed} />
           <NewAccountDialog defaultGroupId={groupId} />
@@ -133,16 +155,18 @@ export function GroupDetailPage() {
             Member accounts
             <span className="text-xs font-normal tabular-nums text-muted-foreground">{accountsQuery.data?.length ?? 0}</span>
           </h2>
-          <Button size="sm" variant="outline" onClick={copySummary} disabled={copying}>
-            <Copy /> {copying ? 'Copying…' : 'Copy usage summary'}
+          <Button size="sm" variant="outline" onClick={copyInvoice} disabled={copying}>
+            <Copy /> {copying ? 'Copying…' : 'Copy invoice'}
           </Button>
         </div>
         <Table>
           <TableHeader>
             <TableRow>
+              {/* Account and Owes now are the collection view and survive at
+                  every width; usage detail is context and drops out first. */}
               <TableHead>Account</TableHead>
-              <TableHead>Usage (Marzban)</TableHead>
-              <TableHead>
+              <TableHead className="hidden sm:table-cell">Usage (Marzban)</TableHead>
+              <TableHead className="hidden md:table-cell">
                 <span className="flex items-center gap-1">
                   Billable this cycle
                   <Tooltip>
@@ -171,7 +195,7 @@ export function GroupDetailPage() {
                   </Tooltip>
                 </span>
               </TableHead>
-              <TableHead>Expires</TableHead>
+              <TableHead className="hidden lg:table-cell">Expires</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -193,10 +217,10 @@ export function GroupDetailPage() {
                       <span className="font-mono text-xs font-medium">{a.marzban_username}</span>
                     </span>
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="hidden sm:table-cell">
                     <UsageBar used={a.used_traffic} limit={a.data_limit} compact />
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="hidden md:table-cell">
                     {billable ? (
                       <span className="flex items-baseline gap-2">
                         <span className="font-mono text-xs tabular-nums">{billable.billable_gb} GB</span>
@@ -206,10 +230,10 @@ export function GroupDetailPage() {
                       <span className="text-muted-foreground">—</span>
                     )}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="text-right sm:text-left">
                     <Money amount={a.net_owed} zero="settled" className="text-xs" />
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="hidden lg:table-cell">
                     {a.expire === null ? (
                       <span className="text-xs text-muted-foreground">never</span>
                     ) : (
@@ -241,7 +265,7 @@ export function GroupDetailPage() {
             <TableRow>
               <TableHead>Date</TableHead>
               <TableHead>Type</TableHead>
-              <TableHead>Note</TableHead>
+              <TableHead className="hidden md:table-cell">Note</TableHead>
               <TableHead className="text-right">Amount</TableHead>
             </TableRow>
           </TableHeader>
@@ -261,7 +285,7 @@ export function GroupDetailPage() {
                     {entry.type === 'charge' ? 'debt' : 'payment'}
                   </Badge>
                 </TableCell>
-                <TableCell className="max-w-[320px] truncate text-muted-foreground" title={entry.note ?? undefined}>
+                <TableCell className="hidden max-w-[320px] truncate text-muted-foreground md:table-cell" title={entry.note ?? undefined}>
                   {entry.note ?? '—'}
                 </TableCell>
                 <TableCell className="text-right">

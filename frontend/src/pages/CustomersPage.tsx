@@ -23,7 +23,7 @@ export function CustomersPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h1 className="text-lg font-semibold tracking-tight">Customers</h1>
           <p className="text-xs text-muted-foreground">
@@ -43,9 +43,9 @@ export function CustomersPage() {
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
-              <TableHead>Contact</TableHead>
-              <TableHead>Represents</TableHead>
-              <TableHead className="text-right">Accounts</TableHead>
+              <TableHead className="hidden md:table-cell">Contact</TableHead>
+              <TableHead className="hidden lg:table-cell">Represents</TableHead>
+              <TableHead className="hidden text-right sm:table-cell">Accounts</TableHead>
               <TableHead className="text-right">Owes now</TableHead>
             </TableRow>
           </TableHeader>
@@ -67,8 +67,8 @@ export function CustomersPage() {
             {filtered.map((c) => (
               <TableRow key={c.id} className="cursor-pointer" onClick={() => navigate(`/customers/${c.id}`)}>
                 <TableCell className="font-medium">{c.name}</TableCell>
-                <TableCell className="text-muted-foreground">{c.contact ?? '—'}</TableCell>
-                <TableCell>
+                <TableCell className="hidden text-muted-foreground md:table-cell">{c.contact ?? '—'}</TableCell>
+                <TableCell className="hidden lg:table-cell">
                   {c.represented_group_names.length > 0 ? (
                     <span className="flex flex-wrap gap-1">
                       {c.represented_group_names.map((name) => (
@@ -81,7 +81,7 @@ export function CustomersPage() {
                     <span className="text-muted-foreground">—</span>
                   )}
                 </TableCell>
-                <TableCell className="text-right tabular-nums">{c.account_count}</TableCell>
+                <TableCell className="hidden text-right tabular-nums sm:table-cell">{c.account_count}</TableCell>
                 <TableCell className="text-right">
                   <Money amount={c.net_owed} zero="settled" className="text-xs" />
                 </TableCell>
