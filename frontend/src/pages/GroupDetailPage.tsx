@@ -7,6 +7,7 @@ import { groupsApi, ledgerApi, apiErrorMessage } from '@/lib/api'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
@@ -20,11 +21,23 @@ import { StatCard } from '@/components/StatCard'
 import { Money } from '@/components/Money'
 import { cn, daysUntil, formatDate, formatToman } from '@/lib/utils'
 
+const INVOICE_INCLUDE_GB_KEY = 'invoice-include-gb'
+
 export function GroupDetailPage() {
   const { id } = useParams<{ id: string }>()
   const groupId = Number(id)
   const [copying, setCopying] = React.useState(false)
+  // Persisted like the theme toggle (lib/theme.tsx) — a per-operator display
+  // preference, not per-group data, so it should stick across groups and
+  // browser sessions rather than resetting every time this page is opened.
+  // Defaults on: most invoices are sent alongside "why do I owe this", and GB
+  // is that answer.
+  const [includeGb, setIncludeGb] = React.useState(() => localStorage.getItem(INVOICE_INCLUDE_GB_KEY) !== 'false')
   const openAccount = useOpenAccountInspector()
+
+  React.useEffect(() => {
+    localStorage.setItem(INVOICE_INCLUDE_GB_KEY, String(includeGb))
+  }, [includeGb])
 
   const groupQuery = useQuery({ queryKey: ['groups', groupId], queryFn: () => groupsApi.get(groupId) })
   const accountsQuery = useQuery({ queryKey: ['accounts', { groupId }], queryFn: () => groupsApi.accounts(groupId) })
@@ -48,22 +61,34 @@ export function GroupDetailPage() {
    * Persian numerals because it is pasted straight into a chat with the
    * customer, not read inside this panel.
    *
-   * Deliberately per-member OWED, not per-member usage: usage is what an
-   * amount is derived from, not what anyone is being asked to pay, and once
-   * someone has partly paid the two stop matching (48.8 GB of usage next to
-   * "13,916 owed" reads as an error). Members who are square are summarised
-   * as a count rather than listed, so the list is only people to chase. */
+   * Deliberately per-member OWED, not per-member usage, as the PRIMARY
+   * figure: usage is what an amount is derived from, not what anyone is
+   * being asked to pay, and once someone has partly paid the two stop
+   * matching (48.8 GB of usage next to "13,916 owed" reads as an error if
+   * they're presented as equivalent). GB is opt-in (includeGb, persisted)
+   * for when the operator wants "why do I owe this" alongside the amount —
+   * shown as an explicitly labelled second figure, this cycle's usage, never
+   * substituted for the owed amount, so it can't be read as one. Sourced
+   * from the same billableByAccount the member table's own "Billable this
+   * cycle" column uses, so the invoice can't disagree with the page it was
+   * copied from. */
   async function copyInvoice() {
     setCopying(true)
     try {
       const members = accountsQuery.data ?? []
       const toman = (n: number) => `${Math.round(n).toLocaleString('fa-IR')} تومان`
+      const gbNote = (accountId: number) => {
+        if (!includeGb) return ''
+        const gb = billableByAccount.get(accountId)?.billable_gb
+        if (!gb || gb <= 0) return ''
+        return ` (${gb.toLocaleString('fa-IR', { maximumFractionDigits: 1 })} گیگ این دوره)`
+      }
 
       const owing = members.filter((m) => m.net_owed > 0).sort((a, b) => b.net_owed - a.net_owed)
       const inCredit = members.filter((m) => m.net_owed < 0)
       const settledCount = members.length - owing.length - inCredit.length
 
-      const body: string[] = owing.map((m) => `• ${m.marzban_username}: ${toman(m.net_owed)}`)
+      const body: string[] = owing.map((m) => `• ${m.marzban_username}: ${toman(m.net_owed)}${gbNote(m.id)}`)
       if (owing.length === 0) body.push('• همه اعضا تسویه هستند.')
       for (const m of inCredit) {
         body.push(`• ${m.marzban_username}: ${toman(Math.abs(m.net_owed))} طلبکار`)
@@ -150,14 +175,20 @@ export function GroupDetailPage() {
       </div>
 
       <div className="overflow-hidden rounded-lg border border-border bg-card">
-        <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2.5">
           <h2 className="flex items-center gap-1.5 text-[13px] font-semibold">
             Member accounts
             <span className="text-xs font-normal tabular-nums text-muted-foreground">{accountsQuery.data?.length ?? 0}</span>
           </h2>
-          <Button size="sm" variant="outline" onClick={copyInvoice} disabled={copying}>
-            <Copy /> {copying ? 'Copying…' : 'Copy invoice'}
-          </Button>
+          <div className="flex items-center gap-3">
+            <label className="flex cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+              <Checkbox checked={includeGb} onCheckedChange={(v) => setIncludeGb(v === true)} />
+              Include GB
+            </label>
+            <Button size="sm" variant="outline" onClick={copyInvoice} disabled={copying}>
+              <Copy /> {copying ? 'Copying…' : 'Copy invoice'}
+            </Button>
+          </div>
         </div>
         <Table>
           <TableHeader>
