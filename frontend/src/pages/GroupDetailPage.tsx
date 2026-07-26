@@ -19,7 +19,7 @@ import { UsageBar } from '@/components/UsageBar'
 import { StatusDot } from '@/components/StatusDot'
 import { StatCard } from '@/components/StatCard'
 import { Money } from '@/components/Money'
-import { cn, daysUntil, formatDate, formatToman } from '@/lib/utils'
+import { bidiLtrSpan, bidiRtlLine, cn, daysUntil, formatDate, formatToman } from '@/lib/utils'
 
 const INVOICE_INCLUDE_GB_KEY = 'invoice-include-gb'
 
@@ -71,12 +71,22 @@ export function GroupDetailPage() {
    * substituted for the owed amount, so it can't be read as one. Sourced
    * from the same billableByAccount the member table's own "Billable this
    * cycle" column uses, so the invoice can't disagree with the page it was
-   * copied from. */
+   * copied from.
+   *
+   * Every line goes through bidiRtlLine, and every username through
+   * bidiLtrSpan (see lib/utils.ts for the full explanation): usernames here
+   * are always Latin, so a plain "• name: amount" line has its first
+   * strong-directional character be the name, which silently flips that
+   * whole line's reading direction to LTR while the title/total lines (which
+   * start with a Persian word) stay RTL — the two disagree line to line,
+   * which is what actually made this unreadable, not the mixed script by
+   * itself. */
   async function copyInvoice() {
     setCopying(true)
     try {
       const members = accountsQuery.data ?? []
       const toman = (n: number) => `${Math.round(n).toLocaleString('fa-IR')} تومان`
+      const name = (username: string) => bidiLtrSpan(username)
       const gbNote = (accountId: number) => {
         if (!includeGb) return ''
         const gb = billableByAccount.get(accountId)?.billable_gb
@@ -88,20 +98,20 @@ export function GroupDetailPage() {
       const inCredit = members.filter((m) => m.net_owed < 0)
       const settledCount = members.length - owing.length - inCredit.length
 
-      const body: string[] = owing.map((m) => `• ${m.marzban_username}: ${toman(m.net_owed)}${gbNote(m.id)}`)
-      if (owing.length === 0) body.push('• همه اعضا تسویه هستند.')
+      const body: string[] = owing.map((m) => bidiRtlLine(`• ${name(m.marzban_username)}: ${toman(m.net_owed)}${gbNote(m.id)}`))
+      if (owing.length === 0) body.push(bidiRtlLine('• همه اعضا تسویه هستند.'))
       for (const m of inCredit) {
-        body.push(`• ${m.marzban_username}: ${toman(Math.abs(m.net_owed))} طلبکار`)
+        body.push(bidiRtlLine(`• ${name(m.marzban_username)}: ${toman(Math.abs(m.net_owed))} طلبکار`))
       }
-      if (settledCount > 0) body.push(`• ${settledCount.toLocaleString('fa-IR')} نفر تسویه‌شده`)
+      if (settledCount > 0) body.push(bidiRtlLine(`• ${settledCount.toLocaleString('fa-IR')} نفر تسویه‌شده`))
 
       const text = [
-        `صورتحساب گروه «${group.name}»`,
-        `تاریخ: ${new Date().toLocaleDateString('fa-IR')}`,
+        bidiRtlLine(`صورتحساب گروه «${name(group.name)}»`),
+        bidiRtlLine(`تاریخ: ${new Date().toLocaleDateString('fa-IR')}`),
         '',
         ...body,
         '',
-        `جمع کل: ${toman(group.net_owed)}`,
+        bidiRtlLine(`جمع کل: ${toman(group.net_owed)}`),
       ].join('\n')
 
       await navigator.clipboard.writeText(text)
