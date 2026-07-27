@@ -110,11 +110,16 @@ export function GroupDetailPage() {
       const settledCount = members.length - owing.length - inCredit.length
 
       const body: string[] = owing.map((m) => `• ${toman(m.net_owed)}: ${m.marzban_username}${gbNote(m.id)}`)
-      if (owing.length === 0) body.push('• همه اعضا تسویه هستند.')
+      
       for (const m of inCredit) {
-        body.push(`• طلبکار ${toman(Math.abs(m.net_owed))}: ${m.marzban_username}`)
+        body.push(`• طلبکار ${toman(Math.abs(m.net_owed))}: ${m.marzban_username}${gbNote(m.id)}`)
       }
-      if (settledCount > 0) body.push(`• ${settledCount.toLocaleString('fa-IR')} نفر تسویه‌شده`)
+
+      if (owing.length === 0 && inCredit.length === 0) {
+        body.push('• همه اعضا تسویه هستند.')
+      } else if (settledCount > 0) {
+        body.push(`• ${settledCount.toLocaleString('fa-IR')} نفر تسویه‌شده`)
+      }
 
       const text = [
         `صورتحساب گروه «${group.name}»`,
