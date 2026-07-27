@@ -41,7 +41,11 @@ origins_env = os.getenv("CORS_ALLOWED_ORIGINS")
 if origins_env:
     allow_origins = [orig.strip() for orig in origins_env.split(",") if orig.strip()]
 else:
-    allow_origins = ["http://localhost:5173", "https://your-frontend-domain.com"]
+    # single-operator internal tool; set CORS_ALLOWED_ORIGINS to tighten this
+    # once it's exposed beyond a trusted network. No hardcoded placeholder
+    # domain here — one that doesn't match the real deployed frontend would
+    # silently break every request instead of failing loudly.
+    allow_origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,

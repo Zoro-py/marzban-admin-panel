@@ -22,13 +22,19 @@ class LoginResponse(BaseModel):
 FAILED_LOGIN_ATTEMPTS = defaultdict(lambda: {"attempts": 0, "blocked_until": 0.0})
 
 def get_client_ip(request: Request) -> str:
-    # Try x-forwarded-for first
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        # X-Forwarded-For can contain a comma-separated list of IPs, the first one is the client
-        return forwarded.split(",")[0].strip()
-    
-    # Fallback to standard request client host
+    # X-Real-IP, not X-Forwarded-For: this deployment's own nginx config
+    # (scripts/install.sh) sets X-Real-IP to $remote_addr directly, which
+    # nginx always overwrites with the real TCP peer — unspoofable by the
+    # client. X-Forwarded-For is set via $proxy_add_x_forwarded_for, which
+    # APPENDS to whatever value the client already sent rather than
+    # replacing it, so a client can prepend a fake IP and this rate limiter
+    # would key off the fake one (the first entry) instead of the real one
+    # nginx appended last.
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+
+    # Fallback to standard request client host (e.g. running without nginx in front)
     if request.client and request.client.host:
         return request.client.host
     return "unknown"

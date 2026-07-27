@@ -23,9 +23,9 @@ class Settings(BaseSettings):
     # first run (see _load_or_create_jwt_secret below) so this is genuinely a "never
     # touch it" value, not one more env var to set.
     jwt_secret: str = ""
-    jwt_expire_minutes: int = 120  # 2 hours (was 1440)
+    jwt_expire_minutes: int = 1440  # 1 day
     # "Remember me" checkbox on login uses this instead of jwt_expire_minutes.
-    jwt_remember_expire_minutes: int = 1440  # 1 day (was 30 days)
+    jwt_remember_expire_minutes: int = 43200  # 30 days
 
     bot_token: str = ""
     bot_admin_chat_id: str = ""

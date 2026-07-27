@@ -40,7 +40,7 @@ def list_accounts(
     customer_id: Optional[int] = None,
     group_id: Optional[int] = None,
     offset: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = None,
     session: Session = Depends(get_session),
 ):
     """
@@ -51,7 +51,9 @@ def list_accounts(
         customer_id (Optional[int]): Filter accounts belonging to a specific customer.
         group_id (Optional[int]): Filter accounts belonging to a specific group.
         offset (int): Pagination offset.
-        limit (int): Maximum number of records to return.
+        limit (Optional[int]): Maximum number of records to return. Unbounded by
+            default — the frontend doesn't paginate this list, so a default cap
+            here would silently hide accounts past it on every screen.
         session (Session): Database session.
 
     Returns:
@@ -64,7 +66,9 @@ def list_accounts(
         stmt = stmt.where(Account.customer_id == customer_id)
     if group_id is not None:
         stmt = stmt.where(Account.group_id == group_id)
-    stmt = stmt.offset(offset).limit(limit)
+    stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     accounts = session.exec(stmt).all()
     return enrich_accounts(session, accounts)
 
@@ -243,7 +247,7 @@ async def adjust_account(account_id: int, body: AccountAdjustRequest, session: S
 
     Raises:
         HTTPException(404): If the local account does not exist.
-        HTTPException(400): If extend values are negative, no valid operations are provided, or Marzban rejects the change.
+        HTTPException(400): If no valid operations are provided, or Marzban rejects the change.
         HTTPException(502): If Marzban is unavailable or authentication fails.
 
     Returns:
@@ -256,14 +260,14 @@ async def adjust_account(account_id: int, body: AccountAdjustRequest, session: S
     payload: dict = {}
     detail_parts: list[str] = []
 
+    # Deltas are relative — a negative extend_days/extend_gb is the documented
+    # way to reduce (e.g. the UI's "-7 days" preset). Rejecting negatives here
+    # would break that, not add safety.
     if body.set_expire is not None:
         payload["expire"] = body.set_expire
         detail_parts.append(f"set_expire={body.set_expire}")
     elif body.extend_days is not None:
-        if body.extend_days < 0:
-            raise HTTPException(400, "extend_days cannot be negative")
         base = account.expire if account.expire else int(time.time())
-        base = max(base, int(time.time()))
         payload["expire"] = base + body.extend_days * SECONDS_IN_DAY
         detail_parts.append(f"extend_days={body.extend_days}")
 
@@ -271,8 +275,6 @@ async def adjust_account(account_id: int, body: AccountAdjustRequest, session: S
         payload["data_limit"] = bytes_from_gb(body.set_data_limit_gb)
         detail_parts.append(f"set_data_limit_gb={body.set_data_limit_gb}")
     elif body.extend_gb is not None:
-        if body.extend_gb < 0:
-            raise HTTPException(400, "extend_gb cannot be negative")
         base = account.data_limit or 0
         payload["data_limit"] = max(0, base + bytes_from_gb(body.extend_gb))
         detail_parts.append(f"extend_gb={body.extend_gb}")

@@ -218,6 +218,27 @@ def _run_lightweight_migrations() -> None:
                     {"cid": result.lastrowid, "aid": account_id},
                 )
 
+        # index=True on a model column only becomes a real index via
+        # create_all()'s CREATE TABLE — which is skipped entirely for a table
+        # that already exists (same reason schema changes need the ALTER TABLE
+        # calls above). Every column below already has index=True in
+        # models.py; CREATE INDEX IF NOT EXISTS is what actually applies that
+        # to a database that had the table before the column was marked
+        # indexed. Names match SQLAlchemy's own `ix_<table>_<column>`
+        # convention so a fresh database (where create_all did create these)
+        # doesn't end up with a second, differently-named duplicate.
+        conn.execute(text('CREATE INDEX IF NOT EXISTS ix_group_representative_customer_id ON "group" (representative_customer_id)'))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_account_customer_id ON account (customer_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_account_group_id ON account (group_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ledgerentry_type ON ledgerentry (type)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ledgerentry_date ON ledgerentry (date)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ledgerentry_customer_id ON ledgerentry (customer_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ledgerentry_group_id ON ledgerentry (group_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ledgerentry_account_id ON ledgerentry (account_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_accountevent_account_id ON accountevent (account_id)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_accountevent_date ON accountevent (date)"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_onlinesnapshot_recorded_at ON onlinesnapshot (recorded_at)"))
+
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)

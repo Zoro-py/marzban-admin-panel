@@ -1,4 +1,5 @@
 from collections import defaultdict
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
@@ -49,11 +50,13 @@ def _with_balance(book: MoneyBook, c: Customer, groups_for_c: list[Group]) -> Cu
 @router.get("", response_model=list[CustomerWithBalance])
 def list_customers(
     offset: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = None,
     session: Session = Depends(get_session)
 ):
     book = MoneyBook(session)
-    stmt = select(Customer).offset(offset).limit(limit)
+    stmt = select(Customer).offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     customers = session.exec(stmt).all()
     rep_groups = _represented_groups(session)
     return [_with_balance(book, c, rep_groups.get(c.id, [])) for c in customers]

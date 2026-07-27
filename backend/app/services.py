@@ -183,8 +183,7 @@ def billable_bytes(account: Account, mode: BillingMode) -> int:
     unlimited (data_limit=None) prepay package has no fixed size to bill
     automatically — invoice it manually instead."""
     if mode == BillingMode.payg:
-        diff = account.used_traffic - account.usage_baseline
-        return diff if diff >= 0 else account.used_traffic
+        return max(0, account.used_traffic - account.usage_baseline)
     if account.data_limit is None:
         import logging
         logging.getLogger(__name__).warning("Prepay unlimited account %s (id=%s) requires manual invoicing. Returning 0.", account.marzban_username, account.id)

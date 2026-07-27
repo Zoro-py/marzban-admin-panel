@@ -77,7 +77,12 @@ class MarzbanClient:
             exp = claims.get("exp")
             if not exp:
                 return time.monotonic() + FALLBACK_CACHE_SECONDS
-            seconds_until_real_expiry = float(exp) - time.monotonic()
+            # exp is a wall-clock unix timestamp (jwt claim), so the "how long
+            # until it expires" subtraction has to happen against time.time(),
+            # not time.monotonic() — those two clocks aren't comparable. Only
+            # the final deadline gets anchored onto time.monotonic(), since
+            # that's what _get_token compares it against.
+            seconds_until_real_expiry = float(exp) - time.time()
             useful_seconds = seconds_until_real_expiry - REFRESH_SAFETY_MARGIN_SECONDS
             return time.monotonic() + max(0.0, useful_seconds)
         except Exception:
@@ -149,11 +154,7 @@ class MarzbanClient:
                 )
         except (httpx.HTTPError, httpx.InvalidURL) as exc:
             raise MarzbanUnavailable(f"Could not reach Marzban at {self._base_url}: {exc}") from exc
-            
-        if resp.status_code in (401, 403):
-            from fastapi import HTTPException
-            raise HTTPException(status_code=401, detail="Invalid admin credentials")
-            
+
         return resp.status_code == 200
 
 

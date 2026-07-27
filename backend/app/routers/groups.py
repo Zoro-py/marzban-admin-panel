@@ -1,4 +1,3 @@
-import asyncio
 from datetime import timedelta
 from typing import Optional
 
@@ -42,7 +41,7 @@ def _invoice_lines(session: Session, accounts: list[Account], group: Group) -> l
                 marzban_username=a.marzban_username,
                 billable_gb=round(billable_gb, 3),
                 rate_per_gb=rate,
-                amount=billable_gb * rate,
+                amount=round(billable_gb * rate, 2),
             )
         )
     return lines
@@ -88,11 +87,14 @@ def _with_balance(session: Session, g: Group, book: Optional[MoneyBook] = None) 
 @router.get("", response_model=list[GroupWithBalance])
 def list_groups(
     offset: int = 0,
-    limit: int = 100,
+    limit: Optional[int] = None,
     session: Session = Depends(get_session)
 ):
     book = MoneyBook(session)
-    groups = session.exec(select(Group).offset(offset).limit(limit)).all()
+    stmt = select(Group).offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    groups = session.exec(stmt).all()
     return [_with_balance(session, g, book) for g in groups]
 
 
@@ -254,7 +256,7 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
     paid_note = f"Payment received at settlement ({now.date().isoformat()})"
     try:
         for line in lines:
-            if line.amount >= 0:
+            if line.amount > 0:
                 session.add(
                     LedgerEntry(
                         type=LedgerType.charge,
@@ -291,12 +293,15 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
 
         # Group-level debt with no member to attribute it to (a setup fee, an
         # adjustment) is part of what the representative owes, so paying in full
-        # has to clear it too.
-        if body.mark_paid and prior_group_only != 0:
+        # has to clear it too. A pre-existing group-level CREDIT (prior_group_only
+        # < 0) is not touched here — it isn't debt from this cycle, and posting a
+        # charge to cancel it would erase money the representative is legitimately
+        # owed back.
+        if body.mark_paid and prior_group_only > 0:
             session.add(
                 LedgerEntry(
-                    type=LedgerType.credit if prior_group_only > 0 else LedgerType.charge,
-                    amount=abs(round(prior_group_only, 2)),
+                    type=LedgerType.credit,
+                    amount=round(prior_group_only, 2),
                     customer_id=group.representative_customer_id,
                     group_id=group.id,
                     note=paid_note,
@@ -323,13 +328,26 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
 
 
 @router.post("/{group_id}/reset-cycle")
-def reset_group_cycle(group_id: int, session: Session = Depends(get_session)):
+async def reset_group_cycle(group_id: int, session: Session = Depends(get_session)):
     """Same as /settle EXCEPT it never posts a ledger charge — rolls every
     member's usage_baseline forward and starts a new cycle as if payment was
     already collected some other way (cash, a manual "New debt/credit" entry
     recorded separately, etc.). Without this, the only way to close out a
     cycle was to charge the computed pending amount, which double-bills a
-    group whose members already paid outside the ledger."""
+    group whose members already paid outside the ledger.
+
+    Also resets each member's live usage counter in Marzban: once a cycle is
+    paid for, there's no reason its usage should keep counting against the
+    next one. This is attempted per member and never allowed to block the
+    cycle from closing — a member whose Marzban call fails still gets its
+    local baseline rolled forward (the core guarantee of this endpoint), just
+    without a fresh Marzban-reported snapshot; the failure is reported back
+    in `failed_resets` instead of silently dropped, and can be retried later
+    via that account's own /reset. Deliberately NOT all-or-nothing: aborting
+    the whole group on one member's failure would leave any member reset
+    before it stuck in Marzban (that call already happened, for real, and
+    can't be undone by rolling back this transaction) while the rest of the
+    group never got its cycle closed at all."""
     group = session.get(Group, group_id)
     if not group:
         raise HTTPException(404, "Group not found")
@@ -338,17 +356,21 @@ def reset_group_cycle(group_id: int, session: Session = Depends(get_session)):
     lines = _invoice_lines(session, accounts, group)
 
     now = utcnow()
+    failed_resets: list[str] = []
     try:
         for a in accounts:
             try:
-                marzban_user = asyncio.run(marzban_client.reset_user(a.marzban_username))
+                marzban_user = await marzban_client.reset_user(a.marzban_username)
+            except Exception as exc:
+                failed_resets.append(f"{a.marzban_username}: {exc}")
+                marzban_user = None
+
+            if marzban_user is not None:
                 a.used_traffic = marzban_user.get("used_traffic", 0)
                 a.lifetime_used_traffic = marzban_user.get("lifetime_used_traffic", a.lifetime_used_traffic)
                 a.expire = marzban_user.get("expire", a.expire)
                 a.data_limit = marzban_user.get("data_limit", a.data_limit)
                 a.status = marzban_user.get("status", a.status)
-            except Exception as exc:
-                raise HTTPException(400, f"Failed to reset {a.marzban_username}: {exc}")
 
             if group.billing_mode == BillingMode.payg:
                 a.usage_baseline = a.used_traffic
@@ -364,4 +386,4 @@ def reset_group_cycle(group_id: int, session: Session = Depends(get_session)):
         session.rollback()
         raise
 
-    return {"group_id": group_id, "reset_at": now, "lines": lines}
+    return {"group_id": group_id, "reset_at": now, "lines": lines, "failed_resets": failed_resets}
