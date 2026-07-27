@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { Link } from 'react-router-dom'
+import { Virtuoso } from 'react-virtuoso'
 import { useQuery } from '@tanstack/react-query'
 import {
   AlertTriangle,
@@ -23,6 +24,10 @@ import { cn, formatToman } from '@/lib/utils'
  * everything that needs the operator's hand today, ordered by severity —
  * not seven equal boxes that are usually empty. */
 export function DashboardPage() {
+  React.useEffect(() => {
+    document.title = 'Shiraze | Dashboard'
+  }, [])
+
   const { data, isLoading } = useQuery({ queryKey: ['reports', 'summary'], queryFn: reportsApi.summary })
   const financeQuery = useQuery({ queryKey: ['reports', 'finance'], queryFn: reportsApi.finance })
   const openAccount = useOpenAccountInspector()
@@ -103,64 +108,94 @@ export function DashboardPage() {
               title="Already expired"
               count={data.expired_accounts.length}
             >
-              {data.expired_accounts.map((a) => (
-                <AccountQueueRow
-                  key={a.account_id}
-                  onClick={() => openAccount(a.account_id)}
-                  username={a.marzban_username}
-                  owner={a.owner_name}
-                  metric={<span className="font-medium text-destructive">{Math.abs(a.days_left).toFixed(0)}d ago</span>}
+              {data.expired_accounts.length > 0 && (
+                <Virtuoso
+                  useWindowScroll
+                  data={data.expired_accounts}
+                  itemContent={(_, a) => (
+                    <AccountQueueRow
+                      key={a.account_id}
+                      onClick={() => openAccount(a.account_id)}
+                      username={a.marzban_username}
+                      owner={a.owner_name}
+                      metric={<span className="font-medium text-destructive">{Math.abs(a.days_left).toFixed(0)}d ago</span>}
+                    />
+                  )}
                 />
-              ))}
+              )}
             </QueueSection>
 
             <QueueSection icon={Ban} tone="danger" title="Out of quota" count={data.exhausted_accounts.length}>
-              {data.exhausted_accounts.map((a) => (
-                <AccountQueueRow
-                  key={a.account_id}
-                  onClick={() => openAccount(a.account_id)}
-                  username={a.marzban_username}
-                  owner={a.owner_name}
-                  metric={<span className="font-medium text-destructive">{a.used_pct}%</span>}
+              {data.exhausted_accounts.length > 0 && (
+                <Virtuoso
+                  useWindowScroll
+                  data={data.exhausted_accounts}
+                  itemContent={(_, a) => (
+                    <AccountQueueRow
+                      key={a.account_id}
+                      onClick={() => openAccount(a.account_id)}
+                      username={a.marzban_username}
+                      owner={a.owner_name}
+                      metric={<span className="font-medium text-destructive">{a.used_pct}%</span>}
+                    />
+                  )}
                 />
-              ))}
+              )}
             </QueueSection>
 
             <QueueSection icon={Wallet} tone="danger" title="Customers in debt" count={data.overdue_customers.length}>
-              {data.overdue_customers.map((c) => (
-                <Link
-                  key={c.customer_id}
-                  to={`/customers/${c.customer_id}`}
-                  className="flex items-center justify-between gap-3 px-4 py-1.5 text-[13px] hover:bg-muted/50"
-                >
-                  <span className="truncate">{c.name}</span>
-                  <Money amount={c.balance} className="text-xs" />
-                </Link>
-              ))}
+              {data.overdue_customers.length > 0 && (
+                <Virtuoso
+                  useWindowScroll
+                  data={data.overdue_customers}
+                  itemContent={(_, c) => (
+                    <Link
+                      key={c.customer_id}
+                      to={`/customers/${c.customer_id}`}
+                      className="flex items-center justify-between gap-3 px-4 py-1.5 text-[13px] hover:bg-muted/50"
+                    >
+                      <span className="truncate">{c.name}</span>
+                      <Money amount={c.balance} className="text-xs" />
+                    </Link>
+                  )}
+                />
+              )}
             </QueueSection>
 
             <QueueSection icon={Clock} tone="warn" title="Expiring within 3 days" count={data.near_expiry_accounts.length}>
-              {data.near_expiry_accounts.map((a) => (
-                <AccountQueueRow
-                  key={a.account_id}
-                  onClick={() => openAccount(a.account_id)}
-                  username={a.marzban_username}
-                  owner={a.owner_name}
-                  metric={<span className="font-medium text-warning">{a.days_left}d left</span>}
+              {data.near_expiry_accounts.length > 0 && (
+                <Virtuoso
+                  useWindowScroll
+                  data={data.near_expiry_accounts}
+                  itemContent={(_, a) => (
+                    <AccountQueueRow
+                      key={a.account_id}
+                      onClick={() => openAccount(a.account_id)}
+                      username={a.marzban_username}
+                      owner={a.owner_name}
+                      metric={<span className="font-medium text-warning">{a.days_left}d left</span>}
+                    />
+                  )}
                 />
-              ))}
+              )}
             </QueueSection>
 
             <QueueSection icon={AlertTriangle} tone="warn" title="Near quota (≥80%)" count={data.near_quota_accounts.length}>
-              {data.near_quota_accounts.map((a) => (
-                <AccountQueueRow
-                  key={a.account_id}
-                  onClick={() => openAccount(a.account_id)}
-                  username={a.marzban_username}
-                  owner={a.owner_name}
-                  metric={<span className="font-medium text-warning">{a.used_pct}%</span>}
+              {data.near_quota_accounts.length > 0 && (
+                <Virtuoso
+                  useWindowScroll
+                  data={data.near_quota_accounts}
+                  itemContent={(_, a) => (
+                    <AccountQueueRow
+                      key={a.account_id}
+                      onClick={() => openAccount(a.account_id)}
+                      username={a.marzban_username}
+                      owner={a.owner_name}
+                      metric={<span className="font-medium text-warning">{a.used_pct}%</span>}
+                    />
+                  )}
                 />
-              ))}
+              )}
             </QueueSection>
 
             <QueueSection
@@ -169,67 +204,85 @@ export function DashboardPage() {
               title="Pending settlement"
               count={data.pending_settlement.length}
             >
-              {data.pending_settlement.map((p) =>
-                p.type === 'group' ? (
-                  <Link
-                    key={`group-${p.id}`}
-                    to={`/groups/${p.id}`}
-                    className="flex items-center justify-between gap-3 px-4 py-1.5 text-[13px] hover:bg-muted/50"
-                  >
-                    <span className="flex min-w-0 items-baseline gap-2">
-                      <span className="truncate">{p.name}</span>
-                      <span className="shrink-0 text-[11px] text-muted-foreground">
-                        {p.billing_mode === 'payg' ? 'pay-as-you-go' : 'prepay'}
-                      </span>
-                    </span>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {p.is_due && (
-                        <>
-                          <span className="font-medium text-destructive">{p.days_overdue}d overdue</span>
-                          {' · '}
-                        </>
-                      )}
-                      <QueueAmount netOwed={p.net_owed} pending={p.pending_amount} />
-                    </span>
-                  </Link>
-                ) : (
-                  <button
-                    key={`account-${p.id}`}
-                    type="button"
-                    onClick={() => openAccount(p.id)}
-                    className="flex items-center justify-between gap-3 px-4 py-1.5 text-left text-[13px] hover:bg-muted/50"
-                  >
-                    <span className="truncate font-mono text-xs font-medium">{p.name}</span>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      <QueueAmount netOwed={p.net_owed} pending={p.pending_amount} />
-                    </span>
-                  </button>
-                ),
+              {data.pending_settlement.length > 0 && (
+                <Virtuoso
+                  useWindowScroll
+                  data={data.pending_settlement}
+                  itemContent={(_, p) => (
+                    p.type === 'group' ? (
+                      <Link
+                        key={`group-${p.id}`}
+                        to={`/groups/${p.id}`}
+                        className="flex items-center justify-between gap-3 px-4 py-1.5 text-[13px] hover:bg-muted/50"
+                      >
+                        <span className="flex min-w-0 items-baseline gap-2">
+                          <span className="truncate">{p.name}</span>
+                          <span className="shrink-0 text-[11px] text-muted-foreground">
+                            {p.billing_mode === 'payg' ? 'pay-as-you-go' : 'prepay'}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {p.is_due && (
+                            <>
+                              <span className="font-medium text-destructive">{p.days_overdue}d overdue</span>
+                              {' · '}
+                            </>
+                          )}
+                          <QueueAmount netOwed={p.net_owed} pending={p.pending_amount} />
+                        </span>
+                      </Link>
+                    ) : (
+                      <button
+                        key={`account-${p.id}`}
+                        type="button"
+                        onClick={() => openAccount(p.id)}
+                        className="flex items-center justify-between gap-3 px-4 py-1.5 text-left text-[13px] hover:bg-muted/50"
+                      >
+                        <span className="truncate font-mono text-xs font-medium">{p.name}</span>
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          <QueueAmount netOwed={p.net_owed} pending={p.pending_amount} />
+                        </span>
+                      </button>
+                    )
+                  )}
+                />
               )}
             </QueueSection>
 
             <QueueSection icon={UserX} tone="info" title="Unassigned accounts" count={data.unassigned_accounts.length}>
-              {data.unassigned_accounts.map((a) => (
-                <AccountQueueRow
-                  key={a.account_id}
-                  onClick={() => openAccount(a.account_id)}
-                  username={a.marzban_username}
-                  owner={null}
-                  metric={<span className="text-xs text-muted-foreground">assign a customer</span>}
+              {data.unassigned_accounts.length > 0 && (
+                <Virtuoso
+                  useWindowScroll
+                  data={data.unassigned_accounts}
+                  itemContent={(_, a) => (
+                    <AccountQueueRow
+                      key={a.account_id}
+                      onClick={() => openAccount(a.account_id)}
+                      username={a.marzban_username}
+                      owner={null}
+                      metric={<span className="text-xs text-muted-foreground">assign a customer</span>}
+                    />
+                  )}
                 />
-              ))}
+              )}
             </QueueSection>
 
             <QueueSection icon={Tag} tone="info" title="No rate configured" count={data.no_rate_accounts.length}>
-              {data.no_rate_accounts.map((a) => (
-                <AccountQueueRow
-                  key={a.account_id}
-                  onClick={() => openAccount(a.account_id)}
-                  username={a.marzban_username}
-                  owner={a.owner_name}
-                  metric={<span className="text-xs text-muted-foreground">would bill 0 T</span>}
+              {data.no_rate_accounts.length > 0 && (
+                <Virtuoso
+                  useWindowScroll
+                  data={data.no_rate_accounts}
+                  itemContent={(_, a) => (
+                    <AccountQueueRow
+                      key={a.account_id}
+                      onClick={() => openAccount(a.account_id)}
+                      username={a.marzban_username}
+                      owner={a.owner_name}
+                      metric={<span className="text-xs text-muted-foreground">would bill 0 T</span>}
+                    />
+                  )}
                 />
-              ))}
+              )}
             </QueueSection>
           </div>
         )}

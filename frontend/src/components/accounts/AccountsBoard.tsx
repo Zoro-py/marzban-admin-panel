@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { Virtuoso } from 'react-virtuoso'
 import { DndContext, DragOverlay, useDraggable, useDroppable, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -7,6 +8,8 @@ import type { Account, GroupWithBalance } from '@/lib/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { UsageBar } from '@/components/UsageBar'
+import { EmptyState } from '@/components/EmptyState'
+import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { GripVertical, Users } from 'lucide-react'
 
@@ -74,10 +77,22 @@ function Column({
         {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
       </CardHeader>
       <CardContent className="flex min-h-24 flex-1 flex-col gap-2 pt-0">
-        {accounts.length === 0 && <p className="rounded-lg border border-dashed border-border p-3 text-center text-xs text-muted-foreground">Drop here</p>}
-        {accounts.map((a) => (
-          <AccountCard key={a.id} account={a} />
-        ))}
+        {accounts.length === 0 && (
+          <div className="rounded-lg border border-dashed border-border p-3">
+            <EmptyState title="Drop here" description="" />
+          </div>
+        )}
+        {accounts.length > 0 && (
+          <Virtuoso
+            style={{ height: '400px' }}
+            data={accounts}
+            itemContent={(_index, a) => (
+              <div className="pb-2">
+                <AccountCard key={a.id} account={a} />
+              </div>
+            )}
+          />
+        )}
       </CardContent>
     </Card>
   )
@@ -114,18 +129,37 @@ export function AccountsBoard({ accounts, groups, isLoading }: AccountsBoardProp
   }
 
   if (isLoading) {
-    return <p className="text-sm text-muted-foreground">Loading…</p>
+    return (
+      <div className="flex gap-4 overflow-x-auto pb-2">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="flex w-72 shrink-0 flex-col gap-2 rounded-lg border border-border bg-card p-4">
+            <Skeleton className="mb-2 h-5 w-1/2" />
+            <Skeleton className="h-16 w-full rounded-lg" />
+            <Skeleton className="h-16 w-full rounded-lg" />
+            <Skeleton className="h-16 w-full rounded-lg" />
+          </div>
+        ))}
+      </div>
+    )
   }
 
-  const byGroup = new Map<number, Account[]>()
-  const ungrouped: Account[] = []
-  for (const a of accounts) {
-    if (a.group_id) {
-      byGroup.set(a.group_id, [...(byGroup.get(a.group_id) ?? []), a])
-    } else {
-      ungrouped.push(a)
+  const { byGroup, ungrouped } = React.useMemo(() => {
+    const byGroup = new Map<number, Account[]>()
+    const ungrouped: Account[] = []
+    for (const a of accounts) {
+      if (a.group_id) {
+        const groupAccounts = byGroup.get(a.group_id)
+        if (groupAccounts) {
+          groupAccounts.push(a)
+        } else {
+          byGroup.set(a.group_id, [a])
+        }
+      } else {
+        ungrouped.push(a)
+      }
     }
-  }
+    return { byGroup, ungrouped }
+  }, [accounts])
 
   return (
     <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>

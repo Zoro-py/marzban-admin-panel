@@ -47,9 +47,14 @@ def _with_balance(book: MoneyBook, c: Customer, groups_for_c: list[Group]) -> Cu
 
 
 @router.get("", response_model=list[CustomerWithBalance])
-def list_customers(session: Session = Depends(get_session)):
+def list_customers(
+    offset: int = 0,
+    limit: int = 100,
+    session: Session = Depends(get_session)
+):
     book = MoneyBook(session)
-    customers = session.exec(select(Customer)).all()
+    stmt = select(Customer).offset(offset).limit(limit)
+    customers = session.exec(stmt).all()
     rep_groups = _represented_groups(session)
     return [_with_balance(book, c, rep_groups.get(c.id, [])) for c in customers]
 

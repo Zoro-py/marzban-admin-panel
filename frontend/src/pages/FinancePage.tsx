@@ -1,3 +1,4 @@
+import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { reportsApi } from '@/lib/api'
 import { StatCard } from '@/components/StatCard'
@@ -8,6 +9,10 @@ import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
 import { cn, formatDate, formatToman } from '@/lib/utils'
 
 export function FinancePage() {
+  React.useEffect(() => {
+    document.title = 'Shiraze | Finance'
+  }, [])
+
   const { data, isLoading } = useQuery({ queryKey: ['reports', 'finance'], queryFn: reportsApi.finance })
   const openAccount = useOpenAccountInspector()
 

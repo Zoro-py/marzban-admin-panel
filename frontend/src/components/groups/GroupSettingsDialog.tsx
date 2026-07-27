@@ -78,7 +78,7 @@ export function GroupSettingsDialog({ group, trigger }: GroupSettingsDialogProps
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="group-settings-name">Group name</Label>
-            <Input id="group-settings-name" value={name} onChange={(e) => setName(e.target.value)} />
+            <Input id="group-settings-name" value={name || ''} onChange={(e) => setName(e.target.value)} />
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -100,14 +100,14 @@ export function GroupSettingsDialog({ group, trigger }: GroupSettingsDialogProps
               <Input
                 id="group-settings-rate"
                 type="number"
-                value={rate}
+                value={rate || ''}
                 onChange={(e) => setRate(e.target.value)}
                 placeholder="e.g. 20000"
               />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="group-settings-cycle">Billing cycle (days)</Label>
-              <Input id="group-settings-cycle" type="number" value={cycleDays} onChange={(e) => setCycleDays(e.target.value)} />
+              <Input id="group-settings-cycle" type="number" value={cycleDays || ''} onChange={(e) => setCycleDays(e.target.value)} />
             </div>
           </div>
         </div>

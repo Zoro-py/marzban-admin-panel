@@ -1,12 +1,23 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import bindparam, text
+from sqlalchemy import bindparam, text, event
 from sqlmodel import SQLModel, Session, create_engine
 
 from app.config import settings
 
 connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, echo=False, connect_args=connect_args)
+engine_kwargs = {"echo": False, "connect_args": connect_args}
+if not settings.database_url.startswith("sqlite"):
+    engine_kwargs.update({"pool_size": 20, "max_overflow": 10})
+engine = create_engine(settings.database_url, **engine_kwargs)
+
+if settings.database_url.startswith("sqlite"):
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
 
 
 def _run_lightweight_migrations() -> None:
@@ -93,27 +104,19 @@ def _run_lightweight_migrations() -> None:
         # settled or a standalone account is genuinely charged, the
         # corresponding WHERE condition stops matching it, so this becomes a
         # no-op for that account on every subsequent startup.
-        never_settled_group_ids = {
-            row[0] for row in conn.execute(text('SELECT id FROM "group" WHERE last_settled_at IS NULL'))
-        }
-        ever_charged_account_ids = {
-            row[0]
-            for row in conn.execute(
-                text("SELECT DISTINCT account_id FROM ledgerentry WHERE type = 'charge' AND account_id IS NOT NULL")
+        # Pure SQL update to avoid fetching all accounts into memory
+        conn.execute(
+            text(
+                """
+                UPDATE account
+                SET usage_baseline = 0
+                WHERE 
+                    (group_id IS NOT NULL AND group_id IN (SELECT id FROM "group" WHERE last_settled_at IS NULL))
+                    OR 
+                    (group_id IS NULL AND id NOT IN (SELECT DISTINCT account_id FROM ledgerentry WHERE type = 'charge' AND account_id IS NOT NULL))
+                """
             )
-        }
-        accounts_to_rebaseline = [
-            row[0]
-            for row in conn.execute(text("SELECT id, group_id FROM account"))
-            if (row[1] in never_settled_group_ids if row[1] is not None else row[0] not in ever_charged_account_ids)
-        ]
-        if accounts_to_rebaseline:
-            conn.execute(
-                text("UPDATE account SET usage_baseline = 0 WHERE id IN :ids").bindparams(
-                    bindparam("ids", expanding=True)
-                ),
-                {"ids": accounts_to_rebaseline},
-            )
+        )
 
         # Billing basis changed from lifetime_used_traffic to used_traffic (see
         # Account.usage_baseline's docstring) — used_traffic matches exactly
@@ -138,21 +141,19 @@ def _run_lightweight_migrations() -> None:
             text("SELECT 1 FROM _migration_marker WHERE key = 'used_traffic_billing_basis'")
         ).first()
         if not already_rebaselined:
-            settled_group_ids = {
-                row[0] for row in conn.execute(text('SELECT id FROM "group" WHERE last_settled_at IS NOT NULL'))
-            }
-            settled_account_ids = [
-                row[0]
-                for row in conn.execute(text("SELECT id, group_id FROM account"))
-                if (row[1] in settled_group_ids if row[1] is not None else row[0] in ever_charged_account_ids)
-            ]
-            if settled_account_ids:
-                conn.execute(
-                    text("UPDATE account SET usage_baseline = used_traffic WHERE id IN :ids").bindparams(
-                        bindparam("ids", expanding=True)
-                    ),
-                    {"ids": settled_account_ids},
+            # Pure SQL update to avoid memory bottleneck
+            conn.execute(
+                text(
+                    """
+                    UPDATE account
+                    SET usage_baseline = used_traffic
+                    WHERE 
+                        (group_id IS NOT NULL AND group_id IN (SELECT id FROM "group" WHERE last_settled_at IS NOT NULL))
+                        OR 
+                        (group_id IS NULL AND id IN (SELECT DISTINCT account_id FROM ledgerentry WHERE type = 'charge' AND account_id IS NOT NULL))
+                    """
                 )
+            )
             now3 = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
             conn.execute(
                 text("INSERT INTO _migration_marker (key, applied_at) VALUES ('used_traffic_billing_basis', :now)"),
@@ -174,19 +175,21 @@ def _run_lightweight_migrations() -> None:
         # been charged is set to its current data_limit (nothing further
         # pending until the package grows). Self-limiting: once set to a
         # nonzero value here, or by an actual settle, this stops matching it.
-        settled_group_ids = {
-            row[0] for row in conn.execute(text('SELECT id FROM "group" WHERE last_settled_at IS NOT NULL'))
-        }
-        already_billed_accounts = [
-            row
-            for row in conn.execute(text("SELECT id, group_id, data_limit FROM account WHERE billed_data_limit = 0"))
-            if (row[1] in settled_group_ids if row[1] is not None else row[0] in ever_charged_account_ids)
-        ]
-        for account_id, _group_id, data_limit in already_billed_accounts:
-            conn.execute(
-                text("UPDATE account SET billed_data_limit = :dl WHERE id = :aid"),
-                {"dl": data_limit or 0, "aid": account_id},
+        # Pure SQL update
+        conn.execute(
+            text(
+                """
+                UPDATE account
+                SET billed_data_limit = IFNULL(data_limit, 0)
+                WHERE billed_data_limit = 0
+                AND (
+                    (group_id IS NOT NULL AND group_id IN (SELECT id FROM "group" WHERE last_settled_at IS NOT NULL))
+                    OR 
+                    (group_id IS NULL AND id IN (SELECT DISTINCT account_id FROM ledgerentry WHERE type = 'charge' AND account_id IS NOT NULL))
+                )
+                """
             )
+        )
 
         # "Every account belongs to one person unless it's deliberately
         # grouped" -- customer_id was being treated as an optional admin step

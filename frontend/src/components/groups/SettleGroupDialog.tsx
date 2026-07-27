@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { groupsApi, apiErrorMessage } from '@/lib/api'
+import { groupsApi } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -44,7 +44,6 @@ export function SettleGroupDialog({ groupId, currentBalance }: { groupId: number
       queryClient.invalidateQueries({ queryKey: ['reports'] })
       setOpen(false)
     },
-    onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
   const amount = invoiceQuery.data?.total_amount ?? 0
@@ -71,7 +70,8 @@ export function SettleGroupDialog({ groupId, currentBalance }: { groupId: number
           </DialogDescription>
         </DialogHeader>
 
-        {invoiceQuery.isLoading && <p className="text-sm text-muted-foreground">Calculating…</p>}
+        <form onSubmit={(e) => { e.preventDefault(); settleMutation.mutate(); }}>
+          {invoiceQuery.isLoading && <p className="text-sm text-muted-foreground">Calculating…</p>}
         {invoiceQuery.data && (
           <>
             <Table>
@@ -134,12 +134,13 @@ export function SettleGroupDialog({ groupId, currentBalance }: { groupId: number
             Cancel
           </Button>
           <Button
-            onClick={() => settleMutation.mutate()}
+            type="submit"
             disabled={!invoiceQuery.data || invoiceQuery.data.total_amount <= 0 || settleMutation.isPending}
           >
             {settleMutation.isPending ? 'Settling…' : 'Confirm & charge'}
           </Button>
-        </DialogFooter>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )

@@ -1,3 +1,4 @@
+import * as React from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Clock } from 'lucide-react'
@@ -7,9 +8,14 @@ import { Badge } from '@/components/ui/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { NewGroupDialog } from '@/components/groups/NewGroupDialog'
 import { Money } from '@/components/Money'
+import { Skeleton } from '@/components/ui/skeleton'
 import { formatBytes, formatToman } from '@/lib/utils'
 
 export function GroupsPage() {
+  React.useEffect(() => {
+    document.title = 'Shiraze | Groups'
+  }, [])
+
   const { data, isLoading } = useQuery({ queryKey: ['groups'], queryFn: groupsApi.list })
   const navigate = useNavigate()
 
@@ -43,11 +49,17 @@ export function GroupsPage() {
           </TableHeader>
           <TableBody>
             {isLoading && (
-              <TableRow>
-                <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                  Loading…
-                </TableCell>
-              </TableRow>
+              Array.from({ length: 5 }).map((_, i) => (
+                <TableRow key={i}>
+                  <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                  <TableCell className="hidden sm:table-cell"><Skeleton className="h-5 w-16" /></TableCell>
+                  <TableCell className="hidden text-right lg:table-cell"><Skeleton className="h-4 w-8 ml-auto" /></TableCell>
+                  <TableCell className="hidden md:table-cell"><Skeleton className="h-4 w-20" /></TableCell>
+                  <TableCell className="hidden text-right xl:table-cell"><Skeleton className="h-4 w-16 ml-auto" /></TableCell>
+                  <TableCell className="hidden text-right lg:table-cell"><Skeleton className="h-4 w-16 ml-auto" /></TableCell>
+                  <TableCell className="text-right"><Skeleton className="h-4 w-20 ml-auto" /></TableCell>
+                </TableRow>
+              ))
             )}
             {!isLoading && data?.length === 0 && (
               <TableRow>

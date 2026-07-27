@@ -2,6 +2,7 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.auth import require_auth
@@ -31,14 +32,31 @@ from app.services import (
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(require_auth)])
 
+SECONDS_IN_DAY = 86400
 
 @router.get("", response_model=list[AccountRow])
 def list_accounts(
     unassigned_only: bool = False,
     customer_id: Optional[int] = None,
     group_id: Optional[int] = None,
+    offset: int = 0,
+    limit: int = 100,
     session: Session = Depends(get_session),
 ):
+    """
+    List accounts with optional filtering by assignment status, customer, or group.
+
+    Args:
+        unassigned_only (bool): If True, returns only accounts not assigned to any customer or group.
+        customer_id (Optional[int]): Filter accounts belonging to a specific customer.
+        group_id (Optional[int]): Filter accounts belonging to a specific group.
+        offset (int): Pagination offset.
+        limit (int): Maximum number of records to return.
+        session (Session): Database session.
+
+    Returns:
+        list[AccountRow]: A list of enriched account records.
+    """
     stmt = select(Account)
     if unassigned_only:
         stmt = stmt.where(Account.customer_id.is_(None), Account.group_id.is_(None))
@@ -46,6 +64,7 @@ def list_accounts(
         stmt = stmt.where(Account.customer_id == customer_id)
     if group_id is not None:
         stmt = stmt.where(Account.group_id == group_id)
+    stmt = stmt.offset(offset).limit(limit)
     accounts = session.exec(stmt).all()
     return enrich_accounts(session, accounts)
 
@@ -60,9 +79,25 @@ def get_account(account_id: int, session: Session = Depends(get_session)):
 
 @router.post("", response_model=AccountRead)
 async def create_account(body: AccountCreateRequest, session: Session = Depends(get_session)):
-    existing = session.exec(select(Account).where(Account.marzban_username == body.marzban_username)).first()
-    if existing:
-        raise HTTPException(409, "This marzban_username is already tracked locally")
+    """
+    Create a new account locally and in Marzban.
+
+    This endpoint validates customer and group relationships, constructs the required
+    payload, and provisions the user in Marzban. On success, it creates a local
+    Account record and logs a creation event.
+
+    Args:
+        body (AccountCreateRequest): The details required to create a new account.
+        session (Session): Database session.
+
+    Raises:
+        HTTPException(404): If the provided customer_id or group_id does not exist.
+        HTTPException(400): If Marzban rejects the payload or the username already exists locally.
+        HTTPException(502): If Marzban is unavailable or authentication fails.
+
+    Returns:
+        AccountRead: The newly created account record.
+    """
 
     if body.customer_id is not None and not session.get(Customer, body.customer_id):
         raise HTTPException(404, "customer_id not found")
@@ -110,12 +145,19 @@ async def create_account(body: AccountCreateRequest, session: Session = Depends(
         status=marzban_user.get("status"),
         last_synced_at=now,
     )
-    session.add(account)
-    session.commit()
-    session.refresh(account)
+    try:
+        session.add(account)
+        session.commit()
+        session.refresh(account)
 
-    session.add(AccountEvent(account_id=account.id, action="create", detail="Created via dashboard"))
-    session.commit()
+        session.add(AccountEvent(account_id=account.id, action="create", detail="Created via dashboard"))
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(400, "This marzban_username is already tracked locally")
+    except Exception:
+        session.rollback()
+        raise
 
     return account
 
@@ -134,19 +176,23 @@ def update_relationship(account_id: int, body: AccountRelationshipUpdate, sessio
         if not session.get(Group, changes["group_id"]):
             raise HTTPException(404, "group_id not found")
 
-    for field, value in changes.items():
-        setattr(account, field, value)
-    session.add(account)
+    try:
+        for field, value in changes.items():
+            setattr(account, field, value)
+        session.add(account)
 
-    session.add(
-        AccountEvent(
-            account_id=account.id,
-            action="relationship_change",
-            detail=str(changes),
+        session.add(
+            AccountEvent(
+                account_id=account.id,
+                action="relationship_change",
+                detail=str(changes),
+            )
         )
-    )
-    session.commit()
-    session.refresh(account)
+        session.commit()
+        session.refresh(account)
+    except Exception:
+        session.rollback()
+        raise
     return account
 
 
@@ -164,21 +210,45 @@ def update_billing(account_id: int, body: AccountBillingUpdate, session: Session
     if body.billing_mode is not None:
         account.billing_mode = body.billing_mode
 
-    session.add(account)
-    session.add(
-        AccountEvent(
-            account_id=account.id,
-            action="billing_change",
-            detail=f"rate_per_gb={account.rate_per_gb}, billing_mode={account.billing_mode}",
+    try:
+        session.add(account)
+        session.add(
+            AccountEvent(
+                account_id=account.id,
+                action="billing_change",
+                detail=f"rate_per_gb={account.rate_per_gb}, billing_mode={account.billing_mode}",
+            )
         )
-    )
-    session.commit()
-    session.refresh(account)
+        session.commit()
+        session.refresh(account)
+    except Exception:
+        session.rollback()
+        raise
     return account
 
 
 @router.post("/{account_id}/adjust", response_model=AccountRead)
 async def adjust_account(account_id: int, body: AccountAdjustRequest, session: Session = Depends(get_session)):
+    """
+    Adjust an account's data limit or expiration date.
+
+    Supports extending limits/days incrementally or setting absolute values.
+    Updates the remote Marzban user first, then synchronizes the local account record,
+    and logs the adjustment as an account event.
+
+    Args:
+        account_id (int): The ID of the account to adjust.
+        body (AccountAdjustRequest): The adjustment parameters (e.g., extend_gb, set_expire).
+        session (Session): Database session.
+
+    Raises:
+        HTTPException(404): If the local account does not exist.
+        HTTPException(400): If extend values are negative, no valid operations are provided, or Marzban rejects the change.
+        HTTPException(502): If Marzban is unavailable or authentication fails.
+
+    Returns:
+        AccountRead: The updated account record.
+    """
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "Account not found")
@@ -190,14 +260,19 @@ async def adjust_account(account_id: int, body: AccountAdjustRequest, session: S
         payload["expire"] = body.set_expire
         detail_parts.append(f"set_expire={body.set_expire}")
     elif body.extend_days is not None:
+        if body.extend_days < 0:
+            raise HTTPException(400, "extend_days cannot be negative")
         base = account.expire if account.expire else int(time.time())
-        payload["expire"] = base + body.extend_days * 86400
+        base = max(base, int(time.time()))
+        payload["expire"] = base + body.extend_days * SECONDS_IN_DAY
         detail_parts.append(f"extend_days={body.extend_days}")
 
     if body.set_data_limit_gb is not None:
         payload["data_limit"] = bytes_from_gb(body.set_data_limit_gb)
         detail_parts.append(f"set_data_limit_gb={body.set_data_limit_gb}")
     elif body.extend_gb is not None:
+        if body.extend_gb < 0:
+            raise HTTPException(400, "extend_gb cannot be negative")
         base = account.data_limit or 0
         payload["data_limit"] = max(0, base + bytes_from_gb(body.extend_gb))
         detail_parts.append(f"extend_gb={body.extend_gb}")
@@ -216,17 +291,21 @@ async def adjust_account(account_id: int, body: AccountAdjustRequest, session: S
     account.data_limit = marzban_user.get("data_limit", account.data_limit)
     account.status = marzban_user.get("status", account.status)
     account.last_synced_at = utcnow()
-    session.add(account)
+    try:
+        session.add(account)
 
-    session.add(
-        AccountEvent(
-            account_id=account.id,
-            action="adjust",
-            detail=", ".join(detail_parts) + (f" | note={body.note}" if body.note else ""),
+        session.add(
+            AccountEvent(
+                account_id=account.id,
+                action="adjust",
+                detail=", ".join(detail_parts) + (f" | note={body.note}" if body.note else ""),
+            )
         )
-    )
-    session.commit()
-    session.refresh(account)
+        session.commit()
+        session.refresh(account)
+    except Exception:
+        session.rollback()
+        raise
     return account
 
 
@@ -279,7 +358,7 @@ def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRe
     paid yet, only billed. Pass mark_paid=True when the operator is
     collecting payment in the same moment (the common case) to also post a
     credit that clears whatever is still outstanding after this charge."""
-    account = session.get(Account, account_id)
+    account = session.exec(select(Account).with_for_update().where(Account.id == account_id)).first()
     if not account:
         raise HTTPException(404, "Account not found")
     if account.group_id is not None:
@@ -304,50 +383,54 @@ def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRe
         if mode == BillingMode.prepay
         else f"Usage settlement for cycle ending {now.date().isoformat()}"
     )
-    if amount > 0:
-        session.add(
-            LedgerEntry(
-                type=LedgerType.charge,
-                amount=amount,
-                customer_id=account.customer_id,
-                account_id=account.id,
-                note=cycle_note,
-                source=LedgerSource.web,
-            )
-        )
-    if body.mark_paid:
-        # Credit whatever is still OUTSTANDING once this charge lands — which
-        # is NOT the charge amount:
-        #  - an account already carrying a credit (they prepaid, or paid
-        #    before the usage was invoiced) would otherwise be handed that
-        #    credit a second time: settling a 243,916 charge on someone
-        #    230,000 in credit would leave them 230,000 in credit, not settled;
-        #  - an account carrying unpaid debt from an earlier cycle must still
-        #    be cleared even when this cycle adds nothing to charge, or
-        #    "payment received" would silently do nothing while the dialog's
-        #    preview promised a settled balance.
-        # max(0, ...) because an account still in credit afterwards has
-        # nothing left to pay.
-        credit_amount = round(max(0.0, prior_balance + amount), 2)
-        if credit_amount > 0:
+    try:
+        if amount > 0:
             session.add(
                 LedgerEntry(
-                    type=LedgerType.credit,
-                    amount=credit_amount,
+                    type=LedgerType.charge,
+                    amount=amount,
                     customer_id=account.customer_id,
                     account_id=account.id,
-                    note=f"Payment received at settlement ({now.date().isoformat()})",
+                    note=cycle_note,
                     source=LedgerSource.web,
                 )
             )
+        if body.mark_paid:
+            # Credit whatever is still OUTSTANDING once this charge lands — which
+            # is NOT the charge amount:
+            #  - an account already carrying a credit (they prepaid, or paid
+            #    before the usage was invoiced) would otherwise be handed that
+            #    credit a second time: settling a 243,916 charge on someone
+            #    230,000 in credit would leave them 230,000 in credit, not settled;
+            #  - an account carrying unpaid debt from an earlier cycle must still
+            #    be cleared even when this cycle adds nothing to charge, or
+            #    "payment received" would silently do nothing while the dialog's
+            #    preview promised a settled balance.
+            # max(0, ...) because an account still in credit afterwards has
+            # nothing left to pay.
+            credit_amount = round(max(0.0, prior_balance + amount), 2)
+            if credit_amount > 0:
+                session.add(
+                    LedgerEntry(
+                        type=LedgerType.credit,
+                        amount=credit_amount,
+                        customer_id=account.customer_id,
+                        account_id=account.id,
+                        note=f"Payment received at settlement ({now.date().isoformat()})",
+                        source=LedgerSource.web,
+                    )
+                )
 
-    if mode == BillingMode.payg:
-        account.usage_baseline = account.used_traffic
-        account.usage_baseline_at = now
-    else:
-        account.billed_data_limit = account.data_limit or 0
-    session.add(account)
-    session.commit()
+        if mode == BillingMode.payg:
+            account.usage_baseline = account.used_traffic
+            account.usage_baseline_at = now
+        else:
+            account.billed_data_limit = account.data_limit or 0
+        session.add(account)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
     return {"account_id": account_id, "charged_amount": amount, "settled_at": now}
 
@@ -387,38 +470,42 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
         raise HTTPException(502, str(exc))
 
     now = utcnow()
-    if charge_amount and charge_amount > 0:
+    try:
+        if charge_amount and charge_amount > 0:
+            session.add(
+                LedgerEntry(
+                    type=LedgerType.charge,
+                    amount=round(charge_amount, 2),
+                    customer_id=account.customer_id,
+                    group_id=account.group_id,
+                    account_id=account.id,
+                    note=body.note or f"Usage reset for cycle ending {now.date().isoformat()}",
+                    source=LedgerSource.web,
+                )
+            )
+
+        account.used_traffic = marzban_user.get("used_traffic", 0)
+        account.lifetime_used_traffic = marzban_user.get("lifetime_used_traffic", account.lifetime_used_traffic)
+        account.expire = marzban_user.get("expire", account.expire)
+        account.data_limit = marzban_user.get("data_limit", account.data_limit)
+        account.status = marzban_user.get("status", account.status)
+        # Reset always rolls the billing baseline forward too, regardless of billing_mode
+        # or whether a charge was posted — keeps it consistent if billing_mode changes later.
+        account.usage_baseline = account.used_traffic
+        account.usage_baseline_at = now
+        account.last_synced_at = now
+        session.add(account)
+
         session.add(
-            LedgerEntry(
-                type=LedgerType.charge,
-                amount=round(charge_amount, 2),
-                customer_id=account.customer_id,
-                group_id=account.group_id,
+            AccountEvent(
                 account_id=account.id,
-                note=body.note or f"Usage reset for cycle ending {now.date().isoformat()}",
-                source=LedgerSource.web,
+                action="reset",
+                detail=f"charge_amount={charge_amount}" + (f" | note={body.note}" if body.note else ""),
             )
         )
-
-    account.used_traffic = marzban_user.get("used_traffic", 0)
-    account.lifetime_used_traffic = marzban_user.get("lifetime_used_traffic", account.lifetime_used_traffic)
-    account.expire = marzban_user.get("expire", account.expire)
-    account.data_limit = marzban_user.get("data_limit", account.data_limit)
-    account.status = marzban_user.get("status", account.status)
-    # Reset always rolls the billing baseline forward too, regardless of billing_mode
-    # or whether a charge was posted — keeps it consistent if billing_mode changes later.
-    account.usage_baseline = account.used_traffic
-    account.usage_baseline_at = now
-    account.last_synced_at = now
-    session.add(account)
-
-    session.add(
-        AccountEvent(
-            account_id=account.id,
-            action="reset",
-            detail=f"charge_amount={charge_amount}" + (f" | note={body.note}" if body.note else ""),
-        )
-    )
-    session.commit()
-    session.refresh(account)
+        session.commit()
+        session.refresh(account)
+    except Exception:
+        session.rollback()
+        raise
     return account

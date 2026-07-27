@@ -49,7 +49,7 @@ class Group(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
-    representative_customer_id: int = Field(foreign_key="customer.id")
+    representative_customer_id: int = Field(foreign_key="customer.id", index=True)
     billing_cycle_days: int = 30
     rate_per_gb: Optional[float] = None
     billing_mode: BillingMode = BillingMode.payg
@@ -63,8 +63,8 @@ class Account(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     marzban_username: str = Field(unique=True, index=True)
 
-    customer_id: Optional[int] = Field(default=None, foreign_key="customer.id")
-    group_id: Optional[int] = Field(default=None, foreign_key="group.id")
+    customer_id: Optional[int] = Field(default=None, foreign_key="customer.id", index=True)
+    group_id: Optional[int] = Field(default=None, foreign_key="group.id", index=True)
     role: AccountRole = AccountRole.primary
     rate_per_gb: Optional[float] = None  # per-account rate; overrides the group's rate when both are set
     billing_mode: BillingMode = BillingMode.prepay
@@ -124,13 +124,13 @@ class LedgerEntry(SQLModel, table=True):
     insert a correcting entry instead, so the audit trail stays intact."""
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    type: LedgerType
+    type: LedgerType = Field(index=True)
     amount: float
-    date: datetime = Field(default_factory=utcnow)
+    date: datetime = Field(default_factory=utcnow, index=True)
 
-    customer_id: Optional[int] = Field(default=None, foreign_key="customer.id")
-    group_id: Optional[int] = Field(default=None, foreign_key="group.id")
-    account_id: Optional[int] = Field(default=None, foreign_key="account.id")
+    customer_id: Optional[int] = Field(default=None, foreign_key="customer.id", index=True)
+    group_id: Optional[int] = Field(default=None, foreign_key="group.id", index=True)
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True)
 
     note: Optional[str] = None
     source: LedgerSource = LedgerSource.web
@@ -150,10 +150,10 @@ class AccountEvent(SQLModel, table=True):
     field itself lives in Marzban and isn't duplicated here as an editable value."""
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    account_id: int = Field(foreign_key="account.id")
+    account_id: int = Field(foreign_key="account.id", index=True)
     action: str  # "extend_expire" | "reduce_expire" | "set_data_limit" | "create"
     detail: str
-    date: datetime = Field(default_factory=utcnow)
+    date: datetime = Field(default_factory=utcnow, index=True)
     source: LedgerSource = LedgerSource.web
 
 

@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { customersApi, apiErrorMessage } from '@/lib/api'
+import { customersApi } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -31,7 +31,6 @@ export function NewCustomerDialog() {
       setName('')
       setContact('')
     },
-    onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
   return (
@@ -46,24 +45,26 @@ export function NewCustomerDialog() {
           <DialogTitle>New customer</DialogTitle>
           <DialogDescription>The billing contact — may end up owning several accounts.</DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-3">
+        <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }}>
+          <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="name">Name</Label>
-            <Input id="name" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Ali Boojar" />
+            <Input id="name" autoFocus value={name || ''} onChange={(e) => setName(e.target.value)} placeholder="Ali Boojar" />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="contact">Contact (Telegram / phone)</Label>
-            <Input id="contact" value={contact} onChange={(e) => setContact(e.target.value)} placeholder="@ali_boojar" />
+            <Input id="contact" value={contact || ''} onChange={(e) => setContact(e.target.value)} placeholder="@ali_boojar" />
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>
             Cancel
           </Button>
-          <Button onClick={() => mutation.mutate()} disabled={!name.trim() || mutation.isPending}>
+          <Button type="submit" disabled={!name.trim() || mutation.isPending}>
             {mutation.isPending ? 'Saving…' : 'Create'}
           </Button>
-        </DialogFooter>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )

@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { accountsApi, customersApi, groupsApi, apiErrorMessage } from '@/lib/api'
+import { accountsApi, customersApi, groupsApi } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -59,7 +59,6 @@ export function NewAccountDialog({ defaultCustomerId, defaultGroupId, trigger }:
       setDataLimitGb('')
       setRatePerGb('')
     },
-    onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
   return (
@@ -77,10 +76,11 @@ export function NewAccountDialog({ defaultCustomerId, defaultGroupId, trigger }:
           <DialogDescription>This creates the user directly in Marzban, then tracks it here.</DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-3">
+        <form onSubmit={(e) => { e.preventDefault(); mutation.mutate(); }}>
+          <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="username">Marzban username</Label>
-            <Input id="username" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="ali_family_2" autoFocus />
+            <Input id="username" value={username || ''} onChange={(e) => setUsername(e.target.value)} placeholder="ali_family_2" autoFocus />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -115,18 +115,18 @@ export function NewAccountDialog({ defaultCustomerId, defaultGroupId, trigger }:
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="expire-days">Expires in (days, blank = never)</Label>
-              <Input id="expire-days" type="number" value={expireDays} onChange={(e) => setExpireDays(e.target.value)} placeholder="30" />
+              <Input id="expire-days" type="number" value={expireDays || ''} onChange={(e) => setExpireDays(e.target.value)} placeholder="30" />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="data-limit">Data limit (GB, blank = unlimited)</Label>
-              <Input id="data-limit" type="number" value={dataLimitGb} onChange={(e) => setDataLimitGb(e.target.value)} placeholder="50" />
+              <Input id="data-limit" type="number" value={dataLimitGb || ''} onChange={(e) => setDataLimitGb(e.target.value)} placeholder="50" />
             </div>
           </div>
 
           {groupId === NONE && (
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="rate">Standalone pay-as-you-go rate (Toman/GB, optional)</Label>
-              <Input id="rate" type="number" value={ratePerGb} onChange={(e) => setRatePerGb(e.target.value)} placeholder="20000" />
+              <Input id="rate" type="number" value={ratePerGb || ''} onChange={(e) => setRatePerGb(e.target.value)} placeholder="20000" />
             </div>
           )}
         </div>
@@ -135,10 +135,11 @@ export function NewAccountDialog({ defaultCustomerId, defaultGroupId, trigger }:
           <Button variant="outline" onClick={() => setOpen(false)}>
             Cancel
           </Button>
-          <Button onClick={() => mutation.mutate()} disabled={!username.trim() || mutation.isPending}>
+          <Button type="submit" disabled={!username.trim() || mutation.isPending}>
             {mutation.isPending ? 'Creating…' : 'Create'}
           </Button>
-        </DialogFooter>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )

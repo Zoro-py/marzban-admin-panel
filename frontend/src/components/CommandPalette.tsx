@@ -29,12 +29,29 @@ interface Item {
   run: () => void
 }
 
+function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = React.useState<T>(value)
+
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedValue(value)
+    }, delay)
+
+    return () => {
+      clearTimeout(timer)
+    }
+  }, [value, delay])
+
+  return debouncedValue
+}
+
 /** Ctrl/Cmd+K jump-anywhere: pages, any account / customer / group by name,
  * and the global actions (sync, theme). For a tool used dozens of times a day,
  * "type three letters, hit enter" beats any navigation tree. */
 export function CommandPalette() {
   const [open, setOpen] = React.useState(false)
   const [query, setQuery] = React.useState('')
+  const debouncedQuery = useDebounce(query, 300)
   const [active, setActive] = React.useState(0)
   const navigate = useNavigate()
   const openAccount = useOpenAccountInspector()
@@ -126,12 +143,12 @@ export function CommandPalette() {
   }, [accountsQuery.data, customersQuery.data, groupsQuery.data, navigate, openAccount, resolved, setTheme, syncMutation])
 
   const filtered = React.useMemo(() => {
-    const q = query.trim().toLowerCase()
+    const q = debouncedQuery.trim().toLowerCase()
     if (!q) return items.slice(0, 12)
     return items.filter((i) => i.label.toLowerCase().includes(q) || i.keywords.includes(q)).slice(0, 12)
-  }, [items, query])
+  }, [items, debouncedQuery])
 
-  React.useEffect(() => setActive(0), [query])
+  React.useEffect(() => setActive(0), [debouncedQuery])
 
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'ArrowDown') {

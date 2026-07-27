@@ -12,11 +12,13 @@ import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
 import { AccountsBoard } from '@/components/accounts/AccountsBoard'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
+import { EmptyState } from '@/components/EmptyState'
 import { UsageBar } from '@/components/UsageBar'
 import { Money } from '@/components/Money'
 import { StatusDot } from '@/components/StatusDot'
 import type { AccountRow } from '@/lib/types'
 import { cn, daysUntil, formatDate, formatToman } from '@/lib/utils'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Search } from 'lucide-react'
 
 type View = 'all' | 'attention' | 'unassigned' | 'debt' | 'payg' | 'no_rate' | 'disabled'
@@ -57,6 +59,10 @@ function matchesView(a: AccountRow, view: View): boolean {
 }
 
 export function AccountsPage() {
+  React.useEffect(() => {
+    document.title = 'Shiraze | Accounts'
+  }, [])
+
   const [searchParams, setSearchParams] = useSearchParams()
   const openAccount = useOpenAccountInspector()
   const selectedId = searchParams.get('acct')
@@ -155,7 +161,7 @@ export function AccountsPage() {
               <Search className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
               <Input
                 placeholder="Filter accounts…"
-                value={search}
+                value={search || ''}
                 onChange={(e) => setSearch(e.target.value)}
                 className="pl-8"
               />
@@ -184,16 +190,22 @@ export function AccountsPage() {
               </TableHeader>
               <TableBody>
                 {accountsQuery.isLoading && (
-                  <TableRow>
-                    <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                      Loading…
-                    </TableCell>
-                  </TableRow>
+                  Array.from({ length: 5 }).map((_, i) => (
+                    <TableRow key={i}>
+                      <TableCell><Skeleton className="h-4 w-24" /></TableCell>
+                      <TableCell className="hidden md:table-cell"><Skeleton className="h-4 w-20" /></TableCell>
+                      <TableCell><Skeleton className="h-4 w-full" /></TableCell>
+                      <TableCell className="hidden xl:table-cell"><Skeleton className="h-4 w-12" /></TableCell>
+                      <TableCell className="hidden sm:table-cell"><Skeleton className="h-4 w-16" /></TableCell>
+                      <TableCell className="hidden text-right lg:table-cell"><Skeleton className="h-4 w-16 ml-auto" /></TableCell>
+                      <TableCell className="text-right"><Skeleton className="h-4 w-20 ml-auto" /></TableCell>
+                    </TableRow>
+                  ))
                 )}
                 {!accountsQuery.isLoading && filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
-                      No accounts match this view.
+                    <TableCell colSpan={7} className="py-8">
+                      <EmptyState title="No accounts match this view." />
                     </TableCell>
                   </TableRow>
                 )}

@@ -13,7 +13,9 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${(bytes / GB).toFixed(2)} GB`
 }
 
-export function formatToman(amount: number): string {
+export function formatToman(amount: number | null | undefined): string {
+  if (amount === null || amount === undefined || Number.isNaN(amount)) return 'Not set'
+  if (amount === 0) return '0 T'
   const sign = amount < 0 ? '-' : ''
   return `${sign}${Math.abs(Math.round(amount)).toLocaleString('en-US')} T`
 }

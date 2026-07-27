@@ -71,7 +71,7 @@ export function SearchableSelect({
           <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <Input
             ref={inputRef}
-            value={query}
+            value={query || ''}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={searchPlaceholder}
             className="h-6 border-0 px-0 shadow-none focus-visible:ring-0"

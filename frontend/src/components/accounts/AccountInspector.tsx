@@ -335,7 +335,7 @@ function AdjustSection({ account, canBill }: { account: AccountRow; canBill: boo
       <div className="grid grid-cols-2 gap-3">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="insp-days" className="text-xs">Days ±</Label>
-          <Input id="insp-days" type="number" value={extendDays} onChange={(e) => setExtendDays(e.target.value)} placeholder="30" />
+          <Input id="insp-days" type="number" value={extendDays || ''} onChange={(e) => setExtendDays(e.target.value)} placeholder="30" />
           <div className="flex gap-1">
             {DAY_PRESETS.map((d) => (
               <button
@@ -351,7 +351,7 @@ function AdjustSection({ account, canBill }: { account: AccountRow; canBill: boo
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="insp-gb" className="text-xs">GB ±</Label>
-          <Input id="insp-gb" type="number" value={extendGb} onChange={(e) => setExtendGb(e.target.value)} placeholder="10" />
+          <Input id="insp-gb" type="number" value={extendGb || ''} onChange={(e) => setExtendGb(e.target.value)} placeholder="10" />
           <div className="flex gap-1">
             {GB_PRESETS.map((g) => (
               <button
@@ -398,7 +398,7 @@ function AdjustSection({ account, canBill }: { account: AccountRow; canBill: boo
                 type="number"
                 min={0}
                 className="mt-2"
-                value={chargeAmount}
+                value={chargeAmount || ''}
                 onChange={(e) => {
                   setChargeTouched(true)
                   setChargeAmount(e.target.value)
@@ -415,7 +415,7 @@ function AdjustSection({ account, canBill }: { account: AccountRow; canBill: boo
         </div>
       )}
 
-      <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (kept in history) — optional" />
+      <Input value={note || ''} onChange={(e) => setNote(e.target.value)} placeholder="Note (kept in history) — optional" />
       <Button size="sm" onClick={() => mutation.mutate()} disabled={!canSubmit || mutation.isPending}>
         {mutation.isPending ? 'Applying…' : 'Apply to Marzban'}
       </Button>
@@ -481,11 +481,11 @@ function ResetSection({ account, canBill }: { account: AccountRow; canBill: bool
         <Input
           type="number"
           min={0}
-          value={chargeAmount}
+          value={chargeAmount || ''}
           onChange={(e) => setChargeAmount(e.target.value)}
           placeholder="Charge (Toman)"
         />
-        <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note — optional" />
+        <Input value={note || ''} onChange={(e) => setNote(e.target.value)} placeholder="Note — optional" />
       </div>
       <div className="flex gap-2">
         <Button size="sm" variant="outline" className="flex-1" onClick={() => resetMutation.mutate()} disabled={resetMutation.isPending}>
@@ -595,7 +595,7 @@ function InvoiceSection({ account, canBill }: { account: AccountRow; canBill: bo
           id="insp-inv-amount"
           type="number"
           min={0}
-          value={amountInput}
+          value={amountInput || ''}
           onChange={(e) => {
             setAmountTouched(true)
             setAmountInput(e.target.value)
@@ -606,19 +606,19 @@ function InvoiceSection({ account, canBill }: { account: AccountRow; canBill: bo
       <div className="grid grid-cols-2 gap-3">
         <div className="flex flex-col gap-1.5">
           <Label className="text-xs" htmlFor="insp-inv-gb">Volume (GB) — optional</Label>
-          <Input id="insp-inv-gb" type="number" min={0} value={volumeGb} onChange={(e) => setVolumeGb(e.target.value)} placeholder="0" />
+          <Input id="insp-inv-gb" type="number" min={0} value={volumeGb || ''} onChange={(e) => setVolumeGb(e.target.value)} placeholder="0" />
         </div>
         <div className="flex flex-col gap-1.5">
           <Label className="text-xs" htmlFor="insp-inv-price">Price (T/GB)</Label>
-          <Input id="insp-inv-price" type="number" min={0} value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0" />
+          <Input id="insp-inv-price" type="number" min={0} value={price || ''} onChange={(e) => setPrice(e.target.value)} placeholder="0" />
         </div>
       </div>
       <p className="text-[11px] text-muted-foreground">
         Filling volume × price just calculates the amount above for you — edit it directly for any other figure.
       </p>
       <div className="grid grid-cols-2 gap-3">
-        <Input value={period} onChange={(e) => setPeriod(e.target.value)} placeholder="Period, e.g. Mordad 1405" />
-        <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note — optional" />
+        <Input value={period || ''} onChange={(e) => setPeriod(e.target.value)} placeholder="Period, e.g. Mordad 1405" />
+        <Input value={note || ''} onChange={(e) => setNote(e.target.value)} placeholder="Note — optional" />
       </div>
       <Button size="sm" onClick={() => mutation.mutate()} disabled={mutation.isPending || !canBill || amount <= 0}>
         {mutation.isPending ? 'Saving…' : `${type === 'charge' ? 'Add debt' : 'Add credit'} — ${formatToman(amount)}`}
@@ -649,7 +649,7 @@ function BillingSection({ account }: { account: AccountRow }) {
     <Section icon={Tag} title="Billing rate & mode">
       <div className="flex flex-col gap-1.5">
         <Label className="text-xs" htmlFor="insp-rate">Own rate (Toman/GB)</Label>
-        <Input id="insp-rate" type="number" value={rateInput} onChange={(e) => setRateInput(e.target.value)} placeholder="blank = inherit" />
+        <Input id="insp-rate" type="number" value={rateInput || ''} onChange={(e) => setRateInput(e.target.value)} placeholder="blank = inherit" />
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           Blank inherits {account.group_id ? "the group's rate, then " : ''}the dashboard default. A value here overrides
           both — e.g. a per-account discount inside a group.

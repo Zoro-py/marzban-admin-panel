@@ -77,7 +77,7 @@ class MarzbanClient:
             exp = claims.get("exp")
             if not exp:
                 return time.monotonic() + FALLBACK_CACHE_SECONDS
-            seconds_until_real_expiry = float(exp) - time.time()
+            seconds_until_real_expiry = float(exp) - time.monotonic()
             useful_seconds = seconds_until_real_expiry - REFRESH_SAFETY_MARGIN_SECONDS
             return time.monotonic() + max(0.0, useful_seconds)
         except Exception:
@@ -149,6 +149,11 @@ class MarzbanClient:
                 )
         except (httpx.HTTPError, httpx.InvalidURL) as exc:
             raise MarzbanUnavailable(f"Could not reach Marzban at {self._base_url}: {exc}") from exc
+            
+        if resp.status_code in (401, 403):
+            from fastapi import HTTPException
+            raise HTTPException(status_code=401, detail="Invalid admin credentials")
+            
         return resp.status_code == 200
 
 

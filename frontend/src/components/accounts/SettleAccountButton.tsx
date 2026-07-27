@@ -78,6 +78,7 @@ export function SettleAccountButton({
             type="button"
             disabled={disabled}
             onClick={(e) => e.stopPropagation()}
+            aria-label={`Settle ${username}`}
             className="flex items-center gap-1 text-[11px] font-medium text-success hover:underline disabled:pointer-events-none disabled:opacity-50"
           >
             <CheckCircle2 className="h-3 w-3" /> Settle

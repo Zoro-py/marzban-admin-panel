@@ -65,17 +65,22 @@ class MoneyBook:
         self._posted_by_account: dict[int, float] = defaultdict(float)
         self._posted_group_only: dict[int, float] = defaultdict(float)
         self._posted_customer_only: dict[int, float] = defaultdict(float)
-        for e in session.exec(select(LedgerEntry)).all():
-            amount = _signed(e)
-            if e.account_id is not None:
-                self._posted_by_account[e.account_id] += amount
-            elif e.group_id is not None:
-                self._posted_group_only[e.group_id] += amount
-            elif e.customer_id is not None:
-                self._posted_customer_only[e.customer_id] += amount
-            # An entry with no owner at all belongs to nobody and is left out
-            # of every balance, rather than being quietly attached to whatever
-            # scope happened to be asking.
+        from sqlmodel import func
+
+        # Sum by account_id where account_id is not null
+        stmt_acc = select(LedgerEntry.account_id, LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.account_id.is_not(None)).group_by(LedgerEntry.account_id, LedgerEntry.type)
+        for acc_id, l_type, total in session.exec(stmt_acc).all():
+            self._posted_by_account[acc_id] += total if l_type == LedgerType.charge else -total
+
+        # Sum by group_id where account_id is null and group_id is not null
+        stmt_grp = select(LedgerEntry.group_id, LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_not(None)).group_by(LedgerEntry.group_id, LedgerEntry.type)
+        for grp_id, l_type, total in session.exec(stmt_grp).all():
+            self._posted_group_only[grp_id] += total if l_type == LedgerType.charge else -total
+
+        # Sum by customer_id where account_id is null and group_id is null and customer_id is not null
+        stmt_cust = select(LedgerEntry.customer_id, LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_(None), LedgerEntry.customer_id.is_not(None)).group_by(LedgerEntry.customer_id, LedgerEntry.type)
+        for cust_id, l_type, total in session.exec(stmt_cust).all():
+            self._posted_customer_only[cust_id] += total if l_type == LedgerType.charge else -total
 
         self._members: dict[int, list[Account]] = defaultdict(list)
         self._owned_directly: dict[int, list[Account]] = defaultdict(list)
@@ -146,8 +151,9 @@ class MoneyBook:
 def account_posted_balance(session: Session, account_id: int) -> float:
     """One account's posted balance, read directly — for the settle endpoints,
     which need this mid-transaction and shouldn't pay for a whole MoneyBook."""
-    entries = session.exec(select(LedgerEntry).where(LedgerEntry.account_id == account_id)).all()
-    return sum(_signed(e) for e in entries)
+    from sqlmodel import func
+    stmt = select(LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.account_id == account_id).group_by(LedgerEntry.type)
+    return sum(amount if l_type == LedgerType.charge else -amount for l_type, amount in session.exec(stmt).all())
 
 
 def group_only_posted_balance(session: Session, group_id: int) -> float:
@@ -155,10 +161,9 @@ def group_only_posted_balance(session: Session, group_id: int) -> float:
     rather than to any one member (a setup fee, an adjustment). Settling a
     group and marking it paid has to clear this too, or "paid in full" would
     leave the group still owing money it had no member to attribute it to."""
-    entries = session.exec(
-        select(LedgerEntry).where(LedgerEntry.group_id == group_id, LedgerEntry.account_id.is_(None))
-    ).all()
-    return sum(_signed(e) for e in entries)
+    from sqlmodel import func
+    stmt = select(LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.group_id == group_id, LedgerEntry.account_id.is_(None)).group_by(LedgerEntry.type)
+    return sum(amount if l_type == LedgerType.charge else -amount for l_type, amount in session.exec(stmt).all())
 
 
 GB = 1024**3
@@ -178,8 +183,11 @@ def billable_bytes(account: Account, mode: BillingMode) -> int:
     unlimited (data_limit=None) prepay package has no fixed size to bill
     automatically — invoice it manually instead."""
     if mode == BillingMode.payg:
-        return max(0, account.used_traffic - account.usage_baseline)
+        diff = account.used_traffic - account.usage_baseline
+        return diff if diff >= 0 else account.used_traffic
     if account.data_limit is None:
+        import logging
+        logging.getLogger(__name__).warning("Prepay unlimited account %s (id=%s) requires manual invoicing. Returning 0.", account.marzban_username, account.id)
         return 0
     return max(0, account.data_limit - account.billed_data_limit)
 
@@ -270,8 +278,11 @@ def enrich_accounts(session: Session, accounts: list[Account], book: Optional[Mo
     from app.schemas import AccountRead, AccountRow  # local import: schemas imports nothing from here, avoids a cycle
 
     book = book or MoneyBook(session)
-    customers = {c.id: c for c in session.exec(select(Customer)).all()}
-    groups = {g.id: g for g in session.exec(select(Group)).all()}
+    customer_ids = {a.customer_id for a in accounts if a.customer_id}
+    group_ids = {a.group_id for a in accounts if a.group_id}
+    
+    customers = {c.id: c for c in session.exec(select(Customer).where(Customer.id.in_(customer_ids))).all()} if customer_ids else {}
+    groups = {g.id: g for g in session.exec(select(Group).where(Group.id.in_(group_ids))).all()} if group_ids else {}
 
     # created_at/first_seen_traffic_at round-trip through SQLite as naive even
     # though utcnow() produces an aware datetime (same quirk documented in
@@ -294,7 +305,7 @@ def enrich_accounts(session: Session, accounts: list[Account], book: Optional[Mo
             monthly_avg_usage_gb = None
             usage_confidence = "insufficient_data"
         else:
-            monthly_avg_usage_gb = round((observed_bytes / (1024**3)) / observed_days * 30, 2)
+            monthly_avg_usage_gb = round((observed_bytes / GB) / observed_days * 30, 2)
             usage_confidence = "full" if observed_days >= FULL_CONFIDENCE_DAYS else "preliminary"
 
         customer = customers.get(a.customer_id) if a.customer_id else None

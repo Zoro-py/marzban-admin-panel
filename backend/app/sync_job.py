@@ -61,6 +61,7 @@ async def run_sync() -> dict:
     with Session(engine) as session:
         existing = {a.marzban_username: a for a in session.exec(select(Account)).all()}
         touched: list[Account] = []
+        pending_customers: list[tuple[Account, Customer]] = []
 
         for mu in marzban_users:
             username = mu["username"]
@@ -74,8 +75,7 @@ async def run_sync() -> dict:
                 # rename it from the Customers page like any other customer.
                 personal_customer = Customer(name=username)
                 session.add(personal_customer)
-                session.flush()  # need personal_customer.id before it can be assigned below
-                account.customer_id = personal_customer.id
+                pending_customers.append((account, personal_customer))
 
                 # first_seen_traffic baselines the MONTHLY-AVERAGE-USAGE
                 # ESTIMATE (a display figure) at this account's lifetime total
@@ -192,6 +192,10 @@ async def run_sync() -> dict:
         # therefore exactly the sync interval. Counted from `touched` (every
         # account Marzban reported just now), not `existing` — that dict was
         # built before this loop and never gained the ones just created here.
+        session.flush()
+        for acc, cust in pending_customers:
+            acc.customer_id = cust.id
+
         now_naive = now.replace(tzinfo=None)
         online_count = sum(
             1

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 from typing import Optional
 
@@ -6,8 +7,9 @@ from sqlmodel import Session, select
 
 from app.auth import require_auth
 from app.db import get_session
+from app.marzban_client import marzban_client
 from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
-from app.schemas import AccountRow, GroupCreate, GroupRead, GroupSettleRequest, GroupUpdate, GroupWithBalance
+from app.schemas import AccountRow, GroupCreate, GroupRead, GroupSettleRequest, GroupUpdate, GroupWithBalance, InvoiceLine
 from app.services import (
     MoneyBook,
     account_posted_balance,
@@ -20,7 +22,7 @@ from app.services import (
 router = APIRouter(prefix="/api/groups", tags=["groups"], dependencies=[Depends(require_auth)])
 
 
-def _invoice_lines(session: Session, accounts: list[Account], group: Group) -> list[dict]:
+def _invoice_lines(session: Session, accounts: list[Account], group: Group) -> list[InvoiceLine]:
     """Each account's own rate wins, then the group's rate, then the
     dashboard-wide default (see services.effective_rate) — this is how a
     per-account discount (or markup) within a group works, and how a global
@@ -35,13 +37,13 @@ def _invoice_lines(session: Session, accounts: list[Account], group: Group) -> l
         billable_gb = billable_bytes(a, group.billing_mode) / (1024**3)
         rate = effective_rate(session, a, group)
         lines.append(
-            {
-                "account_id": a.id,
-                "marzban_username": a.marzban_username,
-                "billable_gb": round(billable_gb, 3),
-                "rate_per_gb": rate,
-                "amount": round(billable_gb * rate, 2),
-            }
+            InvoiceLine(
+                account_id=a.id,
+                marzban_username=a.marzban_username,
+                billable_gb=round(billable_gb, 3),
+                rate_per_gb=rate,
+                amount=billable_gb * rate,
+            )
         )
     return lines
 
@@ -76,7 +78,7 @@ def _with_balance(session: Session, g: Group, book: Optional[MoneyBook] = None) 
         # below, which is nonsensical for a figure labeled "lifetime": lifetime
         # must always be >= usage-since-our-last-settle by definition.
         total_used_traffic=sum(a.lifetime_used_traffic for a in accounts),
-        current_cycle_used_bytes=sum(round(line["billable_gb"] * 1024**3) for line in lines),
+        current_cycle_used_bytes=sum(round(line.billable_gb * 1024**3) for line in lines),
         pending_amount=book.group_pending(g),
         next_due_at=next_due_at,
         is_due=next_due_at <= now,
@@ -84,25 +86,59 @@ def _with_balance(session: Session, g: Group, book: Optional[MoneyBook] = None) 
 
 
 @router.get("", response_model=list[GroupWithBalance])
-def list_groups(session: Session = Depends(get_session)):
+def list_groups(
+    offset: int = 0,
+    limit: int = 100,
+    session: Session = Depends(get_session)
+):
     book = MoneyBook(session)
-    groups = session.exec(select(Group)).all()
+    groups = session.exec(select(Group).offset(offset).limit(limit)).all()
     return [_with_balance(session, g, book) for g in groups]
 
 
 @router.post("", response_model=GroupRead)
 def create_group(body: GroupCreate, session: Session = Depends(get_session)):
+    """
+    Create a new group and assign it a representative customer.
+
+    Args:
+        body (GroupCreate): The group creation payload containing the name and representative_customer_id.
+        session (Session): Database session.
+
+    Raises:
+        HTTPException(404): If the provided representative_customer_id does not exist.
+
+    Returns:
+        GroupRead: The created group.
+    """
     if not session.get(Customer, body.representative_customer_id):
         raise HTTPException(404, "representative_customer_id not found")
     group = Group(**body.model_dump())
-    session.add(group)
-    session.commit()
-    session.refresh(group)
+    try:
+        session.add(group)
+        session.commit()
+        session.refresh(group)
+    except Exception:
+        session.rollback()
+        raise
     return group
 
 
 @router.get("/{group_id}", response_model=GroupWithBalance)
 def get_group(group_id: int, session: Session = Depends(get_session)):
+    """
+    Retrieve details for a specific group, including balance and billing info.
+
+    Args:
+        group_id (int): The ID of the group to retrieve.
+        session (Session): Database session.
+
+    Raises:
+        HTTPException(404): If the group does not exist.
+
+    Returns:
+        GroupWithBalance: The group with aggregated financial and usage balance data.
+    """
     group = session.get(Group, group_id)
     if not group:
         raise HTTPException(404, "Group not found")
@@ -116,9 +152,13 @@ def update_group(group_id: int, body: GroupUpdate, session: Session = Depends(ge
         raise HTTPException(404, "Group not found")
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(group, field, value)
-    session.add(group)
-    session.commit()
-    session.refresh(group)
+    try:
+        session.add(group)
+        session.commit()
+        session.refresh(group)
+    except Exception:
+        session.rollback()
+        raise
     return group
 
 
@@ -149,13 +189,16 @@ def get_group_invoice(group_id: int, session: Session = Depends(get_session)):
         "rate_per_gb": group.rate_per_gb or 0,
         "cycle_started_at": group.last_settled_at,
         "lines": lines,
-        "total_amount": round(sum(line["amount"] for line in lines), 2),
+        "total_amount": round(sum(line.amount for line in lines), 2),
     }
 
 
 @router.post("/{group_id}/settle")
 def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(), session: Session = Depends(get_session)):
-    """Charges the current cycle's total amount (usage-based for payg,
+    """
+    Settle the group's current billing cycle.
+
+    Charges the current cycle's total amount (usage-based for payg,
     package-based for prepay — see services.billable_bytes) against the
     group's representative customer, then rolls every member account's
     billing baseline forward so the next cycle starts from zero billable
@@ -164,22 +207,33 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
     Posts ONE charge PER MEMBER (each attributed to that member's own
     account_id via its line in _invoice_lines), not a single pooled entry
     for the whole group — so a payment recorded later against one specific
-    member (Record an invoice on that account) nets against THAT member's
-    own share, not the group's shared total. The group's own aggregate
-    balance is unaffected either way: it's still the sum of every entry
-    carrying its group_id, attributed or not.
+    member nets against THAT member's own share, not the group's shared total.
+    The group's own aggregate balance is unaffected either way: it's still
+    the sum of every entry carrying its group_id, attributed or not.
 
     This POSTS A CHARGE, not a payment record — pass mark_paid=True when the
     representative customer is paying in the same moment, to also post a
     matching credit per member so each member's balance nets back to 0
-    (settled) instead of showing as still owed."""
-    group = session.get(Group, group_id)
+    (settled) instead of showing as still owed.
+
+    Args:
+        group_id (int): The ID of the group to settle.
+        body (GroupSettleRequest): The settlement request, containing options like mark_paid.
+        session (Session): Database session.
+
+    Raises:
+        HTTPException(404): If the group does not exist.
+
+    Returns:
+        dict: A summary containing group_id, charged_amount, settled_at, and individual lines.
+    """
+    group = session.exec(select(Group).with_for_update().where(Group.id == group_id)).first()
     if not group:
         raise HTTPException(404, "Group not found")
 
-    accounts = session.exec(select(Account).where(Account.group_id == group_id)).all()
+    accounts = session.exec(select(Account).with_for_update().where(Account.group_id == group_id)).all()
     lines = _invoice_lines(session, accounts, group)
-    total_amount = round(sum(line["amount"] for line in lines), 2)
+    total_amount = round(sum(line.amount for line in lines), 2)
 
     now = utcnow()
     cycle_note = (
@@ -194,72 +248,76 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
     prior_group_only = 0.0
     if body.mark_paid:
         for line in lines:
-            prior_balances[line["account_id"]] = account_posted_balance(session, line["account_id"])
+            prior_balances[line.account_id] = account_posted_balance(session, line.account_id)
         prior_group_only = group_only_posted_balance(session, group.id)
 
     paid_note = f"Payment received at settlement ({now.date().isoformat()})"
-    for line in lines:
-        if line["amount"] > 0:
-            session.add(
-                LedgerEntry(
-                    type=LedgerType.charge,
-                    amount=line["amount"],
-                    customer_id=group.representative_customer_id,
-                    group_id=group.id,
-                    account_id=line["account_id"],
-                    note=cycle_note,
-                    source=LedgerSource.web,
-                )
-            )
-        if body.mark_paid:
-            # Per member, credit whatever that member still OWES once this
-            # charge lands — which is NOT the same as the charge itself:
-            #  - a member who already paid individually must not be credited
-            #    twice (their credit is attributed to their own account_id),
-            #  - a member carrying unpaid debt from an earlier cycle must
-            #    still be cleared even when this cycle adds nothing, or
-            #    "payment received" would silently do nothing while the
-            #    dialog's preview promised a settled balance.
-            credit_amount = round(max(0.0, prior_balances.get(line["account_id"], 0.0) + line["amount"]), 2)
-            if credit_amount > 0:
+    try:
+        for line in lines:
+            if line.amount >= 0:
                 session.add(
                     LedgerEntry(
-                        type=LedgerType.credit,
-                        amount=credit_amount,
+                        type=LedgerType.charge,
+                        amount=line.amount,
                         customer_id=group.representative_customer_id,
                         group_id=group.id,
-                        account_id=line["account_id"],
-                        note=paid_note,
+                        account_id=line.account_id,
+                        note=cycle_note,
                         source=LedgerSource.web,
                     )
                 )
+            if body.mark_paid:
+                # Per member, credit whatever that member still OWES once this
+                # charge lands — which is NOT the same as the charge itself:
+                #  - a member who already paid individually must not be credited
+                #    twice (their credit is attributed to their own account_id),
+                #  - a member carrying unpaid debt from an earlier cycle must
+                #    still be cleared even when this cycle adds nothing, or
+                #    "payment received" would silently do nothing while the
+                #    dialog's preview promised a settled balance.
+                credit_amount = round(max(0.0, prior_balances.get(line.account_id, 0.0) + line.amount), 2)
+                if credit_amount > 0:
+                    session.add(
+                        LedgerEntry(
+                            type=LedgerType.credit,
+                            amount=credit_amount,
+                            customer_id=group.representative_customer_id,
+                            group_id=group.id,
+                            account_id=line.account_id,
+                            note=paid_note,
+                            source=LedgerSource.web,
+                        )
+                    )
 
-    # Group-level debt with no member to attribute it to (a setup fee, an
-    # adjustment) is part of what the representative owes, so paying in full
-    # has to clear it too.
-    if body.mark_paid and prior_group_only > 0:
-        session.add(
-            LedgerEntry(
-                type=LedgerType.credit,
-                amount=round(prior_group_only, 2),
-                customer_id=group.representative_customer_id,
-                group_id=group.id,
-                note=paid_note,
-                source=LedgerSource.web,
+        # Group-level debt with no member to attribute it to (a setup fee, an
+        # adjustment) is part of what the representative owes, so paying in full
+        # has to clear it too.
+        if body.mark_paid and prior_group_only != 0:
+            session.add(
+                LedgerEntry(
+                    type=LedgerType.credit if prior_group_only > 0 else LedgerType.charge,
+                    amount=abs(round(prior_group_only, 2)),
+                    customer_id=group.representative_customer_id,
+                    group_id=group.id,
+                    note=paid_note,
+                    source=LedgerSource.web,
+                )
             )
-        )
 
-    for a in accounts:
-        if group.billing_mode == BillingMode.payg:
-            a.usage_baseline = a.used_traffic
-            a.usage_baseline_at = now
-        else:
-            a.billed_data_limit = a.data_limit or 0
-        session.add(a)
+        for a in accounts:
+            if group.billing_mode == BillingMode.payg:
+                a.usage_baseline = a.used_traffic
+                a.usage_baseline_at = now
+            else:
+                a.billed_data_limit = a.data_limit or 0
+            session.add(a)
 
-    group.last_settled_at = now
-    session.add(group)
-    session.commit()
+        group.last_settled_at = now
+        session.add(group)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
     return {"group_id": group_id, "charged_amount": total_amount, "settled_at": now, "lines": lines}
 
@@ -280,16 +338,30 @@ def reset_group_cycle(group_id: int, session: Session = Depends(get_session)):
     lines = _invoice_lines(session, accounts, group)
 
     now = utcnow()
-    for a in accounts:
-        if group.billing_mode == BillingMode.payg:
-            a.usage_baseline = a.used_traffic
-            a.usage_baseline_at = now
-        else:
-            a.billed_data_limit = a.data_limit or 0
-        session.add(a)
+    try:
+        for a in accounts:
+            try:
+                marzban_user = asyncio.run(marzban_client.reset_user(a.marzban_username))
+                a.used_traffic = marzban_user.get("used_traffic", 0)
+                a.lifetime_used_traffic = marzban_user.get("lifetime_used_traffic", a.lifetime_used_traffic)
+                a.expire = marzban_user.get("expire", a.expire)
+                a.data_limit = marzban_user.get("data_limit", a.data_limit)
+                a.status = marzban_user.get("status", a.status)
+            except Exception as exc:
+                raise HTTPException(400, f"Failed to reset {a.marzban_username}: {exc}")
 
-    group.last_settled_at = now
-    session.add(group)
-    session.commit()
+            if group.billing_mode == BillingMode.payg:
+                a.usage_baseline = a.used_traffic
+                a.usage_baseline_at = now
+            else:
+                a.billed_data_limit = a.data_limit or 0
+            session.add(a)
+
+        group.last_settled_at = now
+        session.add(group)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
     return {"group_id": group_id, "reset_at": now, "lines": lines}

@@ -63,7 +63,9 @@ api.interceptors.response.use(
   (error: AxiosError) => {
     if (error.response?.status === 401) {
       tokenStore.clear()
-      window.location.assign('/login')
+      if (window.location.pathname !== '/login') {
+        window.location.assign('/login')
+      }
     }
     return Promise.reject(error)
   },

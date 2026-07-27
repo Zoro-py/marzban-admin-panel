@@ -68,7 +68,7 @@ export function NewGroupDialog() {
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="group-name">Group name</Label>
-            <Input id="group-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme Co" />
+            <Input id="group-name" autoFocus value={name || ''} onChange={(e) => setName(e.target.value)} placeholder="Acme Co" />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label>Representative customer (billing contact)</Label>
@@ -101,11 +101,11 @@ export function NewGroupDialog() {
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="rate">Rate (Toman/GB)</Label>
-              <Input id="rate" type="number" value={rate} onChange={(e) => setRate(e.target.value)} placeholder="20000" />
+              <Input id="rate" type="number" value={rate || ''} onChange={(e) => setRate(e.target.value)} placeholder="20000" />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="cycle">Billing cycle (days)</Label>
-              <Input id="cycle" type="number" value={cycleDays} onChange={(e) => setCycleDays(e.target.value)} />
+              <Input id="cycle" type="number" value={cycleDays || ''} onChange={(e) => setCycleDays(e.target.value)} />
               <p className="text-xs text-muted-foreground">When this many days pass since the last settle, the group shows up as due on the Dashboard.</p>
             </div>
           </div>

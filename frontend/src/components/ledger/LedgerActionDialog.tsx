@@ -148,14 +148,14 @@ export function LedgerActionDialog({
               type="number"
               min={0}
               autoFocus
-              value={amount}
+              value={amount || ''}
               onChange={(e) => setAmount(e.target.value)}
               placeholder="150000"
             />
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="note">Note (optional)</Label>
-            <Input id="note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="1 month renewal" />
+            <Input id="note" value={note || ''} onChange={(e) => setNote(e.target.value)} placeholder="1 month renewal" />
           </div>
 
           {currentBalance !== undefined && amount && Number(amount) > 0 && (

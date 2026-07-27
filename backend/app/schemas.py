@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models import AccountRole, BillingMode, LedgerSource, LedgerType
 
@@ -9,7 +9,7 @@ from app.models import AccountRole, BillingMode, LedgerSource, LedgerType
 
 
 class CustomerCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=100, pattern=r".*\S.*")
     contact: Optional[str] = None
     is_group_rep: bool = False
 
@@ -50,14 +50,14 @@ class GroupCreate(BaseModel):
     name: str
     representative_customer_id: int
     billing_cycle_days: int = 30
-    rate_per_gb: Optional[float] = None
+    rate_per_gb: Optional[float] = Field(default=None, ge=0.0)
     billing_mode: BillingMode = BillingMode.payg
 
 
 class GroupUpdate(BaseModel):
     name: Optional[str] = None
     billing_cycle_days: Optional[int] = None
-    rate_per_gb: Optional[float] = None
+    rate_per_gb: Optional[float] = Field(default=None, ge=0.0)
     billing_mode: Optional[BillingMode] = None
 
 
@@ -68,6 +68,14 @@ class GroupSettleRequest(BaseModel):
     the common "they paid me right now" case."""
 
     mark_paid: bool = False
+
+
+class InvoiceLine(BaseModel):
+    account_id: int
+    marzban_username: str
+    billable_gb: float
+    rate_per_gb: float
+    amount: float
 
 
 class GroupRead(BaseModel):
@@ -111,20 +119,20 @@ class GroupWithBalance(GroupRead):
 
 
 class AccountCreateRequest(BaseModel):
-    marzban_username: str
+    marzban_username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9_]+$")
     customer_id: Optional[int] = None
     group_id: Optional[int] = None
     role: AccountRole = AccountRole.primary
-    rate_per_gb: Optional[float] = None
+    rate_per_gb: Optional[float] = Field(default=None, ge=0.0)
 
-    expire: Optional[int] = None  # unix timestamp, None = never expires
+    expire: Optional[int] = Field(default=None, ge=0, le=2147483647)  # unix timestamp, None = never expires
     data_limit: Optional[int] = None  # bytes, None = unlimited
     data_limit_reset_strategy: str = "no_reset"
     status: str = "active"
     note: Optional[str] = None
 
     # Pass-through to Marzban; if omitted, server fills MARZBAN_DEFAULT_PROXIES/INBOUNDS.
-    proxies: Optional[dict[str, Any]] = None
+    proxies: Optional[dict[str, dict[str, Any]]] = None
     inbounds: Optional[dict[str, list[str]]] = None
 
 
@@ -135,7 +143,7 @@ class AccountRelationshipUpdate(BaseModel):
 
 
 class AccountBillingUpdate(BaseModel):
-    rate_per_gb: Optional[float] = None
+    rate_per_gb: Optional[float] = Field(default=None, ge=0.0)
     billing_mode: Optional[BillingMode] = None
     clear_rate: bool = False  # explicit clear, since rate_per_gb=None is ambiguous with "unset"
 

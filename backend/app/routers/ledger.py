@@ -17,10 +17,11 @@ def list_ledger(
     customer_id: Optional[int] = None,
     group_id: Optional[int] = None,
     account_id: Optional[int] = None,
+    offset: int = 0,
     limit: int = 200,
     session: Session = Depends(get_session),
 ):
-    stmt = select(LedgerEntry).order_by(LedgerEntry.date.desc()).limit(limit)
+    stmt = select(LedgerEntry).order_by(LedgerEntry.date.desc()).offset(offset).limit(limit)
     if customer_id is not None:
         stmt = stmt.where(LedgerEntry.customer_id == customer_id)
     if group_id is not None:

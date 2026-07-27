@@ -57,7 +57,7 @@ export function LoginPage() {
                 id="username"
                 autoFocus
                 autoComplete="username"
-                value={username}
+                value={username || ''}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="admin"
               />
@@ -68,7 +68,7 @@ export function LoginPage() {
                 id="password"
                 type="password"
                 autoComplete="current-password"
-                value={password}
+                value={password || ''}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
               />

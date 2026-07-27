@@ -127,7 +127,7 @@ export function AppShell() {
                   // Taller hit area on touch, unchanged on pointer devices.
                   'flex items-center gap-2.5 rounded-md px-2.5 py-2 text-[13px] font-medium transition-colors md:py-1.5',
                   isActive
-                    ? 'bg-accent text-foreground'
+                    ? 'bg-primary/10 text-primary font-semibold'
                     : 'text-muted-foreground hover:bg-accent/60 hover:text-foreground',
                 )
               }

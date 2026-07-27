@@ -6,10 +6,16 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { NewCustomerDialog } from '@/components/customers/NewCustomerDialog'
+import { EmptyState } from '@/components/EmptyState'
 import { Money } from '@/components/Money'
+import { Skeleton } from '@/components/ui/skeleton'
 import { Search } from 'lucide-react'
 
 export function CustomersPage() {
+  React.useEffect(() => {
+    document.title = 'Shiraze | Customers'
+  }, [])
+
   const { data, isLoading } = useQuery({ queryKey: ['customers'], queryFn: customersApi.list })
   const [search, setSearch] = React.useState('')
   const navigate = useNavigate()
@@ -35,7 +41,7 @@ export function CustomersPage() {
 
       <div className="relative max-w-xs">
         <Search className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
-        <Input placeholder="Filter customers…" value={search} onChange={(e) => setSearch(e.target.value)} className="pl-8" />
+        <Input placeholder="Filter customers…" value={search || ''} onChange={(e) => setSearch(e.target.value)} className="pl-8" />
       </div>
 
       <div className="overflow-hidden rounded-lg border border-border bg-card">
@@ -51,16 +57,20 @@ export function CustomersPage() {
           </TableHeader>
           <TableBody>
             {isLoading && (
-              <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                  Loading…
-                </TableCell>
-              </TableRow>
+              Array.from({ length: 5 }).map((_, i) => (
+                <TableRow key={i}>
+                  <TableCell><Skeleton className="h-4 w-32" /></TableCell>
+                  <TableCell className="hidden md:table-cell"><Skeleton className="h-4 w-24" /></TableCell>
+                  <TableCell className="hidden lg:table-cell"><Skeleton className="h-5 w-16" /></TableCell>
+                  <TableCell className="hidden text-right sm:table-cell"><Skeleton className="h-4 w-8 ml-auto" /></TableCell>
+                  <TableCell className="text-right"><Skeleton className="h-4 w-20 ml-auto" /></TableCell>
+                </TableRow>
+              ))
             )}
             {!isLoading && filtered.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
-                  No customers yet.
+                <TableCell colSpan={5} className="py-8">
+                  <EmptyState title="No customers yet." />
                 </TableCell>
               </TableRow>
             )}
