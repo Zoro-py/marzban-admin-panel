@@ -62,6 +62,10 @@ def summary(
     unassigned_accounts = []
 
     for a in accounts:
+        # Deleted-from-Marzban accounts are historical — no live quota/expiry
+        # to warn about, and counting them as "unassigned" would be noise.
+        if a.status == "deleted_from_marzban":
+            continue
         if a.data_limit:
             used_pct = round(a.used_traffic / a.data_limit * 100, 1)
             if used_pct >= 100:
@@ -158,6 +162,8 @@ def summary(
     for a in accounts:
         if a.group_id is not None:
             continue
+        if a.status == "deleted_from_marzban":
+            continue
         pending = book.account_pending(a)
         balance = round(book.account_posted(a), 2)
         net = book.account_net(a)
@@ -192,7 +198,7 @@ def summary(
         "unassigned_accounts": unassigned_accounts,
         "pending_settlement": pending_settlement,
         "total_pending": total_pending,
-        "total_accounts": len(accounts),
+        "total_accounts": sum(1 for a in accounts if a.status != "deleted_from_marzban"),
         "total_customers": len(customers),
     }
 

@@ -6,6 +6,7 @@ const STATUS_STYLES: Record<string, { dot: string; label: string }> = {
   limited: { dot: 'bg-destructive', label: 'limited' },
   expired: { dot: 'bg-destructive', label: 'expired' },
   disabled: { dot: 'bg-muted-foreground/50', label: 'disabled' },
+  deleted_from_marzban: { dot: 'bg-destructive/60', label: 'deleted from Marzban' },
 }
 
 /** Marzban account status as a small dot (+ optional word) instead of a

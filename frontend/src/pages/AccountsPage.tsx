@@ -21,7 +21,7 @@ import { cn, daysUntil, formatDate, formatToman } from '@/lib/utils'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Search } from 'lucide-react'
 
-type View = 'all' | 'attention' | 'unassigned' | 'debt' | 'payg' | 'no_rate' | 'disabled'
+type View = 'all' | 'attention' | 'unassigned' | 'debt' | 'payg' | 'no_rate' | 'disabled' | 'deleted'
 
 const VIEWS: { id: View; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -31,6 +31,7 @@ const VIEWS: { id: View; label: string }[] = [
   { id: 'payg', label: 'Pay-as-you-go' },
   { id: 'no_rate', label: 'No rate' },
   { id: 'disabled', label: 'Disabled' },
+  { id: 'deleted', label: 'Deleted from Marzban' },
 ]
 
 function needsAttention(a: AccountRow): boolean {
@@ -42,19 +43,22 @@ function needsAttention(a: AccountRow): boolean {
 function matchesView(a: AccountRow, view: View): boolean {
   switch (view) {
     case 'all':
-      return true
+      // Deleted accounts have their own dedicated tab — don't clutter the main list.
+      return a.status !== 'deleted_from_marzban'
     case 'attention':
-      return needsAttention(a)
+      return a.status !== 'deleted_from_marzban' && needsAttention(a)
     case 'unassigned':
-      return a.customer_id === null && a.group_id === null
+      return a.status !== 'deleted_from_marzban' && a.customer_id === null && a.group_id === null
     case 'debt':
-      return a.net_owed > 0
+      return a.status !== 'deleted_from_marzban' && a.net_owed > 0
     case 'payg':
-      return a.effective_billing_mode === 'payg'
+      return a.status !== 'deleted_from_marzban' && a.effective_billing_mode === 'payg'
     case 'no_rate':
-      return !a.rate_configured
+      return a.status !== 'deleted_from_marzban' && !a.rate_configured
     case 'disabled':
-      return a.status !== 'active'
+      return a.status !== 'deleted_from_marzban' && a.status !== 'active'
+    case 'deleted':
+      return a.status === 'deleted_from_marzban'
   }
 }
 

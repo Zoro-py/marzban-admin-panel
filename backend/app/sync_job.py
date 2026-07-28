@@ -185,6 +185,31 @@ async def run_sync() -> dict:
                     account.usage_baseline = account.used_traffic
                     account.usage_baseline_at = now
 
+        # ── Soft-delete detection ──────────────────────────────────────
+        # Any local account whose marzban_username was NOT in the list
+        # Marzban just returned has been deleted there. Mark it locally
+        # so the UI can distinguish "genuinely gone" from "active" without
+        # losing ledger history (hard-deleting the row would orphan entries).
+        # Idempotent: only fires once per account, not on every sync.
+        marzban_usernames = {mu["username"] for mu in marzban_users}
+        deleted = 0
+        for username, account in existing.items():
+            if username not in marzban_usernames and account.status != "deleted_from_marzban":
+                account.status = "deleted_from_marzban"
+                account.last_synced_at = now
+                session.add(account)
+                if account.id is not None:
+                    session.add(
+                        AccountEvent(
+                            account_id=account.id,
+                            action="deleted_from_marzban",
+                            detail="This user was deleted directly in Marzban. Marked locally — ledger history preserved.",
+                            date=now,
+                            source=LedgerSource.sync,
+                        )
+                    )
+                deleted += 1
+
         # Recorded as a side effect of this sync, not a separate poller — a
         # dedicated online-count poller would mean extra Marzban logins/
         # requests on top of what sync already makes, working directly against
@@ -206,4 +231,4 @@ async def run_sync() -> dict:
 
         session.commit()
 
-    return {"marzban_user_count": len(marzban_users), "created": created, "updated": updated, "synced_at": now}
+    return {"marzban_user_count": len(marzban_users), "created": created, "updated": updated, "deleted": deleted, "synced_at": now}
