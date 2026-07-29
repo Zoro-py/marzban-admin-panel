@@ -250,6 +250,32 @@ class AccountRow(AccountRead):
     monthly_avg_usage_gb: Optional[float]
     usage_confidence: Literal["insufficient_data", "preliminary", "full"]
     usage_sample_days: float
+    # True if a QueuedPlan with status='pending' exists for this account —
+    # shown as a small badge in the accounts table so the operator can see at
+    # a glance which accounts are covered.
+    has_next_plan: bool = False
+
+
+# ---- Next Plan (Queued Plan) -----------------------------------------------
+
+
+class NextPlanRequest(BaseModel):
+    """Queue a plan to activate when the current plan ends."""
+
+    data_limit_gb: float = Field(gt=0, description="Package size in GB")
+    duration_days: int = Field(gt=0, le=365, description="Duration in days from activation")
+
+
+class NextPlanRead(BaseModel):
+    """Response shape for a queued plan."""
+
+    id: int
+    account_id: int
+    data_limit_gb: float
+    duration_days: int
+    status: str
+    created_at: datetime
+    activated_at: Optional[datetime]
 
 
 # ---- Ledger ---------------------------------------------------------------

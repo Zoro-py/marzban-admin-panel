@@ -169,3 +169,37 @@ class OnlineSnapshot(SQLModel, table=True):
     recorded_at: datetime = Field(default_factory=utcnow, index=True)
     online_count: int
     total_accounts: int
+
+
+class QueuedPlanStatus(str, Enum):
+    pending = "pending"
+    activated = "activated"
+    cancelled = "cancelled"
+
+
+class QueuedPlan(SQLModel, table=True):
+    """A plan waiting to be activated on an account when its current plan
+    ends (status becomes 'limited' or 'expired' in Marzban). One account
+    can have at most one PENDING plan at a time — enforced at the API level,
+    not as a DB constraint (so the history of activated/cancelled plans is
+    preserved for audit).
+
+    When the sync job detects status='limited' or 'expired' and a pending
+    QueuedPlan exists for that account, it:
+      1. Auto-settles the OLD plan (posts a charge for any unbilled amount)
+      2. Calls Marzban API to set new data_limit + expire + reset usage
+      3. Updates the local Account fields
+      4. Marks this plan as 'activated'
+      5. Logs an AccountEvent for the audit trail
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: int = Field(foreign_key="account.id", index=True)
+
+    data_limit_gb: float          # e.g. 30.0 = 30 GB
+    duration_days: int            # e.g. 30 = 30 days from activation moment
+
+    created_at: datetime = Field(default_factory=utcnow)
+    activated_at: Optional[datetime] = None
+    status: QueuedPlanStatus = QueuedPlanStatus.pending
+

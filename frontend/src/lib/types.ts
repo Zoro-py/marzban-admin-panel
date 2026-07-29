@@ -99,6 +99,18 @@ export interface AccountRow extends Account {
   monthly_avg_usage_gb: number | null
   usage_confidence: UsageConfidence
   usage_sample_days: number
+  // True if a queued next plan is waiting to activate when this plan ends.
+  has_next_plan: boolean
+}
+
+export interface NextPlan {
+  id: number
+  account_id: number
+  data_limit_gb: number
+  duration_days: number
+  status: 'pending' | 'activated' | 'cancelled'
+  created_at: string
+  activated_at: string | null
 }
 
 export interface AccountInvoice {

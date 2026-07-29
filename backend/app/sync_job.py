@@ -1,10 +1,13 @@
+import logging
+import time
 from datetime import datetime
 
 from sqlmodel import Session, select
 
 from app.db import engine
 from app.marzban_client import marzban_client
-from app.models import Account, AccountEvent, Customer, LedgerSource, OnlineSnapshot, utcnow
+from app.models import Account, AccountEvent, Customer, LedgerEntry, LedgerSource, LedgerType, OnlineSnapshot, QueuedPlan, QueuedPlanStatus, utcnow
+from app.services import GB, billable_bytes, effective_billing_mode, effective_rate
 
 PAGE_SIZE = 200
 
@@ -43,6 +46,79 @@ async def _fetch_all_marzban_users() -> list[dict]:
     return users
 
 
+async def _activate_next_plan(session: Session, account: Account, plan: QueuedPlan, now) -> None:
+    """Activate a queued next plan for an account whose current plan just ended.
+
+    This is the money-critical function. Order of operations matters:
+      1. Bill the OLD plan FIRST (auto-settle: post a charge for any unbilled amount)
+      2. Call Marzban: modify_user (new limits + status=active) + reset_user (zero used_traffic)
+      3. Update the local Account fields to match the new plan
+      4. Mark the QueuedPlan as activated
+      5. Log an AccountEvent for the audit trail
+
+    If the Marzban API call fails, the exception propagates — the plan stays
+    'pending' and sync will retry on the next cycle. The charge from step 1
+    is NOT committed independently; the whole activation is one transaction.
+    """
+    log = logging.getLogger(__name__)
+
+    # Step 1: Auto-settle the old plan (bill whatever was unbilled)
+    old_mode = effective_billing_mode(session, account)
+    old_billable = billable_bytes(account, old_mode)
+    old_rate = effective_rate(session, account)
+    old_amount = round((old_billable / GB) * old_rate, 2)
+
+    if old_amount > 0 and account.customer_id is not None:
+        session.add(LedgerEntry(
+            type=LedgerType.charge,
+            amount=old_amount,
+            customer_id=account.customer_id,
+            group_id=account.group_id,
+            account_id=account.id,
+            note=f"Auto-settled: plan ended ({now.date().isoformat()}), next plan activating",
+            source=LedgerSource.sync,
+        ))
+        log.info("Auto-settled %s: charged %.2f for ended plan", account.marzban_username, old_amount)
+
+    # Step 2: Call Marzban API — new limits + reactivate + reset usage
+    new_data_limit = round(plan.data_limit_gb * GB)
+    new_expire = int(time.time()) + plan.duration_days * 86400
+
+    await marzban_client.modify_user(account.marzban_username, {
+        "data_limit": new_data_limit,
+        "expire": new_expire,
+        "status": "active",
+    })
+    await marzban_client.reset_user(account.marzban_username)
+
+    # Step 3: Update local Account state
+    account.data_limit = new_data_limit
+    account.expire = new_expire
+    account.used_traffic = 0
+    account.status = "active"
+    account.usage_baseline = 0
+    account.usage_baseline_at = now
+    account.billed_data_limit = 0
+    account.last_synced_at = now
+    session.add(account)
+
+    # Step 4: Mark plan as activated
+    plan.status = QueuedPlanStatus.activated
+    plan.activated_at = now
+    session.add(plan)
+
+    # Step 5: Audit trail
+    session.add(AccountEvent(
+        account_id=account.id,
+        action="next_plan_activated",
+        detail=f"Auto-activated: {plan.data_limit_gb} GB / {plan.duration_days} days (old plan billed {old_amount})",
+        date=now,
+        source=LedgerSource.sync,
+    ))
+
+    log.info("Activated next plan for %s: %.1f GB / %d days", account.marzban_username, plan.data_limit_gb, plan.duration_days)
+
+
 async def run_sync() -> dict:
     """Pulls every user from Marzban and mirrors usage/status/limits into the
     local Account table. Every account belongs to one person by default — a
@@ -57,6 +133,7 @@ async def run_sync() -> dict:
     now = utcnow()
     created = 0
     updated = 0
+    activated_plans = 0
 
     with Session(engine) as session:
         existing = {a.marzban_username: a for a in session.exec(select(Account)).all()}
@@ -185,6 +262,30 @@ async def run_sync() -> dict:
                     account.usage_baseline = account.used_traffic
                     account.usage_baseline_at = now
 
+                # ── Next-plan auto-activation ──────────────────────────────
+                # If the account just ended (limited or expired) and has a
+                # queued plan waiting, activate it: bill the old plan, call
+                # Marzban to set new limits + reset usage, update local state.
+                # Runs INSIDE the per-account if-block (account.id is not None)
+                # so newly-created accounts (id is None before flush) are
+                # never candidates — they can't have a QueuedPlan yet.
+                if account.status in ("limited", "expired"):
+                    pending_plan = session.exec(
+                        select(QueuedPlan).where(
+                            QueuedPlan.account_id == account.id,
+                            QueuedPlan.status == QueuedPlanStatus.pending,
+                        )
+                    ).first()
+                    if pending_plan:
+                        try:
+                            await _activate_next_plan(session, account, pending_plan, now)
+                            activated_plans += 1
+                        except Exception as exc:
+                            logging.getLogger(__name__).error(
+                                "Failed to activate next plan for %s: %s",
+                                account.marzban_username, exc,
+                            )
+
         # ── Soft-delete detection ──────────────────────────────────────
         # Any local account whose marzban_username was NOT in the list
         # Marzban just returned has been deleted there. Mark it locally
@@ -231,4 +332,4 @@ async def run_sync() -> dict:
 
         session.commit()
 
-    return {"marzban_user_count": len(marzban_users), "created": created, "updated": updated, "deleted": deleted, "synced_at": now}
+    return {"marzban_user_count": len(marzban_users), "created": created, "updated": updated, "deleted": deleted, "activated_plans": activated_plans, "synced_at": now}

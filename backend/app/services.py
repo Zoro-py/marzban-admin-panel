@@ -3,7 +3,7 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from app.models import Account, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerType, utcnow
+from app.models import Account, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerType, QueuedPlan, QueuedPlanStatus, utcnow
 
 # ══════════════════════════════════════════════════════════════ the money model
 #
@@ -279,9 +279,20 @@ def enrich_accounts(session: Session, accounts: list[Account], book: Optional[Mo
     book = book or MoneyBook(session)
     customer_ids = {a.customer_id for a in accounts if a.customer_id}
     group_ids = {a.group_id for a in accounts if a.group_id}
+    account_ids = {a.id for a in accounts if a.id is not None}
     
     customers = {c.id: c for c in session.exec(select(Customer).where(Customer.id.in_(customer_ids))).all()} if customer_ids else {}
     groups = {g.id: g for g in session.exec(select(Group).where(Group.id.in_(group_ids))).all()} if group_ids else {}
+    # Batch-load pending QueuedPlans for all accounts at once (avoids N+1).
+    accounts_with_next_plan: set[int] = set()
+    if account_ids:
+        pending_plans = session.exec(
+            select(QueuedPlan.account_id).where(
+                QueuedPlan.account_id.in_(account_ids),
+                QueuedPlan.status == QueuedPlanStatus.pending,
+            )
+        ).all()
+        accounts_with_next_plan = set(pending_plans)
 
     # created_at/first_seen_traffic_at round-trip through SQLite as naive even
     # though utcnow() produces an aware datetime (same quirk documented in
@@ -334,6 +345,7 @@ def enrich_accounts(session: Session, accounts: list[Account], book: Optional[Mo
                 monthly_avg_usage_gb=monthly_avg_usage_gb,
                 usage_confidence=usage_confidence,
                 usage_sample_days=round(observed_days, 1),
+                has_next_plan=a.id in accounts_with_next_plan,
             )
         )
     return rows

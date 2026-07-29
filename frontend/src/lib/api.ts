@@ -13,6 +13,7 @@ import type {
   GroupInvoice,
   GroupWithBalance,
   LedgerEntry,
+  NextPlan,
   OnlineHistory,
   OnlineHistoryRange,
   ReportSummary,
@@ -150,6 +151,18 @@ export const accountsApi = {
   invoice: async (id: number) => (await api.get<AccountInvoice>(`/api/accounts/${id}/invoice`)).data,
   settle: async (id: number, body?: { mark_paid?: boolean }) => (await api.post(`/api/accounts/${id}/settle`, body ?? {})).data,
   events: async (id: number) => (await api.get<AccountEvent[]>(`/api/accounts/${id}/events`)).data,
+  // ---- next plan ----
+  getNextPlan: async (id: number) => {
+    try {
+      return (await api.get<NextPlan>(`/api/accounts/${id}/next-plan`)).data
+    } catch (e) {
+      if (axios.isAxiosError(e) && e.response?.status === 404) return null
+      throw e
+    }
+  },
+  setNextPlan: async (id: number, body: { data_limit_gb: number; duration_days: number }) =>
+    (await api.post<NextPlan>(`/api/accounts/${id}/next-plan`, body)).data,
+  cancelNextPlan: async (id: number) => (await api.delete(`/api/accounts/${id}/next-plan`)).data,
 }
 
 // ---- ledger ----

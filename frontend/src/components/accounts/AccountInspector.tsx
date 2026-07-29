@@ -8,6 +8,7 @@ import {
   CalendarClock,
   ChevronDown,
   History,
+  Layers,
   Link2,
   Receipt,
   RotateCcw,
@@ -221,6 +222,7 @@ function InspectorBody({ account, onClose }: { account: AccountRow; onClose: () 
         <ResetSection account={account} canBill={canBill} />
         <InvoiceSection account={account} canBill={canBill} />
         <BillingSection account={account} />
+        <NextPlanSection account={account} />
         <OwnershipSection account={account} />
         <HistorySection account={account} />
       </div>
@@ -740,6 +742,115 @@ function OwnershipSection({ account }: { account: AccountRow }) {
       <Button size="sm" variant="outline" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
         {mutation.isPending ? 'Saving…' : 'Save ownership'}
       </Button>
+    </Section>
+  )
+}
+
+function NextPlanSection({ account }: { account: AccountRow }) {
+  const invalidate = useInvalidateAccount(account.id)
+  const queryClient = useQueryClient()
+
+  const planQuery = useQuery({
+    queryKey: ['account', account.id, 'next-plan'],
+    queryFn: () => accountsApi.getNextPlan(account.id),
+  })
+
+  const setMutation = useMutation({
+    mutationFn: (body: { data_limit_gb: number; duration_days: number }) =>
+      accountsApi.setNextPlan(account.id, body),
+    onSuccess: () => {
+      toast.success('Next plan queued')
+      queryClient.invalidateQueries({ queryKey: ['account', account.id, 'next-plan'] })
+      invalidate()
+    },
+    onError: (err) => toast.error(apiErrorMessage(err)),
+  })
+
+  const cancelMutation = useMutation({
+    mutationFn: () => accountsApi.cancelNextPlan(account.id),
+    onSuccess: () => {
+      toast.success('Next plan cancelled')
+      queryClient.invalidateQueries({ queryKey: ['account', account.id, 'next-plan'] })
+      invalidate()
+    },
+    onError: (err) => toast.error(apiErrorMessage(err)),
+  })
+
+  const [gb, setGb] = React.useState('')
+  const [days, setDays] = React.useState('')
+
+  const plan = planQuery.data
+
+  return (
+    <Section icon={Layers} title="Next plan">
+      {plan ? (
+        <div className="flex flex-col gap-2">
+          <div className="rounded-lg border border-border bg-muted/30 p-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">{plan.data_limit_gb} GB / {plan.duration_days} days</p>
+                <p className="text-xs text-muted-foreground">
+                  Queued {formatAgo(plan.created_at)}
+                </p>
+              </div>
+              <Badge variant="outline" className="text-xs">pending</Badge>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {account.status === 'limited' || account.status === 'expired'
+                ? 'Will activate on next sync cycle.'
+                : 'Activates when current plan ends (limited or expired).'}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={() => cancelMutation.mutate()}
+            disabled={cancelMutation.isPending}
+          >
+            Cancel next plan
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <p className="text-xs text-muted-foreground">
+            Queue a plan to auto-activate when this account's time or data runs out.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label className="text-xs">Data (GB)</Label>
+              <Input
+                type="number"
+                min={1}
+                step={1}
+                placeholder="e.g. 30"
+                value={gb}
+                onChange={(e) => setGb(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Duration (days)</Label>
+              <Input
+                type="number"
+                min={1}
+                max={365}
+                step={1}
+                placeholder="e.g. 30"
+                value={days}
+                onChange={(e) => setDays(e.target.value)}
+              />
+            </div>
+          </div>
+          <Button
+            size="sm"
+            disabled={!gb || !days || Number(gb) <= 0 || Number(days) <= 0 || setMutation.isPending}
+            onClick={() =>
+              setMutation.mutate({ data_limit_gb: Number(gb), duration_days: Number(days) })
+            }
+          >
+            Queue next plan
+          </Button>
+        </div>
+      )}
     </Section>
   )
 }

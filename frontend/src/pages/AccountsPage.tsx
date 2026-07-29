@@ -257,7 +257,14 @@ function AccountTableRow({
         <span className="flex items-center gap-2">
           <StatusDot status={a.status} />
           <span className="flex min-w-0 flex-col leading-tight">
-            <span className="truncate font-mono text-xs font-medium">{a.marzban_username}</span>
+            <span className="flex items-center gap-1.5">
+              <span className="truncate font-mono text-xs font-medium">{a.marzban_username}</span>
+              {a.has_next_plan && (
+                <span className="inline-flex shrink-0 items-center rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                  Next ▸
+                </span>
+              )}
+            </span>
             {/* Owner moves in here once its own column is hidden, so a phone
                 still answers "whose account is this?". */}
             <span className="truncate text-[11px] text-muted-foreground md:hidden">

@@ -9,7 +9,7 @@ from app.auth import require_auth
 from app.config import settings
 from app.db import get_session
 from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_client
-from app.models import Account, AccountEvent, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
+from app.models import Account, AccountEvent, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, QueuedPlan, QueuedPlanStatus, utcnow
 from app.schemas import (
     AccountAdjustRequest,
     AccountBillingUpdate,
@@ -20,6 +20,8 @@ from app.schemas import (
     AccountResetRequest,
     AccountRow,
     AccountSettleRequest,
+    NextPlanRead,
+    NextPlanRequest,
 )
 from app.services import (
     account_posted_balance,
@@ -511,3 +513,97 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
         session.rollback()
         raise
     return account
+
+
+@router.post("/{account_id}/next-plan", response_model=NextPlanRead)
+def set_next_plan(account_id: int, body: NextPlanRequest, session: Session = Depends(get_session)):
+    """Queue a plan to auto-activate when this account's current plan ends.
+
+    Replaces any existing pending plan for this account (there can only be
+    one pending plan at a time). When the sync job detects that Marzban has
+    set the account's status to 'limited' or 'expired', it will:
+      1. Auto-settle the old plan (post a charge for any unbilled amount)
+      2. Call Marzban to apply the new data_limit + expire + reset usage
+      3. Update local state and mark this plan as activated
+    """
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(404, "Account not found")
+
+    # Cancel any existing pending plan — one-deep queue.
+    existing_pending = session.exec(
+        select(QueuedPlan).where(
+            QueuedPlan.account_id == account_id,
+            QueuedPlan.status == QueuedPlanStatus.pending,
+        )
+    ).first()
+    if existing_pending:
+        existing_pending.status = QueuedPlanStatus.cancelled
+        session.add(existing_pending)
+
+    plan = QueuedPlan(
+        account_id=account_id,
+        data_limit_gb=body.data_limit_gb,
+        duration_days=body.duration_days,
+    )
+    try:
+        session.add(plan)
+        session.add(
+            AccountEvent(
+                account_id=account_id,
+                action="next_plan_queued",
+                detail=f"{body.data_limit_gb} GB / {body.duration_days} days",
+            )
+        )
+        session.commit()
+        session.refresh(plan)
+    except Exception:
+        session.rollback()
+        raise
+    return plan
+
+
+@router.get("/{account_id}/next-plan", response_model=NextPlanRead)
+def get_next_plan(account_id: int, session: Session = Depends(get_session)):
+    """Returns the current pending next plan for this account, or 404."""
+    if not session.get(Account, account_id):
+        raise HTTPException(404, "Account not found")
+    plan = session.exec(
+        select(QueuedPlan).where(
+            QueuedPlan.account_id == account_id,
+            QueuedPlan.status == QueuedPlanStatus.pending,
+        )
+    ).first()
+    if not plan:
+        raise HTTPException(404, "No pending next plan")
+    return plan
+
+
+@router.delete("/{account_id}/next-plan")
+def cancel_next_plan(account_id: int, session: Session = Depends(get_session)):
+    """Cancel the pending next plan for this account."""
+    if not session.get(Account, account_id):
+        raise HTTPException(404, "Account not found")
+    plan = session.exec(
+        select(QueuedPlan).where(
+            QueuedPlan.account_id == account_id,
+            QueuedPlan.status == QueuedPlanStatus.pending,
+        )
+    ).first()
+    if not plan:
+        raise HTTPException(404, "No pending next plan to cancel")
+    try:
+        plan.status = QueuedPlanStatus.cancelled
+        session.add(plan)
+        session.add(
+            AccountEvent(
+                account_id=account_id,
+                action="next_plan_cancelled",
+                detail=f"Cancelled: {plan.data_limit_gb} GB / {plan.duration_days} days",
+            )
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return {"ok": True, "cancelled_plan_id": plan.id}
