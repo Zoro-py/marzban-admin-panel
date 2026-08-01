@@ -328,7 +328,7 @@ def finance(session: Session = Depends(get_session)):
 def online_history(range: str = "1d", session: Session = Depends(get_session)):
     """Online-accounts-count trend. Points come from OnlineSnapshot, written as
     a side effect of the regular sync job — there's no separate poller, so the
-    granularity between points is exactly sync_interval_minutes, not real-time.
+    granularity between points is exactly sync_interval_seconds, not real-time.
     Marzban has no historical online-count endpoint of its own to source this
     from instead."""
     days = ONLINE_HISTORY_RANGES.get(range, 1)

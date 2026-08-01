@@ -102,7 +102,7 @@ Commands: `/report`, `/customer <name or id>`, `/charge <customer> <amount> [not
   payment received). A customer's or group's balance is always the sum of its ledger rows —
   never a field that gets overwritten, so there's a full audit trail.
 - A background job re-syncs every account's usage/status from Marzban on an interval
-  (`SYNC_INTERVAL_MINUTES` in `backend/.env`, default 60); `POST /api/sync/run` or the bot's
+  (`SYNC_INTERVAL_SECONDS` in `backend/.env`, default 60); `POST /api/sync/run` or the bot's
   `/sync` trigger it immediately.
 
 ## Deployment

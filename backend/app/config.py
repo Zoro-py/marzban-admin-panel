@@ -31,7 +31,16 @@ class Settings(BaseSettings):
     bot_admin_chat_id: str = ""
     bot_api_base_url: str = "http://127.0.0.1:8000"
 
-    sync_interval_minutes: int = 60
+    # How often the sync job runs — also how long a customer whose plan just
+    # ran out stays disconnected before the next-plan feature can react, so
+    # this is deliberately tight rather than the traditional "poll hourly"
+    # default. 60s: Marzban runs on the same server (near-zero latency per
+    # call), so the cost of polling more often is negligible; going lower
+    # buys very little further (the human-perceived difference between a
+    # 30s and 60s reconnect is nil) while raising the odds of a sync cycle
+    # still running when the next one is due to start (see main.py's
+    # max_instances=1 on this job — that cycle would just get skipped).
+    sync_interval_seconds: int = 60
 
     # Nightly off-server backup (see backup_job.py): hour/minute (server's own
     # local time, 24h) it runs at. No enabled/disabled flag on purpose — it's

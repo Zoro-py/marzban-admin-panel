@@ -41,7 +41,16 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     init_db()
     logger.info("Starting sync scheduler...")
-    scheduler.add_job(run_sync, "interval", minutes=settings.sync_interval_minutes, id="marzban_sync")
+    # coalesce+max_instances made explicit now that the interval is tight
+    # enough for them to matter: if a cycle is still running (e.g. several
+    # next-plan activations firing Marzban calls in the same tick) when the
+    # next one is due, that next one is skipped rather than queued or run
+    # concurrently — so a slow cycle degrades to "less frequent," never to
+    # overlapping runs touching the same rows.
+    scheduler.add_job(
+        run_sync, "interval", seconds=settings.sync_interval_seconds, id="marzban_sync",
+        max_instances=1, coalesce=True,
+    )
     scheduler.add_job(
         _scheduled_backup, "cron", hour=settings.backup_hour, minute=settings.backup_minute, id="db_backup"
     )

@@ -159,7 +159,7 @@ class AccountEvent(SQLModel, table=True):
 
 class OnlineSnapshot(SQLModel, table=True):
     """One point in the online-accounts-count trend — written as a side effect
-    of the regular sync job (every sync_interval_minutes), not a separate
+    of the regular sync job (every sync_interval_seconds), not a separate
     poller, since Marzban has no historical online-count endpoint of its own
     and a dedicated poller would mean extra Marzban logins/requests on top of
     the ones sync already makes. Trend granularity is therefore exactly the
