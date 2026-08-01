@@ -18,8 +18,8 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
 
 # Rate limiting simple dictionary cache
-# Structure: { ip: {"attempts": int, "blocked_until": float} }
-FAILED_LOGIN_ATTEMPTS = defaultdict(lambda: {"attempts": 0, "blocked_until": 0.0})
+# Structure: { ip: {"attempts": int, "blocked_until": float, "last_seen": float} }
+FAILED_LOGIN_ATTEMPTS = defaultdict(lambda: {"attempts": 0, "blocked_until": 0.0, "last_seen": 0.0})
 
 def get_client_ip(request: Request) -> str:
     # X-Real-IP, not X-Forwarded-For: this deployment's own nginx config
@@ -48,8 +48,15 @@ async def login(body: LoginRequest, request: Request) -> LoginResponse:
     ip = get_client_ip(request)
     now = time.time()
     
+    # Garbage collection to prevent memory leak
+    if len(FAILED_LOGIN_ATTEMPTS) > 1000:
+        expired = [k for k, v in FAILED_LOGIN_ATTEMPTS.items() if v["last_seen"] < now - 3600]
+        for k in expired:
+            del FAILED_LOGIN_ATTEMPTS[k]
+    
     # Check rate limit
     ip_data = FAILED_LOGIN_ATTEMPTS[ip]
+    ip_data["last_seen"] = now
     if ip_data["blocked_until"] > now:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,

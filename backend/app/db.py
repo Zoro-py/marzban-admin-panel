@@ -105,18 +105,29 @@ def _run_lightweight_migrations() -> None:
         # corresponding WHERE condition stops matching it, so this becomes a
         # no-op for that account on every subsequent startup.
         # Pure SQL update to avoid fetching all accounts into memory
-        conn.execute(
-            text(
-                """
-                UPDATE account
-                SET usage_baseline = 0
-                WHERE 
-                    (group_id IS NOT NULL AND group_id IN (SELECT id FROM "group" WHERE last_settled_at IS NULL))
-                    OR 
-                    (group_id IS NULL AND id NOT IN (SELECT DISTINCT account_id FROM ledgerentry WHERE type = 'charge' AND account_id IS NOT NULL))
-                """
+        conn.execute(text("CREATE TABLE IF NOT EXISTS _migration_marker (key VARCHAR PRIMARY KEY, applied_at DATETIME)"))
+        
+        already_zeroed = conn.execute(
+            text("SELECT 1 FROM _migration_marker WHERE key = 'zero_unbilled_usage_baseline'")
+        ).first()
+        if not already_zeroed:
+            conn.execute(
+                text(
+                    """
+                    UPDATE account
+                    SET usage_baseline = 0
+                    WHERE 
+                        (group_id IS NOT NULL AND group_id IN (SELECT id FROM "group" WHERE last_settled_at IS NULL))
+                        OR 
+                        (group_id IS NULL AND id NOT IN (SELECT DISTINCT account_id FROM ledgerentry WHERE type = 'charge' AND account_id IS NOT NULL))
+                    """
+                )
             )
-        )
+            now_zero = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")
+            conn.execute(
+                text("INSERT INTO _migration_marker (key, applied_at) VALUES ('zero_unbilled_usage_baseline', :now)"),
+                {"now": now_zero},
+            )
 
         # Billing basis changed from lifetime_used_traffic to used_traffic (see
         # Account.usage_baseline's docstring) — used_traffic matches exactly
@@ -136,7 +147,6 @@ def _run_lightweight_migrations() -> None:
         # their baseline is already 0 from the fix above, which is correct
         # under either field (0 means "everything since account creation is
         # billable" regardless of which counter that's measured against).
-        conn.execute(text("CREATE TABLE IF NOT EXISTS _migration_marker (key VARCHAR PRIMARY KEY, applied_at DATETIME)"))
         already_rebaselined = conn.execute(
             text("SELECT 1 FROM _migration_marker WHERE key = 'used_traffic_billing_basis'")
         ).first()

@@ -372,6 +372,13 @@ async def reset_group_cycle(group_id: int, session: Session = Depends(get_sessio
                 a.data_limit = marzban_user.get("data_limit", a.data_limit)
                 a.status = marzban_user.get("status", a.status)
 
+            # Outside the marzban_user check on purpose: rolling the baseline
+            # forward is this endpoint's core guarantee and has to happen for
+            # every member, including one whose Marzban reset just failed.
+            # Skipping it there would still close the group's cycle
+            # (last_settled_at moves below) while leaving that member's usage
+            # billable — so the next settle would charge them a second time
+            # for a cycle that was already closed.
             if group.billing_mode == BillingMode.payg:
                 a.usage_baseline = a.used_traffic
                 a.usage_baseline_at = now

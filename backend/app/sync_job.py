@@ -50,35 +50,39 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
     """Activate a queued next plan for an account whose current plan just ended.
 
     This is the money-critical function. Order of operations matters:
-      1. Bill the OLD plan FIRST (auto-settle: post a charge for any unbilled amount)
-      2. Call Marzban: modify_user (new limits + status=active) + reset_user (zero used_traffic)
-      3. Update the local Account fields to match the new plan
-      4. Mark the QueuedPlan as activated
-      5. Log an AccountEvent for the audit trail
+      1. Work out what the OLD plan still owes, from the account's current
+         (pre-reset) state — every field that feeds this is overwritten below
+      2. Call Marzban: modify_user (new limits + status=active) + reset_user
+         (zero used_traffic)
+      3. ONLY once Marzban has accepted both calls, write anything locally:
+         the old plan's charge, the new Account state, the plan's activated
+         status, and an AccountEvent for the audit trail
+      4. Commit, so the local record is durably paired with a Marzban change
+         that cannot be rolled back
 
-    If the Marzban API call fails, the exception propagates — the plan stays
-    'pending' and sync will retry on the next cycle. The charge from step 1
-    is NOT committed independently; the whole activation is one transaction.
+    Marzban comes BEFORE any session.add() deliberately. run_sync catches and
+    logs a failure here so one bad account can't abort the whole sync — which
+    means anything already added to the session survives to the end-of-sync
+    commit anyway. Posting the charge first and then failing on modify_user
+    would therefore COMMIT that charge while leaving the plan 'pending', and
+    the next sync cycle would charge for the same ended plan again, once per
+    cycle, indefinitely. Writing only after Marzban succeeds means a failure
+    leaves nothing behind to roll back: the plan stays pending and the retry
+    is clean.
+
+    The commit at the end is for the opposite hazard: once Marzban has reset
+    the account there is no undo, so if a later part of run_sync raised and
+    took this activation down with it, Marzban would report the account
+    'active' on the next cycle, the limited/expired guard would never fire
+    again, and the ended plan's usage would go unbilled forever.
     """
     log = logging.getLogger(__name__)
 
-    # Step 1: Auto-settle the old plan (bill whatever was unbilled)
+    # Step 1: what the old plan still owes, from the CURRENT (pre-reset) state.
     old_mode = effective_billing_mode(session, account)
     old_billable = billable_bytes(account, old_mode)
     old_rate = effective_rate(session, account)
     old_amount = round((old_billable / GB) * old_rate, 2)
-
-    if old_amount > 0 and account.customer_id is not None:
-        session.add(LedgerEntry(
-            type=LedgerType.charge,
-            amount=old_amount,
-            customer_id=account.customer_id,
-            group_id=account.group_id,
-            account_id=account.id,
-            note=f"Auto-settled: plan ended ({now.date().isoformat()}), next plan activating",
-            source=LedgerSource.sync,
-        ))
-        log.info("Auto-settled %s: charged %.2f for ended plan", account.marzban_username, old_amount)
 
     # Step 2: Call Marzban API — new limits + reactivate + reset usage
     new_data_limit = round(plan.data_limit_gb * GB)
@@ -91,7 +95,24 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
     })
     await marzban_client.reset_user(account.marzban_username)
 
-    # Step 3: Update local Account state
+    # Step 3: Marzban accepted the new plan — record it locally.
+    # Charged on account_id alone, with no `customer_id is not None` guard:
+    # MoneyBook attributes an entry with account_id set to that account
+    # regardless of customer_id (see its "ONE OWNER PER ENTRY" header), so
+    # skipping the charge for an unassigned account would reset its usage to
+    # zero while silently billing nobody for the plan that just ended.
+    if old_amount > 0:
+        session.add(LedgerEntry(
+            type=LedgerType.charge,
+            amount=old_amount,
+            customer_id=account.customer_id,
+            group_id=account.group_id,
+            account_id=account.id,
+            note=f"Auto-settled: plan ended ({now.date().isoformat()}), next plan activating",
+            source=LedgerSource.sync,
+        ))
+        log.info("Auto-settled %s: charged %.2f for ended plan", account.marzban_username, old_amount)
+
     account.data_limit = new_data_limit
     account.expire = new_expire
     account.used_traffic = 0
@@ -102,12 +123,10 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
     account.last_synced_at = now
     session.add(account)
 
-    # Step 4: Mark plan as activated
     plan.status = QueuedPlanStatus.activated
     plan.activated_at = now
     session.add(plan)
 
-    # Step 5: Audit trail
     session.add(AccountEvent(
         account_id=account.id,
         action="next_plan_activated",
@@ -115,6 +134,9 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
         date=now,
         source=LedgerSource.sync,
     ))
+
+    # Step 4: pair the local record durably with the irreversible Marzban call.
+    session.commit()
 
     log.info("Activated next plan for %s: %.1f GB / %d days", account.marzban_username, plan.data_limit_gb, plan.duration_days)
 

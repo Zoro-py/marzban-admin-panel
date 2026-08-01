@@ -50,17 +50,30 @@ async def _ledger_command(update: Update, context: ContextTypes.DEFAULT_TYPE, le
         await update.message.reply_text(f"Usage: /{ledger_type} <customer name or id> <amount> [note...]")
         return
 
-    # Customer query must be a single token (name substring or id) so `amount` is
-    # unambiguously the second argument; anything after that is a free-text note.
-    query = context.args[0]
-    amount_str = context.args[1]
-    note = " ".join(context.args[2:]) if len(context.args) > 2 else None
+    # The customer query can be several words ("ali reza"), so the amount is
+    # the first numeric token — searched from index 1, never 0. args[0] always
+    # belongs to the query: a numeric first token is a customer id, which
+    # resolve_customer looks up directly (`/charge 24 5000`), so treating it as
+    # the amount would break id-based lookup entirely.
+    amount_idx = -1
+    for i in range(1, len(context.args)):
+        try:
+            float(context.args[i].replace(",", ""))
+            amount_idx = i
+            break
+        except ValueError:
+            pass
 
-    try:
-        amount = float(amount_str)
-    except ValueError:
-        await update.message.reply_text("Amount must be a number, e.g. `/charge boojar 150000 monthly renewal`", parse_mode="Markdown")
+    if amount_idx == -1:
+        await update.message.reply_text(
+            f"Usage: /{ledger_type} <customer name or id> <amount> [note...]\nAmount must be a number, e.g. `/{ledger_type} ali reza 150000 monthly renewal`",
+            parse_mode="Markdown"
+        )
         return
+
+    query = " ".join(context.args[:amount_idx])
+    amount = float(context.args[amount_idx].replace(",", ""))
+    note = " ".join(context.args[amount_idx + 1:]) if len(context.args) > amount_idx + 1 else None
 
     try:
         customer = await resolve_customer(query)
