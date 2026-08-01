@@ -102,6 +102,10 @@ export function DashboardPage() {
           </div>
         ) : (
           <div className="flex flex-col">
+            {/* Capacity/expiry problems first — these need the operator's hand
+                to keep service running. Money (debt, pending settlement) is
+                real but rarely as time-sensitive, so it's ordered last rather
+                than mixed in among "account about to stop working." */}
             <QueueSection
               icon={CalendarX}
               tone="danger"
@@ -118,6 +122,7 @@ export function DashboardPage() {
                       onClick={() => openAccount(a.account_id)}
                       username={a.marzban_username}
                       owner={a.owner_name}
+                      hasNextPlan={a.has_next_plan}
                       metric={<span className="font-medium text-destructive">{Math.abs(a.days_left).toFixed(0)}d ago</span>}
                     />
                   )}
@@ -136,27 +141,9 @@ export function DashboardPage() {
                       onClick={() => openAccount(a.account_id)}
                       username={a.marzban_username}
                       owner={a.owner_name}
+                      hasNextPlan={a.has_next_plan}
                       metric={<span className="font-medium text-destructive">{a.used_pct}%</span>}
                     />
-                  )}
-                />
-              )}
-            </QueueSection>
-
-            <QueueSection icon={Wallet} tone="danger" title="Customers in debt" count={data.overdue_customers.length}>
-              {data.overdue_customers.length > 0 && (
-                <Virtuoso
-                  useWindowScroll
-                  data={data.overdue_customers}
-                  itemContent={(_, c) => (
-                    <Link
-                      key={c.customer_id}
-                      to={`/customers/${c.customer_id}`}
-                      className="flex items-center justify-between gap-3 px-4 py-1.5 text-[13px] hover:bg-muted/50"
-                    >
-                      <span className="truncate">{c.name}</span>
-                      <Money amount={c.balance} className="text-xs" />
-                    </Link>
                   )}
                 />
               )}
@@ -173,6 +160,7 @@ export function DashboardPage() {
                       onClick={() => openAccount(a.account_id)}
                       username={a.marzban_username}
                       owner={a.owner_name}
+                      hasNextPlan={a.has_next_plan}
                       metric={<span className="font-medium text-warning">{a.days_left}d left</span>}
                     />
                   )}
@@ -191,7 +179,44 @@ export function DashboardPage() {
                       onClick={() => openAccount(a.account_id)}
                       username={a.marzban_username}
                       owner={a.owner_name}
+                      hasNextPlan={a.has_next_plan}
                       metric={<span className="font-medium text-warning">{a.used_pct}%</span>}
+                    />
+                  )}
+                />
+              )}
+            </QueueSection>
+
+            <QueueSection icon={UserX} tone="info" title="Unassigned accounts" count={data.unassigned_accounts.length}>
+              {data.unassigned_accounts.length > 0 && (
+                <Virtuoso
+                  useWindowScroll
+                  data={data.unassigned_accounts}
+                  itemContent={(_, a) => (
+                    <AccountQueueRow
+                      key={a.account_id}
+                      onClick={() => openAccount(a.account_id)}
+                      username={a.marzban_username}
+                      owner={null}
+                      metric={<span className="text-xs text-muted-foreground">assign a customer</span>}
+                    />
+                  )}
+                />
+              )}
+            </QueueSection>
+
+            <QueueSection icon={Tag} tone="info" title="No rate configured" count={data.no_rate_accounts.length}>
+              {data.no_rate_accounts.length > 0 && (
+                <Virtuoso
+                  useWindowScroll
+                  data={data.no_rate_accounts}
+                  itemContent={(_, a) => (
+                    <AccountQueueRow
+                      key={a.account_id}
+                      onClick={() => openAccount(a.account_id)}
+                      username={a.marzban_username}
+                      owner={a.owner_name}
+                      metric={<span className="text-xs text-muted-foreground">would bill 0 T</span>}
                     />
                   )}
                 />
@@ -249,37 +274,22 @@ export function DashboardPage() {
               )}
             </QueueSection>
 
-            <QueueSection icon={UserX} tone="info" title="Unassigned accounts" count={data.unassigned_accounts.length}>
-              {data.unassigned_accounts.length > 0 && (
+            {/* Last, deliberately: debts are real but not "service about to
+                break" urgent — see the note at the top of this list. */}
+            <QueueSection icon={Wallet} tone="danger" title="Customers in debt" count={data.overdue_customers.length}>
+              {data.overdue_customers.length > 0 && (
                 <Virtuoso
                   useWindowScroll
-                  data={data.unassigned_accounts}
-                  itemContent={(_, a) => (
-                    <AccountQueueRow
-                      key={a.account_id}
-                      onClick={() => openAccount(a.account_id)}
-                      username={a.marzban_username}
-                      owner={null}
-                      metric={<span className="text-xs text-muted-foreground">assign a customer</span>}
-                    />
-                  )}
-                />
-              )}
-            </QueueSection>
-
-            <QueueSection icon={Tag} tone="info" title="No rate configured" count={data.no_rate_accounts.length}>
-              {data.no_rate_accounts.length > 0 && (
-                <Virtuoso
-                  useWindowScroll
-                  data={data.no_rate_accounts}
-                  itemContent={(_, a) => (
-                    <AccountQueueRow
-                      key={a.account_id}
-                      onClick={() => openAccount(a.account_id)}
-                      username={a.marzban_username}
-                      owner={a.owner_name}
-                      metric={<span className="text-xs text-muted-foreground">would bill 0 T</span>}
-                    />
+                  data={data.overdue_customers}
+                  itemContent={(_, c) => (
+                    <Link
+                      key={c.customer_id}
+                      to={`/customers/${c.customer_id}`}
+                      className="flex items-center justify-between gap-3 px-4 py-1.5 text-[13px] hover:bg-muted/50"
+                    >
+                      <span className="truncate">{c.name}</span>
+                      <Money amount={c.balance} className="text-xs" />
+                    </Link>
                   )}
                 />
               )}
@@ -347,11 +357,17 @@ function AccountQueueRow({
   owner,
   metric,
   onClick,
+  hasNextPlan,
 }: {
   username: string
   owner: string | null
   metric: React.ReactNode
   onClick: () => void
+  // Only passed for the expired/exhausted/near-expiry/near-quota buckets —
+  // the ones where "has this already been covered" is exactly the question
+  // being asked. Omitted (undefined) elsewhere so it stays silent where it
+  // doesn't apply (unassigned accounts, no rate configured).
+  hasNextPlan?: boolean
 }) {
   return (
     <button
@@ -363,7 +379,20 @@ function AccountQueueRow({
         <span className="truncate font-mono text-xs font-medium">{username}</span>
         {owner && <span className="truncate text-[11px] text-muted-foreground">{owner}</span>}
       </span>
-      <span className="shrink-0 text-xs tabular-nums">{metric}</span>
+      <span className="flex shrink-0 items-center gap-2">
+        {hasNextPlan !== undefined && (
+          hasNextPlan ? (
+            <span className="inline-flex items-center rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              Next ▸
+            </span>
+          ) : (
+            <span className="inline-flex items-center rounded bg-warning/10 px-1.5 py-0.5 text-[10px] font-medium text-warning">
+              No next plan
+            </span>
+          )
+        )}
+        <span className="text-xs tabular-nums">{metric}</span>
+      </span>
     </button>
   )
 }

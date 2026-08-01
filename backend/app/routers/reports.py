@@ -7,7 +7,7 @@ from sqlmodel import Session, select
 
 from app.auth import require_auth
 from app.db import get_session
-from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerType, OnlineSnapshot, utcnow
+from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerType, OnlineSnapshot, QueuedPlan, QueuedPlanStatus, utcnow
 from app.services import MoneyBook, effective_billing_mode, effective_rate, rate_is_configured
 
 router = APIRouter(prefix="/api/reports", tags=["reports"], dependencies=[Depends(require_auth)])
@@ -38,6 +38,21 @@ def summary(
     accounts = session.exec(select(Account)).all()
     groups = {g.id: g for g in session.exec(select(Group)).all()}
     now_ts = int(time.time())
+
+    # For the "already expired / out of quota / about to be either" buckets
+    # specifically: whether a next plan is already queued, so the operator
+    # can tell what still needs a decision from what's already covered
+    # without opening each account individually.
+    account_ids = {a.id for a in accounts if a.id is not None}
+    accounts_with_next_plan: set[int] = set()
+    if account_ids:
+        pending_plan_ids = session.exec(
+            select(QueuedPlan.account_id).where(
+                QueuedPlan.account_id.in_(account_ids),
+                QueuedPlan.status == QueuedPlanStatus.pending,
+            )
+        ).all()
+        accounts_with_next_plan = set(pending_plan_ids)
 
     # Owner shown next to each flagged account: its customer, or its group —
     # an attention list of bare usernames forces the operator to look each one
@@ -70,22 +85,22 @@ def summary(
             used_pct = round(a.used_traffic / a.data_limit * 100, 1)
             if used_pct >= 100:
                 exhausted_accounts.append(
-                    {"account_id": a.id, "marzban_username": a.marzban_username, "used_pct": used_pct, "owner_name": owner_of(a)}
+                    {"account_id": a.id, "marzban_username": a.marzban_username, "used_pct": used_pct, "owner_name": owner_of(a), "has_next_plan": a.id in accounts_with_next_plan}
                 )
             elif used_pct >= quota_pct_threshold:
                 near_quota_accounts.append(
-                    {"account_id": a.id, "marzban_username": a.marzban_username, "used_pct": used_pct, "owner_name": owner_of(a)}
+                    {"account_id": a.id, "marzban_username": a.marzban_username, "used_pct": used_pct, "owner_name": owner_of(a), "has_next_plan": a.id in accounts_with_next_plan}
                 )
 
         if a.expire:
             days_left = round((a.expire - now_ts) / 86400, 1)
             if days_left < 0:
                 expired_accounts.append(
-                    {"account_id": a.id, "marzban_username": a.marzban_username, "days_left": days_left, "owner_name": owner_of(a)}
+                    {"account_id": a.id, "marzban_username": a.marzban_username, "days_left": days_left, "owner_name": owner_of(a), "has_next_plan": a.id in accounts_with_next_plan}
                 )
             elif days_left <= expiry_days_threshold:
                 near_expiry_accounts.append(
-                    {"account_id": a.id, "marzban_username": a.marzban_username, "days_left": days_left, "owner_name": owner_of(a)}
+                    {"account_id": a.id, "marzban_username": a.marzban_username, "days_left": days_left, "owner_name": owner_of(a), "has_next_plan": a.id in accounts_with_next_plan}
                 )
 
         # The sync job deliberately inserts Marzban users it discovers as

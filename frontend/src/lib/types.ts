@@ -161,10 +161,13 @@ export interface GroupInvoice {
 
 export interface ReportSummary {
   overdue_customers: { customer_id: number; name: string; balance: number }[]
-  exhausted_accounts: { account_id: number; marzban_username: string; used_pct: number; owner_name: string | null }[]
-  near_quota_accounts: { account_id: number; marzban_username: string; used_pct: number; owner_name: string | null }[]
-  expired_accounts: { account_id: number; marzban_username: string; days_left: number; owner_name: string | null }[]
-  near_expiry_accounts: { account_id: number; marzban_username: string; days_left: number; owner_name: string | null }[]
+  // has_next_plan: whether a next plan is already queued for this account —
+  // shown alongside these four buckets specifically so the operator can tell
+  // what still needs a decision from what's already covered.
+  exhausted_accounts: { account_id: number; marzban_username: string; used_pct: number; owner_name: string | null; has_next_plan: boolean }[]
+  near_quota_accounts: { account_id: number; marzban_username: string; used_pct: number; owner_name: string | null; has_next_plan: boolean }[]
+  expired_accounts: { account_id: number; marzban_username: string; days_left: number; owner_name: string | null; has_next_plan: boolean }[]
+  near_expiry_accounts: { account_id: number; marzban_username: string; days_left: number; owner_name: string | null; has_next_plan: boolean }[]
   no_rate_accounts: { account_id: number; marzban_username: string; owner_name: string | null }[]
   unassigned_accounts: { account_id: number; marzban_username: string }[]
   pending_settlement: {
