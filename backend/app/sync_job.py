@@ -117,6 +117,11 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
     account.expire = new_expire
     account.used_traffic = 0
     account.status = "active"
+    # None means keep whatever billing_mode the account has right now — not
+    # whatever it was when the plan was queued, since an operator could have
+    # changed it via BillingSection in the meantime.
+    if plan.billing_mode is not None:
+        account.billing_mode = plan.billing_mode
     account.usage_baseline = 0
     account.usage_baseline_at = now
     account.billed_data_limit = 0
@@ -127,10 +132,12 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
     plan.activated_at = now
     session.add(plan)
 
+    mode_note = f" | switched to {plan.billing_mode.value}" if plan.billing_mode else ""
     session.add(AccountEvent(
         account_id=account.id,
         action="next_plan_activated",
-        detail=f"Auto-activated: {plan.data_limit_gb} GB / {plan.duration_days} days (old plan billed {old_amount})",
+        detail=f"Auto-activated: {plan.data_limit_gb} GB / {plan.duration_days} days"
+        f" (old plan billed {old_amount}){mode_note}",
         date=now,
         source=LedgerSource.sync,
     ))

@@ -545,6 +545,7 @@ def set_next_plan(account_id: int, body: NextPlanRequest, session: Session = Dep
         account_id=account_id,
         data_limit_gb=body.data_limit_gb,
         duration_days=body.duration_days,
+        billing_mode=body.billing_mode,
     )
     try:
         session.add(plan)
@@ -552,7 +553,8 @@ def set_next_plan(account_id: int, body: NextPlanRequest, session: Session = Dep
             AccountEvent(
                 account_id=account_id,
                 action="next_plan_queued",
-                detail=f"{body.data_limit_gb} GB / {body.duration_days} days",
+                detail=f"{body.data_limit_gb} GB / {body.duration_days} days"
+                + (f" | switches to {body.billing_mode.value}" if body.billing_mode else ""),
             )
         )
         session.commit()

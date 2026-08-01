@@ -264,6 +264,8 @@ class NextPlanRequest(BaseModel):
 
     data_limit_gb: float = Field(gt=0, description="Package size in GB")
     duration_days: int = Field(gt=0, le=365, description="Duration in days from activation")
+    # None = keep whatever billing_mode the account has at activation time.
+    billing_mode: Optional[BillingMode] = None
 
 
 class NextPlanRead(BaseModel):
@@ -273,6 +275,7 @@ class NextPlanRead(BaseModel):
     account_id: int
     data_limit_gb: float
     duration_days: int
+    billing_mode: Optional[BillingMode]
     status: str
     created_at: datetime
     activated_at: Optional[datetime]

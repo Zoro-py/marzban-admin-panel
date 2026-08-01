@@ -11,6 +11,7 @@ HELP_TEXT = """*VPN reseller bot*
 /credit <customer> <amount> [note] — record a credit/payment (طلب)
 /extend <username> <days> [gb] — extend or reduce time (and optionally data) on a Marzban account
 /sync — pull the latest usage/status from Marzban now
+/backup — back up the database now and send it to this chat (also runs automatically every night)
 """
 
 

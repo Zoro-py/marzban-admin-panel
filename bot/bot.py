@@ -16,6 +16,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 from telegram.ext import Application, CommandHandler  # noqa: E402
 
 from handlers.account import extend_command  # noqa: E402
+from handlers.backup import backup_command  # noqa: E402
 from handlers.customer import charge_command, credit_command, customer_command  # noqa: E402
 from handlers.report import report_command  # noqa: E402
 from handlers.start import help_command, start_command  # noqa: E402
@@ -36,6 +37,7 @@ def main() -> None:
     app.add_handler(CommandHandler("credit", credit_command))
     app.add_handler(CommandHandler("extend", extend_command))
     app.add_handler(CommandHandler("sync", sync_command))
+    app.add_handler(CommandHandler("backup", backup_command))
 
     app.run_polling()
 

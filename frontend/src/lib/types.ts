@@ -108,6 +108,8 @@ export interface NextPlan {
   account_id: number
   data_limit_gb: number
   duration_days: number
+  // null = keeps whatever billing_mode the account has at activation time.
+  billing_mode: BillingMode | null
   status: 'pending' | 'activated' | 'cancelled'
   created_at: string
   activated_at: string | null

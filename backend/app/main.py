@@ -9,9 +9,10 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 
+from app.backup_job import run_backup
 from app.config import settings
 from app.db import init_db
-from app.routers import accounts, auth, customers, groups, ledger, reports, settings as settings_router, sync
+from app.routers import accounts, auth, backup, customers, groups, ledger, reports, settings as settings_router, sync
 from app.sync_job import run_sync
 
 logging.basicConfig(
@@ -23,12 +24,27 @@ logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 
 
+async def _scheduled_backup() -> None:
+    # APScheduler already catches and logs a job's exception on its own, but
+    # routes it through its own logger — this makes a failed backup show up
+    # in this app's own log output too, at a level (ERROR) that's obvious in
+    # `docker compose logs`, not something that requires knowing to also
+    # check apscheduler's separate logger.
+    try:
+        await run_backup()
+    except Exception:
+        logger.exception("Scheduled backup failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     init_db()
     logger.info("Starting sync scheduler...")
     scheduler.add_job(run_sync, "interval", minutes=settings.sync_interval_minutes, id="marzban_sync")
+    scheduler.add_job(
+        _scheduled_backup, "cron", hour=settings.backup_hour, minute=settings.backup_minute, id="db_backup"
+    )
     scheduler.start()
     yield
     logger.info("Shutting down sync scheduler...")
@@ -71,6 +87,7 @@ app.include_router(accounts.router)
 app.include_router(ledger.router)
 app.include_router(reports.router)
 app.include_router(sync.router)
+app.include_router(backup.router)
 app.include_router(settings_router.router)
 
 

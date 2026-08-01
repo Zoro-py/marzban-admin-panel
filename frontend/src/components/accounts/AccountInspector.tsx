@@ -746,6 +746,13 @@ function OwnershipSection({ account }: { account: AccountRow }) {
   )
 }
 
+const KEEP_CURRENT_BILLING_MODE = '__keep__'
+
+const BILLING_MODE_LABEL: Record<BillingMode, string> = {
+  prepay: 'Prepay',
+  payg: 'Pay-as-you-go',
+}
+
 function NextPlanSection({ account }: { account: AccountRow }) {
   const invalidate = useInvalidateAccount(account.id)
   const queryClient = useQueryClient()
@@ -756,7 +763,7 @@ function NextPlanSection({ account }: { account: AccountRow }) {
   })
 
   const setMutation = useMutation({
-    mutationFn: (body: { data_limit_gb: number; duration_days: number }) =>
+    mutationFn: (body: { data_limit_gb: number; duration_days: number; billing_mode?: BillingMode | null }) =>
       accountsApi.setNextPlan(account.id, body),
     onSuccess: () => {
       toast.success('Next plan queued')
@@ -778,6 +785,7 @@ function NextPlanSection({ account }: { account: AccountRow }) {
 
   const [gb, setGb] = React.useState('')
   const [days, setDays] = React.useState('')
+  const [billingMode, setBillingMode] = React.useState<string>(KEEP_CURRENT_BILLING_MODE)
 
   const plan = planQuery.data
 
@@ -799,6 +807,7 @@ function NextPlanSection({ account }: { account: AccountRow }) {
               {account.status === 'limited' || account.status === 'expired'
                 ? 'Will activate on next sync cycle.'
                 : 'Activates when current plan ends (limited or expired).'}
+              {plan.billing_mode && ` Also switches billing to ${BILLING_MODE_LABEL[plan.billing_mode]}.`}
             </p>
           </div>
           <Button
@@ -840,11 +849,30 @@ function NextPlanSection({ account }: { account: AccountRow }) {
               />
             </div>
           </div>
+          <div>
+            <Label className="text-xs">Billing mode for this plan</Label>
+            <Select value={billingMode} onValueChange={setBillingMode}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={KEEP_CURRENT_BILLING_MODE}>
+                  Keep current ({BILLING_MODE_LABEL[account.billing_mode]})
+                </SelectItem>
+                <SelectItem value="prepay">Prepay — charged manually when a package is sold</SelectItem>
+                <SelectItem value="payg">Pay-as-you-go — bills actual usage</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <Button
             size="sm"
             disabled={!gb || !days || Number(gb) <= 0 || Number(days) <= 0 || setMutation.isPending}
             onClick={() =>
-              setMutation.mutate({ data_limit_gb: Number(gb), duration_days: Number(days) })
+              setMutation.mutate({
+                data_limit_gb: Number(gb),
+                duration_days: Number(days),
+                billing_mode: billingMode === KEEP_CURRENT_BILLING_MODE ? null : (billingMode as BillingMode),
+              })
             }
           >
             Queue next plan

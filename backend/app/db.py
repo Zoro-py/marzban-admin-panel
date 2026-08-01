@@ -249,6 +249,17 @@ def _run_lightweight_migrations() -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_accountevent_date ON accountevent (date)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_onlinesnapshot_recorded_at ON onlinesnapshot (recorded_at)"))
 
+        # queuedplan itself is a genuinely new table (created by create_all on
+        # any DB that doesn't have it yet), but billing_mode was added to the
+        # model AFTER that table first shipped — same "existing table, new
+        # column" gap as everything else in this function. `existing_queued_plan`
+        # comes back empty (not an error) on a DB where the table doesn't
+        # exist yet either, so this is a no-op there too: create_all will make
+        # the table with the column already in it.
+        existing_queued_plan = {row[1] for row in conn.execute(text("PRAGMA table_info(queuedplan)"))}
+        if existing_queued_plan and "billing_mode" not in existing_queued_plan:
+            conn.execute(text("ALTER TABLE queuedplan ADD COLUMN billing_mode VARCHAR"))
+
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)

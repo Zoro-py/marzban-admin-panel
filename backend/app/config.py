@@ -33,6 +33,13 @@ class Settings(BaseSettings):
 
     sync_interval_minutes: int = 60
 
+    # Nightly off-server backup (see backup_job.py): hour/minute (server's own
+    # local time, 24h) it runs at. No enabled/disabled flag on purpose — it's
+    # simply skipped, with a clear log line, whenever bot_token/bot_admin_chat_id
+    # aren't set, rather than needing a second switch kept in sync with them.
+    backup_hour: int = 3
+    backup_minute: int = 30
+
     # Applied to a new Marzban user when the caller doesn't specify proxies/inbounds.
     # Adjust these to match this panel's real inbound tags before creating users from
     # the dashboard — Marzban applies a protocol to every inbound that supports it when

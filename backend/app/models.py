@@ -198,6 +198,11 @@ class QueuedPlan(SQLModel, table=True):
 
     data_limit_gb: float          # e.g. 30.0 = 30 GB
     duration_days: int            # e.g. 30 = 30 days from activation moment
+    # None = leave the account's billing_mode exactly as it is at activation
+    # time (not as it was when this was queued — an operator could still
+    # change it via BillingSection in between). Set = switch it as part of
+    # activation, e.g. a prepay account moving to payg for its next cycle.
+    billing_mode: Optional[BillingMode] = None
 
     created_at: datetime = Field(default_factory=utcnow)
     activated_at: Optional[datetime] = None
