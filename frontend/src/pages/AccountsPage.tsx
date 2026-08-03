@@ -372,11 +372,13 @@ function AccountTableRow({
               </span>
             </TooltipContent>
           </Tooltip>
-          {/* Only standalone accounts settle individually — a grouped
-              account's pending is settled via its group's own button. */}
-          {a.pending_amount > 0 && a.group_id === null && (
+          {/* A grouped account settles just its own line (group_id routes
+              SettleAccountButton to the per-member endpoint) — the group's
+              cycle stays open for the rest of its members either way. */}
+          {a.pending_amount > 0 && (
             <SettleAccountButton
               accountId={a.id}
+              groupId={a.group_id ?? undefined}
               username={a.marzban_username}
               amount={a.pending_amount}
               currentBalance={a.payer_balance}

@@ -119,6 +119,10 @@ export const groupsApi = {
   accounts: async (id: number) => (await api.get<AccountRow[]>(`/api/groups/${id}/accounts`)).data,
   invoice: async (id: number) => (await api.get<GroupInvoice>(`/api/groups/${id}/invoice`)).data,
   settle: async (id: number, body?: { mark_paid?: boolean }) => (await api.post(`/api/groups/${id}/settle`, body ?? {})).data,
+  // Settle exactly one member without closing the whole group's cycle — for
+  // "this one person paid, the rest of the group isn't ready yet."
+  settleMember: async (groupId: number, accountId: number, body?: { mark_paid?: boolean }) =>
+    (await api.post(`/api/groups/${groupId}/members/${accountId}/settle`, body ?? {})).data,
   resetCycle: async (id: number) => (await api.post(`/api/groups/${id}/reset-cycle`)).data,
 }
 

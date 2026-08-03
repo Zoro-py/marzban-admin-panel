@@ -192,10 +192,25 @@ export function GroupDetailPage() {
           }
           tone={group.net_owed > 0 ? 'destructive' : group.net_owed < 0 ? 'credit' : 'success'}
         />
+        {/* Not a separate debt — it's the size of the charge Settle would post
+            RIGHT NOW, and it's already folded into "Owes now" above (see
+            MoneyBook: net = posted + pending). Coloring this warning whenever
+            it's simply non-zero made a group that's actually well in credit
+            (existing prepayment already covers this cycle's package/usage)
+            show an alarming yellow number with no explanation — tone follows
+            the real net position instead, and the hint always says what this
+            figure actually is so it's never just an unexplained number. */}
         <StatCard
           label="Not invoiced yet"
           value={formatToman(group.pending_amount)}
-          tone={group.pending_amount > 0 ? 'warning' : 'default'}
+          tone={group.net_owed > 0 ? 'warning' : 'default'}
+          hint={
+            group.pending_amount > 0
+              ? group.net_owed > 0
+                ? 'This cycle’s package/usage — already counted in "Owes now," not on top of it.'
+                : 'Already covered by existing credit — see "Owes now."'
+              : undefined
+          }
         />
         <StatCard label="Members" value={group.account_count} />
       </div>

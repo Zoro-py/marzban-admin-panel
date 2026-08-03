@@ -6,6 +6,7 @@ import {
   ArrowDownCircle,
   ArrowUpCircle,
   CalendarClock,
+  CheckCircle2,
   ChevronDown,
   History,
   Layers,
@@ -189,31 +190,56 @@ function InspectorBody({ account, onClose }: { account: AccountRow; onClose: () 
               only way in meant recording a payment required reverse-engineering
               a GB figure that multiplied out to the amount received. */}
           {canBill && (
-            <div className="flex gap-2">
-              <LedgerActionDialog
-                accountId={account.id}
-                customerId={account.customer_id ?? undefined}
-                groupId={account.group_id ?? undefined}
-                defaultType="credit"
-                currentBalance={account.net_owed}
-                trigger={
-                  <Button size="sm" variant="outline" className="flex-1">
-                    Record payment
-                  </Button>
-                }
-              />
-              <LedgerActionDialog
-                accountId={account.id}
-                customerId={account.customer_id ?? undefined}
-                groupId={account.group_id ?? undefined}
-                defaultType="charge"
-                currentBalance={account.net_owed}
-                trigger={
-                  <Button size="sm" variant="ghost">
-                    Add debt
-                  </Button>
-                }
-              />
+            <div className="flex flex-col gap-2">
+              {/* Primary action when there's a real number to act on: turns the
+                  not-yet-invoiced amount into a real charge, in one click, no
+                  typing — works the same whether this account is standalone or
+                  a group member (SettleAccountButton routes to the per-member
+                  endpoint when group_id is set, which settles ONLY this
+                  account and leaves the rest of the group untouched). This is
+                  the same action as the Accounts table's inline "Settle" —
+                  surfaced here too so it's reachable without leaving this
+                  panel. */}
+              {account.pending_amount > 0 && (
+                <SettleAccountButton
+                  accountId={account.id}
+                  groupId={account.group_id ?? undefined}
+                  username={account.marzban_username}
+                  amount={account.pending_amount}
+                  currentBalance={account.payer_balance}
+                  trigger={
+                    <Button size="sm" className="w-full gap-1.5">
+                      <CheckCircle2 className="h-4 w-4" /> Settle — {formatToman(account.pending_amount)}
+                    </Button>
+                  }
+                />
+              )}
+              <div className="flex gap-2">
+                <LedgerActionDialog
+                  accountId={account.id}
+                  customerId={account.customer_id ?? undefined}
+                  groupId={account.group_id ?? undefined}
+                  defaultType="credit"
+                  currentBalance={account.net_owed}
+                  trigger={
+                    <Button size="sm" variant="outline" className="flex-1">
+                      Record payment
+                    </Button>
+                  }
+                />
+                <LedgerActionDialog
+                  accountId={account.id}
+                  customerId={account.customer_id ?? undefined}
+                  groupId={account.group_id ?? undefined}
+                  defaultType="charge"
+                  currentBalance={account.net_owed}
+                  trigger={
+                    <Button size="sm" variant="ghost">
+                      Add debt
+                    </Button>
+                  }
+                />
+              </div>
             </div>
           )}
         </div>
@@ -458,7 +484,10 @@ function ResetSection({ account, canBill }: { account: AccountRow; canBill: bool
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
-  const canSettleStandalone = account.group_id === null && canBill
+  // SettleAccountButton itself routes to the per-member endpoint when
+  // group_id is set, so this no longer needs to exclude grouped accounts —
+  // it only needs *something* to bill against.
+  const canSettle = canBill
 
   return (
     <Section icon={RotateCcw} title="Reset usage cycle">
@@ -493,9 +522,10 @@ function ResetSection({ account, canBill }: { account: AccountRow; canBill: bool
         <Button size="sm" variant="outline" className="flex-1" onClick={() => resetMutation.mutate()} disabled={resetMutation.isPending}>
           {resetMutation.isPending ? 'Resetting…' : chargeAmount ? `Reset & charge ${formatToman(Number(chargeAmount))}` : 'Reset only'}
         </Button>
-        {canSettleStandalone && invoiceQuery.data && invoiceQuery.data.amount > 0 && (
+        {canSettle && invoiceQuery.data && invoiceQuery.data.amount > 0 && (
           <SettleAccountButton
             accountId={account.id}
+            groupId={account.group_id ?? undefined}
             username={account.marzban_username}
             amount={invoiceQuery.data.amount}
             currentBalance={account.payer_balance}

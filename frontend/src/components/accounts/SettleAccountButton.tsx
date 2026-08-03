@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { accountsApi, apiErrorMessage } from '@/lib/api'
+import { accountsApi, groupsApi, apiErrorMessage } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -30,6 +30,7 @@ import { CheckCircle2 } from 'lucide-react'
  * color/state before confirming, so there's no surprise either way. */
 export function SettleAccountButton({
   accountId,
+  groupId,
   username,
   amount,
   currentBalance,
@@ -37,6 +38,12 @@ export function SettleAccountButton({
   disabled,
 }: {
   accountId: number
+  /** When this account belongs to a group, pass its group_id — routes to
+   * settling just this one member (POST /groups/{id}/members/{id}/settle)
+   * instead of the standalone endpoint, which rejects a grouped account.
+   * Charges only this member's own line and never touches the group's
+   * last_settled_at or any sibling — the group's cycle stays open. */
+  groupId?: number
   username: string
   amount: number
   currentBalance: number
@@ -50,13 +57,18 @@ export function SettleAccountButton({
   const queryClient = useQueryClient()
 
   const mutation = useMutation({
-    mutationFn: () => accountsApi.settle(accountId, { mark_paid: markPaid }),
+    mutationFn: () =>
+      groupId
+        ? groupsApi.settleMember(groupId, accountId, { mark_paid: markPaid })
+        : accountsApi.settle(accountId, { mark_paid: markPaid }),
     onSuccess: () => {
       toast.success(
         markPaid ? `Settled ${username} — paid in full` : `Settled ${username} — charged ${formatToman(amount)}, still owed`,
       )
       queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      queryClient.invalidateQueries({ queryKey: ['account'] })
       queryClient.invalidateQueries({ queryKey: ['customers'] })
+      queryClient.invalidateQueries({ queryKey: ['groups'] })
       queryClient.invalidateQueries({ queryKey: ['ledger'] })
       queryClient.invalidateQueries({ queryKey: ['reports'] })
       setOpen(false)

@@ -327,6 +327,96 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
     return {"group_id": group_id, "charged_amount": total_amount, "settled_at": now, "lines": lines}
 
 
+@router.post("/{group_id}/members/{account_id}/settle")
+def settle_group_member(
+    group_id: int,
+    account_id: int,
+    body: GroupSettleRequest = GroupSettleRequest(),
+    session: Session = Depends(get_session),
+):
+    """Same billing math as /settle, scoped to exactly one member — for
+    recording that THIS member paid without waiting for (or forcing) the
+    whole group's cycle to close. A standalone account settles itself via
+    /api/accounts/{id}/settle; a grouped account has no equivalent of its
+    own, which meant a group member who paid individually — before the rest
+    of the group was ready to settle — had no way to be marked paid except a
+    manual "New debt/credit" entry with a hand-typed amount.
+
+    Charges THIS account's own invoice line only, attributed exactly like a
+    full-group settle attributes each of its lines (customer_id = the
+    group's representative, group_id = this group, account_id = this
+    member), so it shows up in the group's own settlement history the same
+    way a full-group settle would. Rolls forward only this account's own
+    baseline (usage_baseline for payg, billed_data_limit for prepay) —
+    every other member, and group.last_settled_at, are untouched. The
+    group's cycle stays open until /settle (or this endpoint, called once
+    per remaining member) closes it for everyone.
+    """
+    group = session.get(Group, group_id)
+    if not group:
+        raise HTTPException(404, "Group not found")
+    account = session.get(Account, account_id)
+    if not account or account.group_id != group_id:
+        raise HTTPException(404, "This account is not a member of this group")
+
+    line = _invoice_lines(session, [account], group)[0]
+
+    now = utcnow()
+    cycle_note = (
+        f"Package settlement for cycle ending {now.date().isoformat()}"
+        if group.billing_mode == BillingMode.prepay
+        else f"Usage settlement for cycle ending {now.date().isoformat()}"
+    )
+
+    # Read BEFORE adding the charge below: this issues a SELECT, which
+    # autoflushes pending adds, so reading afterwards would already include
+    # the charge and make the intent of this number ambiguous.
+    prior_balance = 0.0
+    if body.mark_paid:
+        prior_balance = account_posted_balance(session, account.id)
+
+    try:
+        if line.amount > 0:
+            session.add(
+                LedgerEntry(
+                    type=LedgerType.charge,
+                    amount=line.amount,
+                    customer_id=group.representative_customer_id,
+                    group_id=group.id,
+                    account_id=account.id,
+                    note=cycle_note,
+                    source=LedgerSource.web,
+                )
+            )
+        if body.mark_paid:
+            credit_amount = round(max(0.0, prior_balance + line.amount), 2)
+            if credit_amount > 0:
+                session.add(
+                    LedgerEntry(
+                        type=LedgerType.credit,
+                        amount=credit_amount,
+                        customer_id=group.representative_customer_id,
+                        group_id=group.id,
+                        account_id=account.id,
+                        note=f"Payment received at settlement ({now.date().isoformat()})",
+                        source=LedgerSource.web,
+                    )
+                )
+
+        if group.billing_mode == BillingMode.payg:
+            account.usage_baseline = account.used_traffic
+            account.usage_baseline_at = now
+        else:
+            account.billed_data_limit = account.data_limit or 0
+        session.add(account)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+    return {"group_id": group_id, "account_id": account_id, "charged_amount": line.amount, "settled_at": now}
+
+
 @router.post("/{group_id}/reset-cycle")
 async def reset_group_cycle(group_id: int, session: Session = Depends(get_session)):
     """Same as /settle EXCEPT it never posts a ledger charge — rolls every
