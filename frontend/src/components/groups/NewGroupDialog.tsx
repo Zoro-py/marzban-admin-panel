@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { SearchableSelect } from '@/components/ui/searchable-select'
+import { cn } from '@/lib/utils'
 import { Building2 } from 'lucide-react'
 
 export function NewGroupDialog() {
@@ -98,16 +99,22 @@ export function NewGroupDialog() {
             </Select>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          {/* Billing cycle only drives anything for payg (when a group counts
+              as "due" for settlement) — prepay is billed manually whenever a
+              package is sold, so showing this field for it would be asking
+              for a number that has no effect on anything. */}
+          <div className={cn('grid gap-3', billingMode === 'payg' ? 'grid-cols-2' : 'grid-cols-1')}>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="rate">Rate (Toman/GB)</Label>
               <Input id="rate" type="number" value={rate || ''} onChange={(e) => setRate(e.target.value)} placeholder="20000" />
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="cycle">Billing cycle (days)</Label>
-              <Input id="cycle" type="number" value={cycleDays || ''} onChange={(e) => setCycleDays(e.target.value)} />
-              <p className="text-xs text-muted-foreground">When this many days pass since the last settle, the group shows up as due on the Dashboard.</p>
-            </div>
+            {billingMode === 'payg' && (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="cycle">Billing cycle (days)</Label>
+                <Input id="cycle" type="number" value={cycleDays || ''} onChange={(e) => setCycleDays(e.target.value)} />
+                <p className="text-xs text-muted-foreground">When this many days pass since the last settle, the group shows up as due on the Dashboard.</p>
+              </div>
+            )}
           </div>
         </div>
         <DialogFooter>

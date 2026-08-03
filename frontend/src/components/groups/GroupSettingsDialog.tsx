@@ -16,6 +16,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { cn } from '@/lib/utils'
 import { Settings } from 'lucide-react'
 
 interface GroupSettingsDialogProps {
@@ -94,7 +95,10 @@ export function GroupSettingsDialog({ group, trigger }: GroupSettingsDialogProps
             </Select>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          {/* Billing cycle only drives anything for payg (when a group counts
+              as "due" for settlement) — prepay is billed manually whenever a
+              package is sold, so this field has no effect on it. */}
+          <div className={cn('grid gap-3', billingMode === 'payg' ? 'grid-cols-2' : 'grid-cols-1')}>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="group-settings-rate">Rate (Toman/GB)</Label>
               <Input
@@ -105,10 +109,12 @@ export function GroupSettingsDialog({ group, trigger }: GroupSettingsDialogProps
                 placeholder="e.g. 20000"
               />
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="group-settings-cycle">Billing cycle (days)</Label>
-              <Input id="group-settings-cycle" type="number" value={cycleDays || ''} onChange={(e) => setCycleDays(e.target.value)} />
-            </div>
+            {billingMode === 'payg' && (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="group-settings-cycle">Billing cycle (days)</Label>
+                <Input id="group-settings-cycle" type="number" value={cycleDays || ''} onChange={(e) => setCycleDays(e.target.value)} />
+              </div>
+            )}
           </div>
         </div>
 

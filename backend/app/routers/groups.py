@@ -80,7 +80,12 @@ def _with_balance(session: Session, g: Group, book: Optional[MoneyBook] = None) 
         current_cycle_used_bytes=sum(round(line.billable_gb * 1024**3) for line in lines),
         pending_amount=book.group_pending(g),
         next_due_at=next_due_at,
-        is_due=next_due_at <= now,
+        # payg only: prepay is billed manually whenever a package is sold, not
+        # on a recurring elapsed-time schedule, so billing_cycle_days has no
+        # real meaning for it — same gate reports.py's own is_due already
+        # uses, kept in sync here so this field can't read "due" for a
+        # billing mode that doesn't have a due date at all.
+        is_due=g.billing_mode == BillingMode.payg and next_due_at <= now,
     )
 
 

@@ -445,8 +445,10 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
     given (including 0, to deliberately skip charging e.g. a comp reset), that
     exact value is posted. Otherwise, for a payg account, the accrued usage is
     computed and charged automatically — resetting always rolls the billing
-    baseline forward regardless, so leaving this to silently charge nothing
-    would permanently lose that cycle's billing data.
+    baseline forward regardless (usage_baseline for payg, billed_data_limit
+    for prepay), so leaving this to silently charge nothing would permanently
+    lose that cycle's billing data, and a package charged here can't be
+    re-billed by a later settle.
 
     "payg" here means effective_billing_mode, not the raw field: a member of a
     payg group whose own billing_mode was never explicitly touched (it
@@ -457,8 +459,9 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
     if not account:
         raise HTTPException(404, "Account not found")
 
+    mode = effective_billing_mode(session, account)
     charge_amount = body.charge_amount
-    if charge_amount is None and effective_billing_mode(session, account) == BillingMode.payg:
+    if charge_amount is None and mode == BillingMode.payg:
         billable = max(0, account.used_traffic - account.usage_baseline)
         billable_gb = billable / (1024**3)
         charge_amount = round(billable_gb * effective_rate(session, account), 2)
@@ -493,10 +496,19 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
         account.expire = marzban_user.get("expire", account.expire)
         account.data_limit = marzban_user.get("data_limit", account.data_limit)
         account.status = marzban_user.get("status", account.status)
-        # Reset always rolls the billing baseline forward too, regardless of billing_mode
-        # or whether a charge was posted — keeps it consistent if billing_mode changes later.
-        account.usage_baseline = account.used_traffic
-        account.usage_baseline_at = now
+        # Reset always rolls the RIGHT baseline forward too, regardless of
+        # whether a charge was posted — otherwise a prepay account's pending
+        # amount (data_limit - billed_data_limit) stays exactly what it was
+        # before the reset even after this posted a real charge for it, and
+        # the next settle bills the same package a second time. usage_baseline
+        # is what payg reads; billed_data_limit is what prepay reads — rolling
+        # only the former (as this used to, unconditionally) was a no-op for
+        # prepay's own billing math.
+        if mode == BillingMode.payg:
+            account.usage_baseline = account.used_traffic
+            account.usage_baseline_at = now
+        else:
+            account.billed_data_limit = account.data_limit or 0
         account.last_synced_at = now
         session.add(account)
 

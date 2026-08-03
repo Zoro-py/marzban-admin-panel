@@ -172,16 +172,25 @@ export function GroupDetailPage() {
             )}
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {group.rate_per_gb ? `${formatToman(group.rate_per_gb)}/GB` : 'No group rate'} · every{' '}
-            {group.billing_cycle_days} days · last settled {formatDate(group.last_settled_at)} · next due{' '}
-            {formatDate(group.next_due_at)}
+            {group.rate_per_gb ? `${formatToman(group.rate_per_gb)}/GB` : 'No group rate'}
+            {/* "every N days / next due" only means something for payg — prepay
+                is billed manually whenever a package is sold, not on a
+                recurring elapsed-time schedule, so a due date here would be
+                naming a deadline that doesn't exist. */}
+            {group.billing_mode === 'payg' && (
+              <> · every {group.billing_cycle_days} days · next due {formatDate(group.next_due_at)}</>
+            )}
+            {' '}· last settled {formatDate(group.last_settled_at)}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <GroupSettingsDialog group={group} />
           <LedgerActionDialog groupId={groupId} currentBalance={group.net_owed} />
           <NewAccountDialog defaultGroupId={groupId} />
-          {group.billing_mode === 'payg' && <ResetGroupCycleDialog groupId={groupId} />}
+          {/* Reset cycle works the same way for either billing mode (it
+              branches internally — usage_baseline for payg, billed_data_limit
+              for prepay), so there's no reason to hide it for prepay groups. */}
+          <ResetGroupCycleDialog groupId={groupId} />
           <SettleGroupDialog groupId={groupId} currentBalance={group.balance} />
         </div>
       </div>
