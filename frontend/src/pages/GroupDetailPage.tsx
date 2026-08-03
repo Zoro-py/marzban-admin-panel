@@ -56,6 +56,19 @@ export function GroupDetailPage() {
 
   const group = groupQuery.data
 
+  // What "Owes now" carries that no member row below can show: money ever
+  // recorded straight against the group itself (the header's "New debt/
+  // credit" button, with no specific member picked), plus any group-level
+  // debt/credit a settle's mark_paid didn't have an individual member
+  // balance to net against. Every member's own net_owed already nets its
+  // own posted charges/payments against its own pending usage, so summing
+  // them and subtracting from the group's total isolates exactly the part
+  // that was never any one member's to begin with — see MoneyBook's roll-up
+  // definition (group = Σ members + group-only entries).
+  const unattributedBalance = accountsQuery.data
+    ? Math.round((group.net_owed - accountsQuery.data.reduce((sum, a) => sum + a.net_owed, 0)) * 100) / 100
+    : 0
+
   /** The message the operator actually sends the group's lead to collect
    * money: who owes what right now, and the total. Written in Persian with
    * Persian numerals because it is pasted straight into a chat with the
@@ -178,11 +191,15 @@ export function GroupDetailPage() {
           label="Usage this cycle"
           value={`${(group.current_cycle_used_bytes / 1024 ** 3).toFixed(2)} GB`}
         />
-        {/* ONE money figure, and it is exactly the sum of the Owes now column
-            below (guaranteed server-side — see MoneyBook). Showing "pending"
-            and "settled balance" as two separate cards is what let this page
-            claim the group was 270,000 in credit while every member row under
-            it still owed money. */}
+        {/* ONE money figure — but NOT always exactly the sum of the member
+            rows below: see unattributedBalance above the table. Showing
+            "pending" and "settled balance" as two separate cards is what
+            first let this page claim the group was 270,000 in credit while
+            every member row under it still owed money; this hint is what
+            stops the newer, subtler version of the same confusion — every
+            member row reading "settled" while this card still shows a
+            balance, because that balance was never any member's to begin
+            with. */}
         <StatCard
           label="Owes now"
           value={
@@ -191,6 +208,11 @@ export function GroupDetailPage() {
               : `${formatToman(Math.abs(group.net_owed))}${group.net_owed < 0 ? ' cr' : ''}`
           }
           tone={group.net_owed > 0 ? 'destructive' : group.net_owed < 0 ? 'credit' : 'success'}
+          hint={
+            Math.abs(unattributedBalance) >= 1
+              ? `Includes ${formatToman(Math.abs(unattributedBalance))} ${unattributedBalance > 0 ? 'owed' : 'credit'} recorded directly against the group (not any specific member) — won't show against any row below.`
+              : undefined
+          }
         />
         {/* Not a separate debt — it's the size of the charge Settle would post
             RIGHT NOW, and it's already folded into "Owes now" above (see
