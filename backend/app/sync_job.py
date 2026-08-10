@@ -22,7 +22,7 @@ NEAR_QUOTA_AUTO_QUEUE_REMAINING_GB = 1.0
 # The customer-facing message this queues talks about "last month's average"
 # — not tied to any group's billing_cycle_days (prepay doesn't use that
 # field at all; see groups.py's is_due gating).
-AUTO_NEXT_PLAN_DURATION_DAYS = 30
+AUTO_NEXT_PLAN_DURATION_DAYS = 31
 
 
 def _round_down_to_multiple_of_5(gb: float, minimum: float = 5.0) -> float:

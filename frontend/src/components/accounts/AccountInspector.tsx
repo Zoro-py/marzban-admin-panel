@@ -299,7 +299,28 @@ function useInvalidateAccount(accountId: number) {
   }, [queryClient, accountId])
 }
 
-const DAY_PRESETS = [7, 30, -7]
+/** A number input with its unit shown INSIDE the field, not just in the
+ * label above it — GB and days entry sit right next to each other in both
+ * Adjust and Next plan, and a label a line above is easy to stop reading
+ * once you've found the right box. The unit stays visible while typing, so
+ * a value landing in the wrong field (50 meant as GB typed into the days
+ * box) reads as "50 days" immediately, before submitting — not after. */
+function UnitInput({
+  unit,
+  className,
+  ...props
+}: React.InputHTMLAttributes<HTMLInputElement> & { unit: string }) {
+  return (
+    <div className="relative">
+      <Input type="number" className={cn('pr-10', className)} {...props} />
+      <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-medium text-muted-foreground">
+        {unit}
+      </span>
+    </div>
+  )
+}
+
+const DAY_PRESETS = [7, 31, -7]
 const GB_PRESETS = [10, 30, 50]
 
 function AdjustSection({ account, canBill }: { account: AccountRow; canBill: boolean }) {
@@ -360,26 +381,13 @@ function AdjustSection({ account, canBill }: { account: AccountRow; canBill: boo
 
   return (
     <Section icon={CalendarClock} title="Adjust time / data" defaultOpen>
+      {/* GB before days, everywhere in this panel (matches Next plan below) —
+          the two sections used to disagree on the order, which is exactly
+          what made a value meant for one field land in the other. */}
       <div className="grid grid-cols-2 gap-3">
         <div className="flex flex-col gap-1.5">
-          <Label htmlFor="insp-days" className="text-xs">Days ±</Label>
-          <Input id="insp-days" type="number" value={extendDays || ''} onChange={(e) => setExtendDays(e.target.value)} placeholder="30" />
-          <div className="flex gap-1">
-            {DAY_PRESETS.map((d) => (
-              <button
-                key={d}
-                type="button"
-                onClick={() => setExtendDays(String(d))}
-                className="rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground hover:bg-accent hover:text-foreground"
-              >
-                {d > 0 ? `+${d}` : d}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="flex flex-col gap-1.5">
           <Label htmlFor="insp-gb" className="text-xs">GB ±</Label>
-          <Input id="insp-gb" type="number" value={extendGb || ''} onChange={(e) => setExtendGb(e.target.value)} placeholder="10" />
+          <UnitInput id="insp-gb" unit="GB" value={extendGb || ''} onChange={(e) => setExtendGb(e.target.value)} placeholder="10" />
           <div className="flex gap-1">
             {GB_PRESETS.map((g) => (
               <button
@@ -389,6 +397,22 @@ function AdjustSection({ account, canBill }: { account: AccountRow; canBill: boo
                 className="rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 +{g}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="insp-days" className="text-xs">Days ±</Label>
+          <UnitInput id="insp-days" unit="days" value={extendDays || ''} onChange={(e) => setExtendDays(e.target.value)} placeholder="31" />
+          <div className="flex gap-1">
+            {DAY_PRESETS.map((d) => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => setExtendDays(String(d))}
+                className="rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                {d > 0 ? `+${d}` : d}
               </button>
             ))}
           </div>
@@ -799,6 +823,8 @@ function NextPlanSection({ account }: { account: AccountRow }) {
       toast.success('Next plan queued')
       queryClient.invalidateQueries({ queryKey: ['account', account.id, 'next-plan'] })
       invalidate()
+      setGb('')
+      setDays('31')
     },
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
@@ -814,7 +840,10 @@ function NextPlanSection({ account }: { account: AccountRow }) {
   })
 
   const [gb, setGb] = React.useState('')
-  const [days, setDays] = React.useState('')
+  // Pre-filled, not just a placeholder — one real default the operator only
+  // has to touch when a plan genuinely isn't a month, instead of a value
+  // that's easy to type into the wrong (GB) field out of habit.
+  const [days, setDays] = React.useState('31')
   const [billingMode, setBillingMode] = React.useState<string>(KEEP_CURRENT_BILLING_MODE)
 
   const plan = planQuery.data
@@ -857,28 +886,37 @@ function NextPlanSection({ account }: { account: AccountRow }) {
           <div className="grid grid-cols-2 gap-2">
             <div>
               <Label className="text-xs">Data (GB)</Label>
-              <Input
-                type="number"
+              <UnitInput
+                unit="GB"
                 min={1}
                 step={1}
-                placeholder="e.g. 30"
+                placeholder="e.g. 50"
                 value={gb}
                 onChange={(e) => setGb(e.target.value)}
               />
             </div>
             <div>
               <Label className="text-xs">Duration (days)</Label>
-              <Input
-                type="number"
+              <UnitInput
+                unit="days"
                 min={1}
                 max={365}
                 step={1}
-                placeholder="e.g. 30"
+                placeholder="e.g. 31"
                 value={days}
                 onChange={(e) => setDays(e.target.value)}
               />
             </div>
           </div>
+          {/* Says back exactly what's about to be queued, in plain words, right
+              above the button — the fastest way to catch "50 GB / 31 days"
+              having become "31 GB / 50 days" before it's submitted, not after. */}
+          {gb && days && Number(gb) > 0 && Number(days) > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              Queues <span className="font-medium text-foreground">{gb} GB</span> for{' '}
+              <span className="font-medium text-foreground">{days} days</span>.
+            </p>
+          )}
           <div>
             <Label className="text-xs">Billing mode for this plan</Label>
             <Select value={billingMode} onValueChange={setBillingMode}>
