@@ -127,7 +127,13 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
 
     status_bits = []
     if near_quota:
-        status_bits.append(f"{remaining_gb:.2f} گیگ مونده")
+        # Sync can catch an account slightly PAST its cap, not just
+        # approaching it (Marzban's own used_traffic already over
+        # data_limit by the time this runs) — "-0.16 GB remaining" reads as
+        # a glitch; say what actually happened instead.
+        status_bits.append(
+            f"{remaining_gb:.2f} گیگ مونده" if remaining_gb >= 0 else f"{abs(remaining_gb):.2f} گیگ از سقفش رد کرده"
+        )
     if near_expiry:
         status_bits.append(f"{remaining_days:.1f} روز تا انقضا")
     status_text = " و ".join(status_bits)
@@ -146,20 +152,26 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
 
     queue_gb = _round_down_to_multiple_of_5(avg_gb)
 
-    # Notify BEFORE writing anything — if this raises (Telegram down, bot
-    # misconfigured, whatever), nothing below runs and nothing gets added
-    # to the session for this account. A plan the operator was never told
-    # about would still activate on schedule regardless — this is the same
+    # TWO separate Telegram messages, not one with the customer text embedded
+    # in the middle — the first version needed manual copy/retyping to pull
+    # just the customer part out from between the admin context and the "———"
+    # markers before it could be sent anywhere, which defeated the point of
+    # having it ready-made. The second message here is the ENTIRE forward: no
+    # header, no separators, nothing to strip — long-press → Forward on it
+    # goes straight to the customer as-is.
+    #
+    # Notify BEFORE writing anything — if either raises (Telegram down, bot
+    # misconfigured, whatever), nothing below runs and nothing gets added to
+    # the session for this account. A plan the operator was never told about
+    # would still activate on schedule regardless — this is the same
     # "external step succeeds first, local write only happens after"
     # ordering _activate_next_plan already uses for the exact same reason.
     await _notify_admin(
         f"🔔 اکانت «{account.marzban_username}» {status_text} — پلن بعدی خودکار ثبت شد: "
-        f"{queue_gb:g} گیگ / {AUTO_NEXT_PLAN_DURATION_DAYS} روز (میانگین ماه گذشته: {avg_gb:g} گیگ).\n\n"
-        "پیام آماده برای فوروارد به مشتری:\n"
-        "———\n"
-        f"{_renewal_forward_message(queue_gb, near_quota, near_expiry)}\n"
-        "———"
+        f"{queue_gb:g} گیگ / {AUTO_NEXT_PLAN_DURATION_DAYS} روز (میانگین ماه گذشته: {avg_gb:g} گیگ).\n"
+        "پیام بعدی رو مستقیم فوروارد کن برای مشتری 👇"
     )
+    await _notify_admin(_renewal_forward_message(queue_gb, near_quota, near_expiry))
 
     session.add(QueuedPlan(account_id=account.id, data_limit_gb=queue_gb, duration_days=AUTO_NEXT_PLAN_DURATION_DAYS))
     session.add(AccountEvent(
