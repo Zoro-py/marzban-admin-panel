@@ -108,9 +108,9 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
     expire date, queue a next plan sized at its own observed monthly average
     (see services.monthly_avg_usage — the same figure the dashboard shows,
     rounded down to a multiple of 5) and notify the operator with a
-    ready-to-forward message. Runs independent of status ("limited"/
-    "expired") — the whole point is catching this BEFORE the account
-    actually runs out, while it's still active.
+    ready-to-forward message. Runs independent of "limited"/"expired"
+    specifically — the whole point is catching this BEFORE the account
+    actually runs out, while it's still nominally active.
 
     payg is excluded entirely: it bills metered usage as it happens against
     no fixed package, so there is nothing here that ever "runs out" the way
@@ -122,9 +122,17 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
     (see models.py's Account.billing_mode default), the group's mode is
     what actually governs it.
 
+    Also excluded: "disabled" (an operator turned this account off in
+    Marzban on purpose — offering the customer a renewal for something the
+    operator deliberately deactivated would go behind their own decision)
+    and "deleted_from_marzban" (this dashboard's own soft-delete marker for
+    an account Marzban no longer has at all — nothing to renew).
+
     Never repeats for the same shortage: skipped entirely the moment a
     pending plan exists, whether this queued it moments ago or the operator
     queued one by hand — same gate the dashboard's "Next ▸" badge reads."""
+    if account.status in ("disabled", "deleted_from_marzban"):
+        return
     if effective_billing_mode(session, account) != BillingMode.prepay:
         return
 
