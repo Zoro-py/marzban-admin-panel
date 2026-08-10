@@ -47,20 +47,25 @@ def _renewal_forward_message(gb: float) -> str:
 
 
 async def _notify_admin(text: str) -> None:
-    """Best-effort: a failed or unconfigured notification should never take
-    the rest of sync down with it (see the try/except around every call
-    site), just like a failed next-plan activation doesn't."""
-    log = logging.getLogger(__name__)
+    """Raises on any failure to send — NOT best-effort, deliberately, for
+    the call site that gates a real state change on it (queuing a next
+    plan: see _maybe_auto_queue_next_plan below). An operator who never
+    sees the notification never gets the chance to review or reprice the
+    auto-picked GB before it silently activates later — the account effect
+    is indistinguishable from just handing out free data with nobody aware
+    it happened. run_sync's own per-account try/except is what stops a
+    failure here from taking the rest of sync down with it; that's the
+    right place for this to be swallowed, not silently inside this
+    function where a caller that DOES need to know would never find out."""
     if not settings.bot_token or not settings.bot_admin_chat_id:
-        log.warning("Skipping admin notification: BOT_TOKEN/BOT_ADMIN_CHAT_ID not set")
-        return
+        raise RuntimeError("BOT_TOKEN/BOT_ADMIN_CHAT_ID not set — nowhere to send this notification")
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{settings.bot_token}/sendMessage",
             data={"chat_id": settings.bot_admin_chat_id, "text": text},
         )
     if resp.status_code != 200:
-        log.error("Telegram rejected admin notification (%s): %s", resp.status_code, resp.text)
+        raise RuntimeError(f"Telegram rejected admin notification ({resp.status_code}): {resp.text}")
 
 
 async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: datetime) -> None:
@@ -103,6 +108,22 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
         return
 
     queue_gb = _round_down_to_multiple_of_5(avg_gb)
+
+    # Notify BEFORE writing anything — if this raises (Telegram down, bot
+    # misconfigured, whatever), nothing below runs and nothing gets added
+    # to the session for this account. A plan the operator was never told
+    # about would still activate on schedule regardless — this is the same
+    # "external step succeeds first, local write only happens after"
+    # ordering _activate_next_plan already uses for the exact same reason.
+    await _notify_admin(
+        f"🔔 اکانت «{account.marzban_username}» {remaining_gb:.2f} گیگ مونده — پلن بعدی خودکار ثبت شد: "
+        f"{queue_gb:g} گیگ / {AUTO_NEXT_PLAN_DURATION_DAYS} روز (میانگین ماه گذشته: {avg_gb:g} گیگ).\n\n"
+        "پیام آماده برای فوروارد به مشتری:\n"
+        "———\n"
+        f"{_renewal_forward_message(queue_gb)}\n"
+        "———"
+    )
+
     session.add(QueuedPlan(account_id=account.id, data_limit_gb=queue_gb, duration_days=AUTO_NEXT_PLAN_DURATION_DAYS))
     session.add(AccountEvent(
         account_id=account.id,
@@ -112,14 +133,6 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
         date=now,
         source=LedgerSource.sync,
     ))
-    await _notify_admin(
-        f"🔔 اکانت «{account.marzban_username}» {remaining_gb:.2f} گیگ مونده — پلن بعدی خودکار ثبت شد: "
-        f"{queue_gb:g} گیگ / {AUTO_NEXT_PLAN_DURATION_DAYS} روز (میانگین ماه گذشته: {avg_gb:g} گیگ).\n\n"
-        "پیام آماده برای فوروارد به مشتری:\n"
-        "———\n"
-        f"{_renewal_forward_message(queue_gb)}\n"
-        "———"
-    )
 
 # An account counts as "currently online" if Marzban reported a connection
 # within this many seconds of sync running. Marzban doesn't expose a live
