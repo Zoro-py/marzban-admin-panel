@@ -39,7 +39,24 @@ def _round_down_to_multiple_of_5(gb: float, minimum: float = 5.0) -> float:
     return max(minimum, math.floor(gb / 5) * 5)
 
 
-def _renewal_forward_message(gb: float, near_quota: bool, near_expiry: bool) -> str:
+def _usage_status_line(account: Account, remaining_days: float | None) -> str:
+    """Plain-text stand-in for the screenshot an operator was attaching
+    alongside this message so the customer could see their OWN status, not
+    just take "you're almost out" on faith. Includes whichever of
+    data/expiry this account actually has set, regardless of which one
+    triggered the message — same as a screenshot would show both either way."""
+    parts = []
+    if account.data_limit is not None and account.data_limit > 0:
+        used_gb = account.used_traffic / GB
+        limit_gb = account.data_limit / GB
+        used_pct = round(used_gb / limit_gb * 100)
+        parts.append(f"{used_gb:.1f} گیگ از {limit_gb:g} گیگ مصرف شده ({used_pct}%)")
+    if remaining_days is not None:
+        parts.append(f"{max(0, round(remaining_days))} روز تا پایان اشتراک مونده")
+    return "، ".join(parts)
+
+
+def _renewal_forward_message(gb: float, near_quota: bool, near_expiry: bool, status_line: str) -> str:
     """The exact customer-facing text an operator was typing by hand for
     every near-quota account, gb substituted in — meant to be copied
     straight out of the Telegram notification below and forwarded as-is.
@@ -52,13 +69,15 @@ def _renewal_forward_message(gb: float, near_quota: bool, near_expiry: bool) -> 
         reason = "آخرای مدت اشتراکتون هست"
     else:
         reason = "آخرای حجم اشتراکتون هست"
-    return (
-        "سلام و وقت بخیر\n"
-        "خوب هستید انشالله\n"
+    lines = ["سلام و وقت بخیر", "خوب هستید انشالله"]
+    if status_line:
+        lines.append(f"وضعیت فعلی اشتراکتون: {status_line}")
+    lines.append(
         f"{reason}، من {gb:g} گیگ معادل میانگین مصرف ماه گذشته "
-        "براتون شارژ کردم که به محض اتمام این اشتراک فعال بشه\n"
-        "اگه کم و زیاده بفرمایید تغییرش بدم"
+        "براتون شارژ کردم که به محض اتمام این اشتراک فعال بشه"
     )
+    lines.append("اگه کم و زیاده بفرمایید تغییرش بدم")
+    return "\n".join(lines)
 
 
 async def _notify_admin(text: str) -> None:
@@ -171,7 +190,9 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
         f"{queue_gb:g} گیگ / {AUTO_NEXT_PLAN_DURATION_DAYS} روز (میانگین ماه گذشته: {avg_gb:g} گیگ).\n"
         "پیام بعدی رو مستقیم فوروارد کن برای مشتری 👇"
     )
-    await _notify_admin(_renewal_forward_message(queue_gb, near_quota, near_expiry))
+    await _notify_admin(
+        _renewal_forward_message(queue_gb, near_quota, near_expiry, _usage_status_line(account, remaining_days))
+    )
 
     session.add(QueuedPlan(account_id=account.id, data_limit_gb=queue_gb, duration_days=AUTO_NEXT_PLAN_DURATION_DAYS))
     session.add(AccountEvent(
