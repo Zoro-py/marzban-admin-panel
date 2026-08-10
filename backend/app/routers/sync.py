@@ -16,6 +16,12 @@ async def trigger_sync():
         return await run_sync()
     except (MarzbanUnavailable, MarzbanAuthError) as exc:
         raise HTTPException(502, str(exc))
+    except RuntimeError as exc:
+        # Specifically the "a sync is already running" guard in run_sync —
+        # a real 409, not a 500: the request is well-formed, it just can't
+        # run concurrently with the one already in flight (see run_sync's
+        # own docstring for why that matters here).
+        raise HTTPException(409, str(exc))
 
 
 @router.get("/status")

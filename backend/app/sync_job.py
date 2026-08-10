@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import math
 import time
@@ -9,16 +10,21 @@ from sqlmodel import Session, select
 from app.config import settings
 from app.db import engine
 from app.marzban_client import marzban_client
-from app.models import Account, AccountEvent, Customer, LedgerEntry, LedgerSource, LedgerType, OnlineSnapshot, QueuedPlan, QueuedPlanStatus, utcnow
+from app.models import Account, AccountEvent, BillingMode, Customer, LedgerEntry, LedgerSource, LedgerType, OnlineSnapshot, QueuedPlan, QueuedPlanStatus, utcnow
 from app.services import GB, billable_bytes, effective_billing_mode, effective_rate, monthly_avg_usage
 
 PAGE_SIZE = 200
 
-# How close to running out (GB remaining) before a next plan is queued
-# automatically and the operator is notified — matches the manual habit this
-# replaces: screenshotting an account once it's down to "about 1GB" and
-# messaging the customer by hand.
+# How close to running out — GB remaining, or days until expire — before a
+# next plan is queued automatically and the operator is notified. Matches
+# the manual habit this replaces: screenshotting an account once it's down
+# to "about 1GB" (or "about a day left") and messaging the customer by hand.
+# Either dimension running out ends the current package — a prepay account
+# can run out of DATA with weeks still on the clock, or run out of TIME
+# with most of its data untouched, and both are the same "time to renew"
+# moment from the operator's side.
 NEAR_QUOTA_AUTO_QUEUE_REMAINING_GB = 1.0
+NEAR_EXPIRY_AUTO_QUEUE_REMAINING_DAYS = 1.0
 # The customer-facing message this queues talks about "last month's average"
 # — not tied to any group's billing_cycle_days (prepay doesn't use that
 # field at all; see groups.py's is_due gating).
@@ -33,14 +39,23 @@ def _round_down_to_multiple_of_5(gb: float, minimum: float = 5.0) -> float:
     return max(minimum, math.floor(gb / 5) * 5)
 
 
-def _renewal_forward_message(gb: float) -> str:
+def _renewal_forward_message(gb: float, near_quota: bool, near_expiry: bool) -> str:
     """The exact customer-facing text an operator was typing by hand for
     every near-quota account, gb substituted in — meant to be copied
-    straight out of the Telegram notification below and forwarded as-is."""
+    straight out of the Telegram notification below and forwarded as-is.
+    The opening line names whichever of data/time is actually running out —
+    "آخرای حجم" (out of data) would be simply false to send someone who
+    still has plenty of GB left but is a day from expiring."""
+    if near_quota and near_expiry:
+        reason = "آخرای حجم و مدت اشتراکتون هست"
+    elif near_expiry:
+        reason = "آخرای مدت اشتراکتون هست"
+    else:
+        reason = "آخرای حجم اشتراکتون هست"
     return (
         "سلام و وقت بخیر\n"
         "خوب هستید انشالله\n"
-        f"آخرای حجم اشتراکتون هست، من {gb:g} گیگ معادل میانگین مصرف ماه گذشته "
+        f"{reason}، من {gb:g} گیگ معادل میانگین مصرف ماه گذشته "
         "براتون شارژ کردم که به محض اتمام این اشتراک فعال بشه\n"
         "اگه کم و زیاده بفرمایید تغییرش بدم"
     )
@@ -69,21 +84,36 @@ async def _notify_admin(text: str) -> None:
 
 
 async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: datetime) -> None:
-    """When an account is down to about NEAR_QUOTA_AUTO_QUEUE_REMAINING_GB
-    of its package, queue a next plan sized at its own observed monthly
-    average (see services.monthly_avg_usage — the same figure the dashboard
-    shows, rounded down to a multiple of 5) and notify the operator with a
+    """When a PREPAY account is down to about NEAR_QUOTA_AUTO_QUEUE_REMAINING_GB
+    of its package OR within NEAR_EXPIRY_AUTO_QUEUE_REMAINING_DAYS of its
+    expire date, queue a next plan sized at its own observed monthly average
+    (see services.monthly_avg_usage — the same figure the dashboard shows,
+    rounded down to a multiple of 5) and notify the operator with a
     ready-to-forward message. Runs independent of status ("limited"/
     "expired") — the whole point is catching this BEFORE the account
     actually runs out, while it's still active.
 
+    payg is excluded entirely: it bills metered usage as it happens against
+    no fixed package, so there is nothing here that ever "runs out" the way
+    a prepay package does — a payg account sitting at 0 GB remaining on
+    whatever data_limit Marzban happens to have is not a renewal moment,
+    it's just its normal soft cap. effective_billing_mode, not the raw
+    field, for the same reason the rest of this codebase always resolves
+    it that way: a grouped account's own billing_mode field can be stale
+    (see models.py's Account.billing_mode default), the group's mode is
+    what actually governs it.
+
     Never repeats for the same shortage: skipped entirely the moment a
     pending plan exists, whether this queued it moments ago or the operator
     queued one by hand — same gate the dashboard's "Next ▸" badge reads."""
-    if account.data_limit is None:
-        return  # unlimited package — "running out" doesn't apply
-    remaining_gb = (account.data_limit - account.used_traffic) / GB
-    if remaining_gb > NEAR_QUOTA_AUTO_QUEUE_REMAINING_GB:
+    if effective_billing_mode(session, account) != BillingMode.prepay:
+        return
+
+    remaining_gb = (account.data_limit - account.used_traffic) / GB if account.data_limit is not None else None
+    remaining_days = (account.expire - time.time()) / 86400 if account.expire is not None else None
+    near_quota = remaining_gb is not None and remaining_gb <= NEAR_QUOTA_AUTO_QUEUE_REMAINING_GB
+    near_expiry = remaining_days is not None and remaining_days <= NEAR_EXPIRY_AUTO_QUEUE_REMAINING_DAYS
+    if not near_quota and not near_expiry:
         return
 
     already_queued = session.exec(
@@ -95,6 +125,13 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
     if already_queued:
         return
 
+    status_bits = []
+    if near_quota:
+        status_bits.append(f"{remaining_gb:.2f} گیگ مونده")
+    if near_expiry:
+        status_bits.append(f"{remaining_days:.1f} روز تا انقضا")
+    status_text = " و ".join(status_bits)
+
     avg_gb, _confidence, _observed_days = monthly_avg_usage(account, now.replace(tzinfo=None))
     if avg_gb is None:
         # Not enough observed history for a trustworthy average — surfaced
@@ -102,7 +139,7 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
         # guessed at (same "insufficient_data" principle the dashboard
         # itself follows rather than showing a number from too little data).
         await _notify_admin(
-            f"⚠️ اکانت «{account.marzban_username}» {remaining_gb:.2f} گیگ مونده، ولی هنوز داده‌ی کافی "
+            f"⚠️ اکانت «{account.marzban_username}» {status_text}، ولی هنوز داده‌ی کافی "
             "برای میانگین مصرف نداریم — پلن بعدی رو دستی تنظیم کن."
         )
         return
@@ -116,11 +153,11 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
     # "external step succeeds first, local write only happens after"
     # ordering _activate_next_plan already uses for the exact same reason.
     await _notify_admin(
-        f"🔔 اکانت «{account.marzban_username}» {remaining_gb:.2f} گیگ مونده — پلن بعدی خودکار ثبت شد: "
+        f"🔔 اکانت «{account.marzban_username}» {status_text} — پلن بعدی خودکار ثبت شد: "
         f"{queue_gb:g} گیگ / {AUTO_NEXT_PLAN_DURATION_DAYS} روز (میانگین ماه گذشته: {avg_gb:g} گیگ).\n\n"
         "پیام آماده برای فوروارد به مشتری:\n"
         "———\n"
-        f"{_renewal_forward_message(queue_gb)}\n"
+        f"{_renewal_forward_message(queue_gb, near_quota, near_expiry)}\n"
         "———"
     )
 
@@ -128,8 +165,7 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
     session.add(AccountEvent(
         account_id=account.id,
         action="next_plan_auto_queued",
-        detail=f"Auto-queued {queue_gb:g} GB / {AUTO_NEXT_PLAN_DURATION_DAYS} days "
-        f"({remaining_gb:.2f} GB remaining, monthly avg {avg_gb:g} GB)",
+        detail=f"Auto-queued {queue_gb:g} GB / {AUTO_NEXT_PLAN_DURATION_DAYS} days ({status_text}, monthly avg {avg_gb:g} GB)",
         date=now,
         source=LedgerSource.sync,
     ))
@@ -270,8 +306,50 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
 
     log.info("Activated next plan for %s: %.1f GB / %d days", account.marzban_username, plan.data_limit_gb, plan.duration_days)
 
+    # Best-effort, deliberately AFTER the commit above and in its own
+    # try/except: unlike _maybe_auto_queue_next_plan (where a notification
+    # failure blocks an unreviewed plan from being created at all), this
+    # activation was already reviewed and approved back when it was queued
+    # — gating it on Telegram being reachable would leave an already-limited
+    # customer disconnected for no reason other than a notification hiccup,
+    # exactly the wait this feature exists to remove. A caught failure here
+    # also must not read as "activation failed" to run_sync's own per-account
+    # log line — it didn't; only telling the operator about it did.
+    try:
+        old_amount_note = f" (پلن قبلی {old_amount:g} تومان شارژ شد)" if old_amount > 0 else ""
+        mode_note_fa = f" — نوع صورتحساب شد {plan.billing_mode.value}" if plan.billing_mode else ""
+        await _notify_admin(
+            f"✅ پلن بعدی اکانت «{account.marzban_username}» فعال شد: "
+            f"{plan.data_limit_gb:g} گیگ / {plan.duration_days} روز{old_amount_note}{mode_note_fa}"
+        )
+    except Exception as exc:
+        log.warning("Next-plan activation for %s succeeded, but the notification failed: %s", account.marzban_username, exc)
+
+
+_sync_lock = asyncio.Lock()
+
 
 async def run_sync() -> dict:
+    """Enforces that only one sync runs at a time — see _run_sync_impl below
+    for what a sync actually does. Both the scheduler (every
+    sync_interval_seconds) and the manual trigger (POST /api/sync/run, used
+    by the dashboard's "Sync now" button and the bot's /sync) call this same
+    function. Without this lock, one landing while the other is still
+    mid-run means both could read the same pending QueuedPlan as
+    not-yet-activated (neither has committed yet) and both call
+    _activate_next_plan for it — duplicate Marzban modify_user/reset_user
+    calls for the same account, and a duplicate ledger charge for the same
+    old-plan settlement. Confirmed happening in practice: Marzban's own
+    webhook reported paired Modified/Reset/Activated events for the same
+    two usernames at the same timestamp, which only overlapping runs
+    explain — nothing in a single run calls either endpoint twice."""
+    if _sync_lock.locked():
+        raise RuntimeError("A sync is already running — wait for it to finish before triggering another.")
+    async with _sync_lock:
+        return await _run_sync_impl()
+
+
+async def _run_sync_impl() -> dict:
     """Pulls every user from Marzban and mirrors usage/status/limits into the
     local Account table. Every account belongs to one person by default — a
     Group is the deliberate exception for when several accounts are meant to
