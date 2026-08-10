@@ -52,7 +52,16 @@ def _usage_status_line(account: Account, remaining_days: float | None) -> str:
         used_pct = round(used_gb / limit_gb * 100)
         parts.append(f"{used_gb:.1f} گیگ از {limit_gb:g} گیگ مصرف شده ({used_pct}%)")
     if remaining_days is not None:
-        parts.append(f"{max(0, round(remaining_days))} روز تا پایان اشتراک مونده")
+        # This branch is common, not an edge case: an already-overdue backlog
+        # account is exactly the case this feature reacts to fastest (see
+        # run_sync's activation check, which fires as soon as ANY pending plan
+        # exists for a "limited"/"expired" account, often the very next
+        # cycle). "0 days left" would tell a customer who's been expired for
+        # a week that their subscription is just now ending.
+        if remaining_days >= 0:
+            parts.append(f"{round(remaining_days)} روز تا پایان اشتراک مونده")
+        else:
+            parts.append(f"{abs(round(remaining_days))} روز پیش اشتراکتون تموم شده")
     return "، ".join(parts)
 
 
@@ -552,10 +561,26 @@ async def _run_sync_impl() -> dict:
                             await _activate_next_plan(session, account, pending_plan, now)
                             activated_plans += 1
                         except Exception as exc:
+                            # Previously logged server-side ONLY — invisible to
+                            # an operator who only ever looks at Telegram, and
+                            # arguably more urgent to know about than a
+                            # successful activation: the account stays stuck
+                            # limited/expired with a plan that never applied.
+                            # Own try/except around the notify itself: if THIS
+                            # raises too, it must not propagate past here and
+                            # take the rest of the accounts in this sync cycle
+                            # down with it.
                             logging.getLogger(__name__).error(
                                 "Failed to activate next plan for %s: %s",
                                 account.marzban_username, exc,
                             )
+                            try:
+                                await _notify_admin(
+                                    f"❌ فعال‌سازی پلن بعدی «{account.marzban_username}» شکست خورد: {exc}\n"
+                                    "پلن pending موند — سیکل بعدی دوباره امتحان میشه، یا دستی چکش کن."
+                                )
+                            except Exception:
+                                pass
 
                 # ── Auto-queue a next plan while there's still time ────────
                 # Deliberately NOT nested inside the limited/expired check
