@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import datetime
 from typing import Optional
 
 from sqlmodel import Session, select
@@ -264,6 +265,34 @@ MIN_USAGE_SAMPLE_DAYS = 3.0
 FULL_CONFIDENCE_DAYS = 30.0
 
 
+def monthly_avg_usage(account: Account, now: datetime) -> tuple[Optional[float], str, float]:
+    """Estimated monthly usage rate from lifetime traffic observed since this
+    dashboard first saw the account (see Account.first_seen_traffic) —
+    extracted out of enrich_accounts so anything else that needs "how much
+    does this account typically use a month" (e.g. sizing an auto-queued
+    next plan) reads the exact same number the dashboard shows, not a
+    second, separately-computed one that could drift from it.
+
+    Returns (monthly_avg_usage_gb, usage_confidence, observed_days).
+    monthly_avg_usage_gb is None below MIN_USAGE_SAMPLE_DAYS of observed
+    history — too little data for a trustworthy monthly rate, not a number
+    to guess. `now` must be naive (see callers: this compares directly
+    against first_seen_traffic_at/created_at, which round-trip through
+    SQLite as naive)."""
+    observed_since = account.first_seen_traffic_at or account.created_at
+    observed_days = (now - observed_since).total_seconds() / 86400
+    # max(0, ...): never negative, even if Marzban's lifetime counter were
+    # ever reset below the captured baseline (it's meant to be monotonic,
+    # but this keeps a platform anomaly from producing a negative rate).
+    observed_bytes = max(0, account.lifetime_used_traffic - account.first_seen_traffic)
+
+    if observed_days < MIN_USAGE_SAMPLE_DAYS:
+        return None, "insufficient_data", observed_days
+    monthly_avg_usage_gb = round((observed_bytes / GB) / observed_days * 30, 2)
+    usage_confidence = "full" if observed_days >= FULL_CONFIDENCE_DAYS else "preliminary"
+    return monthly_avg_usage_gb, usage_confidence, observed_days
+
+
 def enrich_accounts(session: Session, accounts: list[Account], book: Optional[MoneyBook] = None) -> list:
     """Builds the AccountRow shape (balance, effective rate, monthly-average
     usage, etc.) shared by every endpoint that lists accounts — accounts.py's
@@ -300,23 +329,7 @@ def enrich_accounts(session: Session, accounts: list[Account], book: Optional[Mo
     now = utcnow().replace(tzinfo=None)
     rows = []
     for a in accounts:
-        # first_seen_traffic_at is when THIS dashboard first observed the account
-        # (dashboard-create, or sync discovering a pre-existing Marzban user) —
-        # created_at is only a fallback for rows from before this column existed
-        # that somehow slipped past db.py's migration backfill.
-        observed_since = a.first_seen_traffic_at or a.created_at
-        observed_days = (now - observed_since).total_seconds() / 86400
-        # max(0, ...): never negative, even if Marzban's lifetime counter were
-        # ever reset below the captured baseline (it's meant to be monotonic,
-        # but this keeps a platform anomaly from producing a negative rate).
-        observed_bytes = max(0, a.lifetime_used_traffic - a.first_seen_traffic)
-
-        if observed_days < MIN_USAGE_SAMPLE_DAYS:
-            monthly_avg_usage_gb = None
-            usage_confidence = "insufficient_data"
-        else:
-            monthly_avg_usage_gb = round((observed_bytes / GB) / observed_days * 30, 2)
-            usage_confidence = "full" if observed_days >= FULL_CONFIDENCE_DAYS else "preliminary"
+        monthly_avg_usage_gb, usage_confidence, observed_days = monthly_avg_usage(a, now)
 
         customer = customers.get(a.customer_id) if a.customer_id else None
         group = groups.get(a.group_id) if a.group_id else None

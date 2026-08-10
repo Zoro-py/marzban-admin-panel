@@ -1,15 +1,125 @@
 import logging
+import math
 import time
 from datetime import datetime
 
+import httpx
 from sqlmodel import Session, select
 
+from app.config import settings
 from app.db import engine
 from app.marzban_client import marzban_client
 from app.models import Account, AccountEvent, Customer, LedgerEntry, LedgerSource, LedgerType, OnlineSnapshot, QueuedPlan, QueuedPlanStatus, utcnow
-from app.services import GB, billable_bytes, effective_billing_mode, effective_rate
+from app.services import GB, billable_bytes, effective_billing_mode, effective_rate, monthly_avg_usage
 
 PAGE_SIZE = 200
+
+# How close to running out (GB remaining) before a next plan is queued
+# automatically and the operator is notified — matches the manual habit this
+# replaces: screenshotting an account once it's down to "about 1GB" and
+# messaging the customer by hand.
+NEAR_QUOTA_AUTO_QUEUE_REMAINING_GB = 1.0
+# The customer-facing message this queues talks about "last month's average"
+# — not tied to any group's billing_cycle_days (prepay doesn't use that
+# field at all; see groups.py's is_due gating).
+AUTO_NEXT_PLAN_DURATION_DAYS = 30
+
+
+def _round_down_to_multiple_of_5(gb: float, minimum: float = 5.0) -> float:
+    """Always a round package size (65 GB, never 65.8) that reads as a real
+    plan, rounded DOWN so this never queues more than what was actually
+    observed — and never below `minimum`, since a plan rounded to 0 isn't a
+    valid one at all (NextPlanRequest requires data_limit_gb > 0)."""
+    return max(minimum, math.floor(gb / 5) * 5)
+
+
+def _renewal_forward_message(gb: float) -> str:
+    """The exact customer-facing text an operator was typing by hand for
+    every near-quota account, gb substituted in — meant to be copied
+    straight out of the Telegram notification below and forwarded as-is."""
+    return (
+        "سلام و وقت بخیر\n"
+        "خوب هستید انشالله\n"
+        f"آخرای حجم اشتراکتون هست، من {gb:g} گیگ معادل میانگین مصرف ماه گذشته "
+        "براتون شارژ کردم که به محض اتمام این اشتراک فعال بشه\n"
+        "اگه کم و زیاده بفرمایید تغییرش بدم"
+    )
+
+
+async def _notify_admin(text: str) -> None:
+    """Best-effort: a failed or unconfigured notification should never take
+    the rest of sync down with it (see the try/except around every call
+    site), just like a failed next-plan activation doesn't."""
+    log = logging.getLogger(__name__)
+    if not settings.bot_token or not settings.bot_admin_chat_id:
+        log.warning("Skipping admin notification: BOT_TOKEN/BOT_ADMIN_CHAT_ID not set")
+        return
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{settings.bot_token}/sendMessage",
+            data={"chat_id": settings.bot_admin_chat_id, "text": text},
+        )
+    if resp.status_code != 200:
+        log.error("Telegram rejected admin notification (%s): %s", resp.status_code, resp.text)
+
+
+async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: datetime) -> None:
+    """When an account is down to about NEAR_QUOTA_AUTO_QUEUE_REMAINING_GB
+    of its package, queue a next plan sized at its own observed monthly
+    average (see services.monthly_avg_usage — the same figure the dashboard
+    shows, rounded down to a multiple of 5) and notify the operator with a
+    ready-to-forward message. Runs independent of status ("limited"/
+    "expired") — the whole point is catching this BEFORE the account
+    actually runs out, while it's still active.
+
+    Never repeats for the same shortage: skipped entirely the moment a
+    pending plan exists, whether this queued it moments ago or the operator
+    queued one by hand — same gate the dashboard's "Next ▸" badge reads."""
+    if account.data_limit is None:
+        return  # unlimited package — "running out" doesn't apply
+    remaining_gb = (account.data_limit - account.used_traffic) / GB
+    if remaining_gb > NEAR_QUOTA_AUTO_QUEUE_REMAINING_GB:
+        return
+
+    already_queued = session.exec(
+        select(QueuedPlan).where(
+            QueuedPlan.account_id == account.id,
+            QueuedPlan.status == QueuedPlanStatus.pending,
+        )
+    ).first()
+    if already_queued:
+        return
+
+    avg_gb, _confidence, _observed_days = monthly_avg_usage(account, now.replace(tzinfo=None))
+    if avg_gb is None:
+        # Not enough observed history for a trustworthy average — surfaced
+        # as a heads-up so the operator still finds out, but no plan is
+        # guessed at (same "insufficient_data" principle the dashboard
+        # itself follows rather than showing a number from too little data).
+        await _notify_admin(
+            f"⚠️ اکانت «{account.marzban_username}» {remaining_gb:.2f} گیگ مونده، ولی هنوز داده‌ی کافی "
+            "برای میانگین مصرف نداریم — پلن بعدی رو دستی تنظیم کن."
+        )
+        return
+
+    queue_gb = _round_down_to_multiple_of_5(avg_gb)
+    session.add(QueuedPlan(account_id=account.id, data_limit_gb=queue_gb, duration_days=AUTO_NEXT_PLAN_DURATION_DAYS))
+    session.add(AccountEvent(
+        account_id=account.id,
+        action="next_plan_auto_queued",
+        detail=f"Auto-queued {queue_gb:g} GB / {AUTO_NEXT_PLAN_DURATION_DAYS} days "
+        f"({remaining_gb:.2f} GB remaining, monthly avg {avg_gb:g} GB)",
+        date=now,
+        source=LedgerSource.sync,
+    ))
+    await _notify_admin(
+        f"🔔 اکانت «{account.marzban_username}» {remaining_gb:.2f} گیگ مونده — پلن بعدی خودکار ثبت شد: "
+        f"{queue_gb:g} گیگ / {AUTO_NEXT_PLAN_DURATION_DAYS} روز (میانگین ماه گذشته: {avg_gb:g} گیگ).\n\n"
+        "پیام آماده برای فوروارد به مشتری:\n"
+        "———\n"
+        f"{_renewal_forward_message(queue_gb)}\n"
+        "———"
+    )
 
 # An account counts as "currently online" if Marzban reported a connection
 # within this many seconds of sync running. Marzban doesn't expose a live
@@ -314,6 +424,18 @@ async def run_sync() -> dict:
                                 "Failed to activate next plan for %s: %s",
                                 account.marzban_username, exc,
                             )
+
+                # ── Auto-queue a next plan while there's still time ────────
+                # Deliberately NOT nested inside the limited/expired check
+                # above — the whole point is catching an account BEFORE it
+                # runs out, while it's still active, not after.
+                try:
+                    await _maybe_auto_queue_next_plan(session, account, now)
+                except Exception as exc:
+                    logging.getLogger(__name__).error(
+                        "Failed to auto-queue next plan for %s: %s",
+                        account.marzban_username, exc,
+                    )
 
         # ── Soft-delete detection ──────────────────────────────────────
         # Any local account whose marzban_username was NOT in the list
