@@ -13,6 +13,8 @@ import type {
   GroupInvoice,
   GroupWithBalance,
   LedgerEntry,
+  MonthlySettlementBatch,
+  MonthlySettlementRunResult,
   NextPlan,
   OnlineHistory,
   OnlineHistoryRange,
@@ -196,6 +198,18 @@ export const reportsApi = {
 export const syncApi = {
   run: async () => (await api.post('/api/sync/run')).data,
   status: async () => (await api.get<SyncStatus>('/api/sync/status')).data,
+}
+
+// ---- payg monthly settlements ----
+export const paygMonthlyApi = {
+  run: async () => (await api.post<MonthlySettlementRunResult>('/api/payg-monthly/run')).data,
+  periods: async () => (await api.get<string[]>('/api/payg-monthly/periods')).data,
+  batches: async (period?: string) =>
+    (await api.get<{ period: string | null; rows: MonthlySettlementBatch[] }>('/api/payg-monthly/batches', {
+      params: period ? { period } : undefined,
+    })).data,
+  markPaid: async (batchId: number) =>
+    (await api.post<MonthlySettlementBatch>(`/api/payg-monthly/batches/${batchId}/mark-paid`)).data,
 }
 
 // ---- settings ----

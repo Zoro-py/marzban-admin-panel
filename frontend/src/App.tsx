@@ -12,6 +12,7 @@ const GroupsPage = lazy(() => import('@/pages/GroupsPage').then(m => ({ default:
 const GroupDetailPage = lazy(() => import('@/pages/GroupDetailPage').then(m => ({ default: m.GroupDetailPage })))
 const AccountsPage = lazy(() => import('@/pages/AccountsPage').then(m => ({ default: m.AccountsPage })))
 const FinancePage = lazy(() => import('@/pages/FinancePage').then(m => ({ default: m.FinancePage })))
+const MonthlySettlementsPage = lazy(() => import('@/pages/MonthlySettlementsPage').then(m => ({ default: m.MonthlySettlementsPage })))
 
 function GlobalLoader() {
   return (
@@ -51,6 +52,7 @@ function App() {
             <Route path="/groups/:id" element={<GroupDetailPage />} />
             <Route path="/accounts" element={<AccountsPage />} />
             <Route path="/finance" element={<FinancePage />} />
+            <Route path="/monthly-settlements" element={<MonthlySettlementsPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>
         </Route>

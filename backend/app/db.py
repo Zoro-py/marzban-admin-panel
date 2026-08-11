@@ -260,6 +260,14 @@ def _run_lightweight_migrations() -> None:
         if existing_queued_plan and "billing_mode" not in existing_queued_plan:
             conn.execute(text("ALTER TABLE queuedplan ADD COLUMN billing_mode VARCHAR"))
 
+        # Same gap, same fix: last_payg_monthly_settlement was added to
+        # AppSettings after that (single-row) table already existed on any
+        # deployed server. monthlysettlementbatch itself needs no entry here
+        # — it's a genuinely new table, create_all handles it.
+        existing_app_settings = {row[1] for row in conn.execute(text("PRAGMA table_info(appsettings)"))}
+        if existing_app_settings and "last_payg_monthly_settlement" not in existing_app_settings:
+            conn.execute(text("ALTER TABLE appsettings ADD COLUMN last_payg_monthly_settlement VARCHAR"))
+
 
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)

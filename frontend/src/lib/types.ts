@@ -248,3 +248,27 @@ export interface FinanceSummary {
   recent_transactions: FinanceTransaction[]
   rate_overview: RateOverviewRow[]
 }
+
+export interface MonthlySettlementBatch {
+  id: number
+  jalali_period: string
+  group_id: number | null
+  account_id: number | null
+  // Snapshot at settle time — a later rename doesn't rewrite history.
+  display_name: string
+  billable_gb: number
+  amount: number
+  settled_at: string
+  marked_paid_at: string | null
+}
+
+export interface MonthlySettlementRunResult {
+  ran: boolean
+  reason?: string
+  period?: string
+  groups?: number
+  accounts?: number
+  settled?: number
+  failed?: number
+  total?: number
+}

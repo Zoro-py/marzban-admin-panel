@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     backup_hour: int = 3
     backup_minute: int = 30
 
+    # payg_monthly_job checks daily at this hour/minute whether there's an
+    # unsettled Jalali month to close out (see its own _target_settlement_period
+    # for why "daily" and not "only on the last day" — a failed attempt keeps
+    # retrying at this same time on every later day instead of silently
+    # skipping the rest of the month). "Night" per the operator's own request.
+    payg_monthly_settle_hour: int = 23
+    payg_monthly_settle_minute: int = 30
+
     # Applied to a new Marzban user when the caller doesn't specify proxies/inbounds.
     # Adjust these to match this panel's real inbound tags before creating users from
     # the dashboard — Marzban applies a protocol to every inbound that supports it when

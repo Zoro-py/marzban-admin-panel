@@ -2,6 +2,7 @@ import * as React from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
   Building2,
+  CalendarCheck,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -31,6 +32,7 @@ const NAV_ITEMS = [
   { to: '/groups', label: 'Groups', icon: Building2 },
   { to: '/accounts', label: 'Accounts', icon: Network },
   { to: '/finance', label: 'Finance', icon: Wallet },
+  { to: '/monthly-settlements', label: 'Monthly Settlements', icon: CalendarCheck },
 ]
 
 function openCommandPalette() {

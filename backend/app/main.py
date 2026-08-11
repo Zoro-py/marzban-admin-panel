@@ -12,7 +12,8 @@ from sqlalchemy.exc import IntegrityError
 from app.backup_job import run_backup
 from app.config import settings
 from app.db import init_db
-from app.routers import accounts, auth, backup, customers, groups, ledger, reports, settings as settings_router, sync
+from app.payg_monthly_job import maybe_run_monthly_payg_settlement
+from app.routers import accounts, auth, backup, customers, groups, ledger, payg_monthly, reports, settings as settings_router, sync
 from app.sync_job import run_sync
 
 logging.basicConfig(
@@ -36,6 +37,20 @@ async def _scheduled_backup() -> None:
         logger.exception("Scheduled backup failed")
 
 
+async def _scheduled_payg_monthly_settlement() -> None:
+    # Same reasoning as _scheduled_backup. Also: a raised exception here is
+    # expected and routine, not exceptional — it's exactly how
+    # maybe_run_monthly_payg_settlement signals "the Telegram gate failed,
+    # don't touch anything" (see payg_monthly_job's own docstring). This is
+    # what stops that from also being treated as an unhandled scheduler error.
+    try:
+        result = await maybe_run_monthly_payg_settlement()
+        if result.get("ran"):
+            logger.info("Monthly payg settlement: %s", result)
+    except Exception:
+        logger.exception("Monthly payg settlement failed (will retry tomorrow)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
@@ -53,6 +68,14 @@ async def lifespan(app: FastAPI):
     )
     scheduler.add_job(
         _scheduled_backup, "cron", hour=settings.backup_hour, minute=settings.backup_minute, id="db_backup"
+    )
+    # Runs daily (not just "on the last day") on purpose — see
+    # payg_monthly_job's _target_settlement_period for why that's what makes
+    # a failed attempt retry instead of silently skipping a whole month.
+    scheduler.add_job(
+        _scheduled_payg_monthly_settlement, "cron",
+        hour=settings.payg_monthly_settle_hour, minute=settings.payg_monthly_settle_minute,
+        id="payg_monthly_settlement",
     )
     scheduler.start()
     yield
@@ -97,6 +120,7 @@ app.include_router(ledger.router)
 app.include_router(reports.router)
 app.include_router(sync.router)
 app.include_router(backup.router)
+app.include_router(payg_monthly.router)
 app.include_router(settings_router.router)
 
 

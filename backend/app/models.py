@@ -143,6 +143,13 @@ class AppSettings(SQLModel, table=True):
 
     id: Optional[int] = Field(default=1, primary_key=True)
     default_rate_per_gb: Optional[float] = None
+    # "1405-05" — the last Jalali (year, month) the payg monthly settlement
+    # job successfully completed for. NOT "did it run today" — this is what
+    # makes a failed attempt self-retry on every later day instead of
+    # silently skipping the rest of that month (see payg_monthly_job.py's
+    # _target_settlement_period): the target period doesn't advance to the
+    # next month until this one actually succeeds.
+    last_payg_monthly_settlement: Optional[str] = None
 
 
 class AccountEvent(SQLModel, table=True):
@@ -155,6 +162,29 @@ class AccountEvent(SQLModel, table=True):
     detail: str
     date: datetime = Field(default_factory=utcnow, index=True)
     source: LedgerSource = LedgerSource.web
+
+
+class MonthlySettlementBatch(SQLModel, table=True):
+    """One row per group/standalone-account settled by a single monthly payg
+    run (see payg_monthly_job.py) — lets the dashboard's Monthly Settlements
+    page show exactly who was billed this cycle and hasn't paid yet, without
+    parsing ledger note strings, and gives "mark as paid" something precise
+    to point at (this specific settlement's amount, not the entity's whole
+    balance, which could include unrelated debt from something else)."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # "1405-05" — same format as AppSettings.last_payg_monthly_settlement.
+    jalali_period: str = Field(index=True)
+    # Exactly one of these is set — same "group XOR standalone account"
+    # shape used throughout (see routers/groups.py vs routers/accounts.py).
+    group_id: Optional[int] = Field(default=None, foreign_key="group.id", index=True)
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True)
+    # Snapshot at settle time — a rename afterward shouldn't rewrite history.
+    display_name: str
+    billable_gb: float
+    amount: float
+    settled_at: datetime = Field(default_factory=utcnow)
+    marked_paid_at: Optional[datetime] = None
 
 
 class OnlineSnapshot(SQLModel, table=True):

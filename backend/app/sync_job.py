@@ -4,13 +4,12 @@ import math
 import time
 from datetime import datetime
 
-import httpx
 from sqlmodel import Session, select
 
-from app.config import settings
 from app.db import engine
 from app.marzban_client import marzban_client
 from app.models import Account, AccountEvent, BillingMode, Customer, LedgerEntry, LedgerSource, LedgerType, OnlineSnapshot, QueuedPlan, QueuedPlanStatus, utcnow
+from app.notify import notify_admin as _notify_admin
 from app.services import GB, billable_bytes, effective_billing_mode, effective_rate, monthly_avg_usage
 
 PAGE_SIZE = 200
@@ -29,6 +28,21 @@ NEAR_EXPIRY_AUTO_QUEUE_REMAINING_DAYS = 1.0
 # — not tied to any group's billing_cycle_days (prepay doesn't use that
 # field at all; see groups.py's is_due gating).
 AUTO_NEXT_PLAN_DURATION_DAYS = 31
+
+# payg has no package to renew, but a payg account can still carry a
+# Marzban data_limit as a hard technical cap (independent of billing, which
+# is metered) — reaching it gets the account BLOCKED by Marzban itself.
+# 0.0, not a lead-in threshold like the prepay ones above: there's no
+# "renewal" to prepare in advance here, this is purely reactive — bill what
+# accrued and unblock them the moment they're actually capped.
+PAYG_CAP_HIT_REMAINING_GB = 0.0
+
+# Shared by every automatic action in this file that offers a renewal or
+# resets a live account: "disabled" (an operator turned this off on
+# purpose — an automated action going behind that decision would be wrong)
+# and "deleted_from_marzban" (this dashboard's own soft-delete marker —
+# nothing left to renew or reset).
+_EXCLUDED_STATUSES = ("disabled", "deleted_from_marzban")
 
 
 def _round_down_to_multiple_of_5(gb: float, minimum: float = 5.0) -> float:
@@ -89,28 +103,6 @@ def _renewal_forward_message(gb: float, near_quota: bool, near_expiry: bool, sta
     return "\n".join(lines)
 
 
-async def _notify_admin(text: str) -> None:
-    """Raises on any failure to send — NOT best-effort, deliberately, for
-    the call site that gates a real state change on it (queuing a next
-    plan: see _maybe_auto_queue_next_plan below). An operator who never
-    sees the notification never gets the chance to review or reprice the
-    auto-picked GB before it silently activates later — the account effect
-    is indistinguishable from just handing out free data with nobody aware
-    it happened. run_sync's own per-account try/except is what stops a
-    failure here from taking the rest of sync down with it; that's the
-    right place for this to be swallowed, not silently inside this
-    function where a caller that DOES need to know would never find out."""
-    if not settings.bot_token or not settings.bot_admin_chat_id:
-        raise RuntimeError("BOT_TOKEN/BOT_ADMIN_CHAT_ID not set — nowhere to send this notification")
-    async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.post(
-            f"https://api.telegram.org/bot{settings.bot_token}/sendMessage",
-            data={"chat_id": settings.bot_admin_chat_id, "text": text},
-        )
-    if resp.status_code != 200:
-        raise RuntimeError(f"Telegram rejected admin notification ({resp.status_code}): {resp.text}")
-
-
 async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: datetime) -> None:
     """When a PREPAY account is down to about NEAR_QUOTA_AUTO_QUEUE_REMAINING_GB
     of its package OR within NEAR_EXPIRY_AUTO_QUEUE_REMAINING_DAYS of its
@@ -140,7 +132,7 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
     Never repeats for the same shortage: skipped entirely the moment a
     pending plan exists, whether this queued it moments ago or the operator
     queued one by hand — same gate the dashboard's "Next ▸" badge reads."""
-    if account.status in ("disabled", "deleted_from_marzban"):
+    if account.status in _EXCLUDED_STATUSES:
         return
     if effective_billing_mode(session, account) != BillingMode.prepay:
         return
@@ -219,6 +211,79 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
         date=now,
         source=LedgerSource.sync,
     ))
+
+
+async def _maybe_settle_payg_cap_hit(session: Session, account: Account, now: datetime) -> None:
+    """A payg account is billed on metered usage, not a package — but it can
+    still carry a Marzban data_limit as a hard technical cap, independent of
+    billing. Hitting it gets the account BLOCKED by Marzban itself, and
+    nothing about payg's own billing model (or the prepay-only next-plan
+    feature above) ever unblocks that on its own — without this, a capped
+    payg account just stays blocked until the operator notices and resets
+    it by hand.
+
+    Purely reactive (threshold is 0.0, not a lead-in like the prepay
+    triggers above): there's no "renewal" to prepare ahead of time for payg,
+    only "they're capped right now, bill what accrued and free them."
+    Self-limiting without any extra state to track — once reset, used_traffic
+    drops to 0, so remaining_gb goes back above the threshold and this stops
+    matching until the cap is hit again a full cycle later.
+
+    Same notify-before-write ordering as auto-queue and the monthly job:
+    Telegram has to confirm the send before Marzban's reset (irreversible)
+    or any ledger charge happens."""
+    if account.status in _EXCLUDED_STATUSES:
+        return
+    if effective_billing_mode(session, account) != BillingMode.payg:
+        return
+    if account.data_limit is None:
+        return  # no hard cap set -- nothing to hit
+    remaining_gb = (account.data_limit - account.used_traffic) / GB
+    if remaining_gb > PAYG_CAP_HIT_REMAINING_GB:
+        return
+
+    billable_gb = billable_bytes(account, BillingMode.payg) / GB
+    rate = effective_rate(session, account)
+    amount = round(billable_gb * rate, 2)
+
+    charge_note = f"، {amount:g} تومان بابت مصرف این دوره شارژ شد" if amount > 0 else "، چیزی برای شارژ جدید نبود (احتمالاً قبلاً تسویه شده)"
+    await _notify_admin(
+        f"🚫 اکانت «{account.marzban_username}» به سقف حجمش ({account.data_limit / GB:g} گیگ) رسید و بلاک شده بود"
+        f"{charge_note} — مصرفش تو Marzban صفر شد تا دوباره وصل بشه."
+    )
+
+    marzban_user = await marzban_client.reset_user(account.marzban_username)
+
+    if amount > 0:
+        session.add(LedgerEntry(
+            type=LedgerType.charge,
+            amount=amount,
+            customer_id=account.customer_id,
+            group_id=account.group_id,
+            account_id=account.id,
+            note=f"Payg cap hit — usage reset ({now.date().isoformat()})",
+            source=LedgerSource.sync,
+        ))
+
+    account.used_traffic = marzban_user.get("used_traffic", 0)
+    account.lifetime_used_traffic = marzban_user.get("lifetime_used_traffic", account.lifetime_used_traffic)
+    account.expire = marzban_user.get("expire", account.expire)
+    account.data_limit = marzban_user.get("data_limit", account.data_limit)
+    account.status = marzban_user.get("status", account.status)
+    account.usage_baseline = account.used_traffic
+    account.usage_baseline_at = now
+    account.last_synced_at = now
+    session.add(account)
+
+    session.add(AccountEvent(
+        account_id=account.id,
+        action="payg_cap_hit_reset",
+        detail=f"Hit data cap, auto-reset. Charged {amount:g}." if amount > 0 else "Hit data cap, auto-reset. Nothing new to charge.",
+        date=now,
+        source=LedgerSource.sync,
+    ))
+    session.commit()
+
 
 # An account counts as "currently online" if Marzban reported a connection
 # within this many seconds of sync running. Marzban doesn't expose a live
@@ -591,6 +656,15 @@ async def _run_sync_impl() -> dict:
                 except Exception as exc:
                     logging.getLogger(__name__).error(
                         "Failed to auto-queue next plan for %s: %s",
+                        account.marzban_username, exc,
+                    )
+
+                # ── payg hit its Marzban data cap — bill + unblock now ──────
+                try:
+                    await _maybe_settle_payg_cap_hit(session, account, now)
+                except Exception as exc:
+                    logging.getLogger(__name__).error(
+                        "Failed to settle capped payg account %s: %s",
                         account.marzban_username, exc,
                     )
 
