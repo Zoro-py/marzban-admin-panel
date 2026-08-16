@@ -217,6 +217,15 @@ export interface OnlineHistory {
   points: OnlineHistoryPoint[]
 }
 
+export interface SystemStatus {
+  cpu_percent: number
+  mem_percent: number
+  mem_used_mb: number
+  mem_total_mb: number
+  // POSIX-only server-side (null on Windows dev, never faked as 0).
+  load_avg_1m: number | null
+}
+
 export interface FinanceTransaction {
   id: number
   type: LedgerType

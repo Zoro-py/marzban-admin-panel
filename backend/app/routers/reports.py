@@ -1,7 +1,9 @@
+import os
 import time
 from collections import defaultdict
 from datetime import timedelta
 
+import psutil
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 
@@ -11,6 +13,12 @@ from app.models import Account, BillingMode, Customer, Group, LedgerEntry, Ledge
 from app.services import MoneyBook, effective_billing_mode, effective_rate, rate_is_configured
 
 router = APIRouter(prefix="/api/reports", tags=["reports"], dependencies=[Depends(require_auth)])
+
+# psutil.cpu_percent(interval=None) reports the delta since its OWN last
+# call, so the very first call in a process's life is meaningless (0.0) —
+# priming it once here at import time means the first real request from the
+# dashboard already gets a real reading instead of a misleading zero.
+psutil.cpu_percent(interval=None)
 
 # 1 day / 3 days / 1 week / 1 month, as literal option names rather than a
 # free-form hours param — keeps the frontend's range picker and this endpoint
@@ -345,4 +353,27 @@ def online_history(range: str = "1d", session: Session = Depends(get_session)):
             {"recorded_at": p.recorded_at, "online_count": p.online_count, "total_accounts": p.total_accounts}
             for p in points
         ],
+    }
+
+
+@router.get("/system-status")
+def system_status():
+    """Instantaneous host CPU/RAM snapshot for the live widget on the
+    dashboard — deliberately NOT persisted anywhere (unlike online-history,
+    which needs a real multi-day trend): the frontend polls this every few
+    seconds and keeps its own short rolling buffer client-side, which is all
+    "watch it while the panel's open" needs. load averages are POSIX-only
+    (None on Windows, e.g. local dev) — the frontend just hides that figure
+    when it's missing rather than showing a fake 0."""
+    mem = psutil.virtual_memory()
+    try:
+        load1, _, _ = os.getloadavg()
+    except (AttributeError, OSError):
+        load1 = None
+    return {
+        "cpu_percent": psutil.cpu_percent(interval=None),
+        "mem_percent": mem.percent,
+        "mem_used_mb": round(mem.used / 1024 / 1024),
+        "mem_total_mb": round(mem.total / 1024 / 1024),
+        "load_avg_1m": load1,
     }

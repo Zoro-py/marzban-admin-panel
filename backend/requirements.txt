@@ -7,3 +7,4 @@ apscheduler==3.10.4
 pydantic-settings==2.7.1
 python-multipart==0.0.20
 jdatetime==6.1.0
+psutil==6.1.1

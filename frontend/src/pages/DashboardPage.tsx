@@ -17,6 +17,7 @@ import { reportsApi } from '@/lib/api'
 import { StatCard } from '@/components/StatCard'
 import { Money } from '@/components/Money'
 import { OnlineTrendChart } from '@/components/dashboard/OnlineTrendChart'
+import { SystemResourcesChart } from '@/components/dashboard/SystemResourcesChart'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
 import { cn, formatToman } from '@/lib/utils'
 
@@ -85,6 +86,7 @@ export function DashboardPage() {
       </div>
 
       <OnlineTrendChart />
+      <SystemResourcesChart />
 
       <div className="rounded-lg border border-border bg-card">
         <div className="flex items-center justify-between border-b border-border px-4 py-2.5">

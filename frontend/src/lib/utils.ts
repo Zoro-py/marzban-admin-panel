@@ -24,7 +24,7 @@ export function formatToman(amount: number | null | undefined): string {
  * them without a Z) — parsing those as LOCAL time skews everything by the
  * operator's UTC offset ("synced just now" reads as "3h ago" in Tehran).
  * Treat a timestamp string with no timezone marker as UTC. */
-function parseDate(value: string | number): Date {
+export function parseDate(value: string | number): Date {
   if (typeof value === 'number') return new Date(value * 1000)
   if (value.includes(':') && !/Z$|[+-]\d{2}:?\d{2}$/.test(value)) {
     return new Date(value.replace(' ', 'T') + 'Z')

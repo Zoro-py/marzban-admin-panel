@@ -20,6 +20,7 @@ import type {
   OnlineHistoryRange,
   ReportSummary,
   SyncStatus,
+  SystemStatus,
 } from './types'
 
 const TOKEN_KEY = 'vpn_dashboard_token'
@@ -193,6 +194,7 @@ export const reportsApi = {
   finance: async () => (await api.get<FinanceSummary>('/api/reports/finance')).data,
   onlineHistory: async (range: OnlineHistoryRange) =>
     (await api.get<OnlineHistory>('/api/reports/online-history', { params: { range } })).data,
+  systemStatus: async () => (await api.get<SystemStatus>('/api/reports/system-status')).data,
 }
 
 export const syncApi = {
