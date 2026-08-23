@@ -30,6 +30,8 @@ from app.services import (
     effective_billing_mode,
     effective_rate,
     enrich_accounts,
+    roll_payg_baseline_after_reset,
+    sync_marzban_fields,
 )
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(require_auth)])
@@ -350,12 +352,21 @@ def get_account_invoice(account_id: int, session: Session = Depends(get_session)
 
 
 @router.post("/{account_id}/settle")
-def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRequest(), session: Session = Depends(get_session)):
+async def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRequest(), session: Session = Depends(get_session)):
     """Charges this standalone account for whatever it currently owes — usage
     since the last settle for payg, or the package (data_limit) itself for
     prepay (see services.billable_bytes) — and rolls the matching baseline
     forward. The one-click "Settle" action: no manual GB/price entry, always
     charges exactly the amount already shown as this account's pending.
+
+    For payg specifically, this also resets the account's actual usage in
+    Marzban (not just the local billing baseline) — so the meter really
+    reads 0 after being billed, same as the automatic payg cap-hit/monthly
+    settlements already do. NOT done for prepay: a prepay package's
+    data_limit is what Marzban enforces as the hard cap for the package
+    already sold, so zeroing used_traffic mid-package would hand the
+    customer a second free allowance of the same package instead of billing
+    it — prepay's own baseline is billed_data_limit, untouched by Marzban.
 
     This POSTS A CHARGE — the debt becomes formal/real, which is why the
     balance goes red afterward if `mark_paid` isn't set: nothing has been
@@ -380,6 +391,18 @@ def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRe
     prior_balance = 0.0
     if body.mark_paid:
         prior_balance = account_posted_balance(session, account.id)
+
+    # Marzban call BEFORE any DB write, same ordering as reset_account: if
+    # this fails, nothing gets charged either, rather than billing a reset
+    # that never actually happened.
+    marzban_user = None
+    if mode == BillingMode.payg:
+        try:
+            marzban_user = await marzban_client.reset_user(account.marzban_username)
+        except ValueError as exc:
+            raise HTTPException(400, f"Marzban rejected this reset: {exc}")
+        except (MarzbanUnavailable, MarzbanAuthError) as exc:
+            raise HTTPException(502, str(exc))
 
     now = utcnow()
     cycle_note = (
@@ -412,7 +435,11 @@ def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRe
             #    preview promised a settled balance.
             # max(0, ...) because an account still in credit afterwards has
             # nothing left to pay.
-            credit_amount = round(max(0.0, prior_balance + amount), 2)
+            # pay_scope="prior_only": the payment being recorded right now is
+            # for OLD debt only — this cycle's own charge (`amount`, just
+            # posted above) stays outstanding rather than being silently
+            # marked paid alongside it.
+            credit_amount = round(max(0.0, prior_balance if body.pay_scope == "prior_only" else prior_balance + amount), 2)
             if credit_amount > 0:
                 session.add(
                     LedgerEntry(
@@ -426,8 +453,14 @@ def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRe
                 )
 
         if mode == BillingMode.payg:
-            account.usage_baseline = account.used_traffic
-            account.usage_baseline_at = now
+            sync_marzban_fields(account, marzban_user)
+            roll_payg_baseline_after_reset(account, now)
+            account.last_synced_at = now
+            session.add(AccountEvent(
+                account_id=account.id,
+                action="settle_reset",
+                detail=f"Usage reset via settle (charged {amount:g})",
+            ))
         else:
             account.billed_data_limit = account.data_limit or 0
         session.add(account)
@@ -491,11 +524,7 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
                 )
             )
 
-        account.used_traffic = marzban_user.get("used_traffic", 0)
-        account.lifetime_used_traffic = marzban_user.get("lifetime_used_traffic", account.lifetime_used_traffic)
-        account.expire = marzban_user.get("expire", account.expire)
-        account.data_limit = marzban_user.get("data_limit", account.data_limit)
-        account.status = marzban_user.get("status", account.status)
+        sync_marzban_fields(account, marzban_user)
         # Reset always rolls the RIGHT baseline forward too, regardless of
         # whether a charge was posted — otherwise a prepay account's pending
         # amount (data_limit - billed_data_limit) stays exactly what it was
@@ -505,8 +534,7 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
         # only the former (as this used to, unconditionally) was a no-op for
         # prepay's own billing math.
         if mode == BillingMode.payg:
-            account.usage_baseline = account.used_traffic
-            account.usage_baseline_at = now
+            roll_payg_baseline_after_reset(account, now)
         else:
             account.billed_data_limit = account.data_limit or 0
         account.last_synced_at = now

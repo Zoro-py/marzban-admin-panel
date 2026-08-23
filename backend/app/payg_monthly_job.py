@@ -171,7 +171,7 @@ async def _run_monthly_payg_settlement(month_key: str, year: int, month: int) ->
     with Session(engine) as session:
         for r in group_rows:
             try:
-                settle_group(r["group_id"], GroupSettleRequest(mark_paid=False), session)
+                await settle_group(r["group_id"], GroupSettleRequest(mark_paid=False), session)
                 session.add(MonthlySettlementBatch(
                     jalali_period=month_key, group_id=r["group_id"], display_name=r["name"],
                     billable_gb=r["gb"], amount=r["amount"], settled_at=now,
@@ -190,7 +190,7 @@ async def _run_monthly_payg_settlement(month_key: str, year: int, month: int) ->
 
         for r in account_rows:
             try:
-                settle_account(r["account_id"], AccountSettleRequest(mark_paid=False), session)
+                await settle_account(r["account_id"], AccountSettleRequest(mark_paid=False), session)
                 session.add(MonthlySettlementBatch(
                     jalali_period=month_key, account_id=r["account_id"], display_name=r["name"],
                     billable_gb=r["gb"], amount=r["amount"], settled_at=now,

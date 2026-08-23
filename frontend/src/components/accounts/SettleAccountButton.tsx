@@ -54,16 +54,24 @@ export function SettleAccountButton({
 }) {
   const [open, setOpen] = React.useState(false)
   const [markPaid, setMarkPaid] = React.useState(true)
+  // Only meaningful (and only shown) when there's old debt on top of this
+  // charge — lets "they just paid off last cycle" not get silently
+  // conflated with "and this cycle's fresh charge is paid too."
+  const [payScope, setPayScope] = React.useState<'full' | 'prior_only'>('full')
   const queryClient = useQueryClient()
 
   const mutation = useMutation({
     mutationFn: () =>
       groupId
-        ? groupsApi.settleMember(groupId, accountId, { mark_paid: markPaid })
-        : accountsApi.settle(accountId, { mark_paid: markPaid }),
+        ? groupsApi.settleMember(groupId, accountId, { mark_paid: markPaid, pay_scope: payScope })
+        : accountsApi.settle(accountId, { mark_paid: markPaid, pay_scope: payScope }),
     onSuccess: () => {
       toast.success(
-        markPaid ? `Settled ${username} — paid in full` : `Settled ${username} — charged ${formatToman(amount)}, still owed`,
+        !markPaid
+          ? `Settled ${username} — charged ${formatToman(amount)}, still owed`
+          : payScope === 'prior_only'
+            ? `Settled ${username} — old balance paid, this charge still owed`
+            : `Settled ${username} — paid in full`,
       )
       queryClient.invalidateQueries({ queryKey: ['accounts'] })
       queryClient.invalidateQueries({ queryKey: ['account'] })
@@ -80,7 +88,11 @@ export function SettleAccountButton({
   // (not the charge amount blindly — see settle_account), so an account
   // already in credit lands at settled rather than being credited twice.
   const owedAfterCharge = currentBalance + amount
-  const resultingBalance = markPaid ? Math.min(0, owedAfterCharge) : owedAfterCharge
+  const resultingBalance = !markPaid
+    ? owedAfterCharge
+    : payScope === 'prior_only'
+      ? owedAfterCharge - Math.max(0, currentBalance)
+      : Math.min(0, owedAfterCharge)
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -117,6 +129,23 @@ export function SettleAccountButton({
             </p>
           </span>
         </label>
+
+        {markPaid && currentBalance > 0 && (
+          <label className="ml-6 flex cursor-pointer items-start gap-2 rounded-md border border-border bg-muted/20 p-2.5 text-xs">
+            <Checkbox
+              checked={payScope === 'prior_only'}
+              onCheckedChange={(v) => setPayScope(v === true ? 'prior_only' : 'full')}
+              className="mt-0.5"
+            />
+            <span className="flex-1">
+              <span className="font-medium">Only for the old balance</span>
+              <p className="mt-0.5 text-muted-foreground">
+                This payment covers what was already owed before this charge — the new {formatToman(amount)} charge
+                stays outstanding, to be paid separately once it's actually collected.
+              </p>
+            </span>
+          </label>
+        )}
 
         <div
           className={cn(

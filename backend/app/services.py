@@ -192,6 +192,31 @@ def billable_bytes(account: Account, mode: BillingMode) -> int:
     return max(0, account.data_limit - account.billed_data_limit)
 
 
+def sync_marzban_fields(account: Account, marzban_user: dict) -> None:
+    """Mirrors a Marzban API response (reset/modify/create) onto the local
+    Account row — the 5 fields any such call can change. Shared by
+    reset_account and every payg settle path (settle_account/settle_group/
+    settle_group_member) so this stays in one place instead of drifting
+    across copies."""
+    account.used_traffic = marzban_user.get("used_traffic", 0)
+    account.lifetime_used_traffic = marzban_user.get("lifetime_used_traffic", account.lifetime_used_traffic)
+    account.expire = marzban_user.get("expire", account.expire)
+    account.data_limit = marzban_user.get("data_limit", account.data_limit)
+    account.status = marzban_user.get("status", account.status)
+
+
+def roll_payg_baseline_after_reset(account: Account, now: datetime) -> None:
+    """After Marzban usage has actually been reset (used_traffic is now the
+    post-reset value — normally 0), the payg billing baseline must roll to
+    match, or the next settle would either bill the same usage twice, or —
+    if the post-reset value landed below the old baseline — silently bill
+    nothing until usage climbs back past it. Call this AFTER
+    sync_marzban_fields, never before (it reads the just-synced
+    used_traffic)."""
+    account.usage_baseline = account.used_traffic
+    account.usage_baseline_at = now
+
+
 def get_settings(session: Session) -> AppSettings:
     settings = session.get(AppSettings, 1)
     if settings is None:

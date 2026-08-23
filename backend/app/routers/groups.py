@@ -6,8 +6,8 @@ from sqlmodel import Session, select
 
 from app.auth import require_auth
 from app.db import get_session
-from app.marzban_client import marzban_client
-from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
+from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_client
+from app.models import Account, AccountEvent, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
 from app.schemas import AccountRow, GroupCreate, GroupRead, GroupSettleRequest, GroupUpdate, GroupWithBalance, InvoiceLine
 from app.services import (
     MoneyBook,
@@ -16,6 +16,8 @@ from app.services import (
     effective_rate,
     enrich_accounts,
     group_only_posted_balance,
+    roll_payg_baseline_after_reset,
+    sync_marzban_fields,
 )
 
 router = APIRouter(prefix="/api/groups", tags=["groups"], dependencies=[Depends(require_auth)])
@@ -201,7 +203,7 @@ def get_group_invoice(group_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/{group_id}/settle")
-def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(), session: Session = Depends(get_session)):
+async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(), session: Session = Depends(get_session)):
     """
     Settle the group's current billing cycle.
 
@@ -222,6 +224,19 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
     representative customer is paying in the same moment, to also post a
     matching credit per member so each member's balance nets back to 0
     (settled) instead of showing as still owed.
+
+    For a payg group, this also resets every member's actual usage in
+    Marzban (not just the local billing baseline) — same reasoning as
+    settle_account. Attempted per member and never allowed to block the
+    charge from posting: a member whose Marzban call fails still gets
+    charged and its local baseline rolled forward from whatever
+    used_traffic already is (same fallback /reset-cycle uses), reported
+    back via `failed_resets` instead of silently dropped. Deliberately NOT
+    all-or-nothing — a Marzban reset that already succeeded for one member
+    is a real, irreversible side effect that can't be undone by aborting
+    the rest of this request, so aborting on a later member's failure would
+    mean that earlier member's usage got wiped for free with no charge
+    posted to match.
 
     Args:
         group_id (int): The ID of the group to settle.
@@ -258,6 +273,19 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
             prior_balances[line.account_id] = account_posted_balance(session, line.account_id)
         prior_group_only = group_only_posted_balance(session, group.id)
 
+    # Attempted BEFORE any DB write, same as settle_account — but per member
+    # rather than all-or-nothing (see docstring): a reset that already
+    # landed in Marzban for one member can't be rolled back by aborting the
+    # rest of this request.
+    marzban_responses: dict[int, dict] = {}
+    failed_resets: list[str] = []
+    if group.billing_mode == BillingMode.payg:
+        for a in accounts:
+            try:
+                marzban_responses[a.id] = await marzban_client.reset_user(a.marzban_username)
+            except (ValueError, MarzbanUnavailable, MarzbanAuthError) as exc:
+                failed_resets.append(f"{a.marzban_username}: {exc}")
+
     paid_note = f"Payment received at settlement ({now.date().isoformat()})"
     try:
         for line in lines:
@@ -282,7 +310,11 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
                 #    still be cleared even when this cycle adds nothing, or
                 #    "payment received" would silently do nothing while the
                 #    dialog's preview promised a settled balance.
-                credit_amount = round(max(0.0, prior_balances.get(line.account_id, 0.0) + line.amount), 2)
+                # pay_scope="prior_only": see AccountSettleRequest — this
+                # cycle's own charge (line.amount, just posted above) stays
+                # outstanding, only what was already owed gets credited.
+                prior = prior_balances.get(line.account_id, 0.0)
+                credit_amount = round(max(0.0, prior if body.pay_scope == "prior_only" else prior + line.amount), 2)
                 if credit_amount > 0:
                     session.add(
                         LedgerEntry(
@@ -316,8 +348,24 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
 
         for a in accounts:
             if group.billing_mode == BillingMode.payg:
-                a.usage_baseline = a.used_traffic
-                a.usage_baseline_at = now
+                marzban_user = marzban_responses.get(a.id)
+                if marzban_user is not None:
+                    sync_marzban_fields(a, marzban_user)
+                    roll_payg_baseline_after_reset(a, now)
+                    a.last_synced_at = now
+                    session.add(AccountEvent(
+                        account_id=a.id,
+                        action="settle_reset",
+                        detail="Usage reset via group settle",
+                    ))
+                else:
+                    # Marzban reset failed for this member (see
+                    # failed_resets) — still roll the local baseline from
+                    # whatever used_traffic already is, so this member's
+                    # cycle still closes; the charge above already billed
+                    # for everything up to that value regardless.
+                    a.usage_baseline = a.used_traffic
+                    a.usage_baseline_at = now
             else:
                 a.billed_data_limit = a.data_limit or 0
             session.add(a)
@@ -329,11 +377,11 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
         session.rollback()
         raise
 
-    return {"group_id": group_id, "charged_amount": total_amount, "settled_at": now, "lines": lines}
+    return {"group_id": group_id, "charged_amount": total_amount, "settled_at": now, "lines": lines, "failed_resets": failed_resets}
 
 
 @router.post("/{group_id}/members/{account_id}/settle")
-def settle_group_member(
+async def settle_group_member(
     group_id: int,
     account_id: int,
     body: GroupSettleRequest = GroupSettleRequest(),
@@ -356,6 +404,11 @@ def settle_group_member(
     every other member, and group.last_settled_at, are untouched. The
     group's cycle stays open until /settle (or this endpoint, called once
     per remaining member) closes it for everyone.
+
+    For a payg group, also resets this member's actual usage in Marzban —
+    see settle_account for why prepay is untouched. Just one account, so
+    (unlike the full-group /settle) a Marzban failure here aborts cleanly
+    before any charge is posted, same as settle_account.
     """
     group = session.get(Group, group_id)
     if not group:
@@ -380,6 +433,15 @@ def settle_group_member(
     if body.mark_paid:
         prior_balance = account_posted_balance(session, account.id)
 
+    marzban_user = None
+    if group.billing_mode == BillingMode.payg:
+        try:
+            marzban_user = await marzban_client.reset_user(account.marzban_username)
+        except ValueError as exc:
+            raise HTTPException(400, f"Marzban rejected this reset: {exc}")
+        except (MarzbanUnavailable, MarzbanAuthError) as exc:
+            raise HTTPException(502, str(exc))
+
     try:
         if line.amount > 0:
             session.add(
@@ -394,7 +456,8 @@ def settle_group_member(
                 )
             )
         if body.mark_paid:
-            credit_amount = round(max(0.0, prior_balance + line.amount), 2)
+            # pay_scope="prior_only": see AccountSettleRequest.
+            credit_amount = round(max(0.0, prior_balance if body.pay_scope == "prior_only" else prior_balance + line.amount), 2)
             if credit_amount > 0:
                 session.add(
                     LedgerEntry(
@@ -409,8 +472,14 @@ def settle_group_member(
                 )
 
         if group.billing_mode == BillingMode.payg:
-            account.usage_baseline = account.used_traffic
-            account.usage_baseline_at = now
+            sync_marzban_fields(account, marzban_user)
+            roll_payg_baseline_after_reset(account, now)
+            account.last_synced_at = now
+            session.add(AccountEvent(
+                account_id=account.id,
+                action="settle_reset",
+                detail=f"Usage reset via member settle (charged {line.amount:g})",
+            ))
         else:
             account.billed_data_limit = account.data_limit or 0
         session.add(account)

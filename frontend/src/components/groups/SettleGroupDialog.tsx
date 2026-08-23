@@ -27,6 +27,10 @@ import { ReceiptText } from 'lucide-react'
 export function SettleGroupDialog({ groupId, currentBalance }: { groupId: number; currentBalance: number }) {
   const [open, setOpen] = React.useState(false)
   const [markPaid, setMarkPaid] = React.useState(true)
+  // Only meaningful (and only shown) when there's old debt on top of this
+  // cycle's new charge — lets "they just paid off last cycle" not get
+  // silently conflated with "and this cycle's fresh charge is paid too."
+  const [payScope, setPayScope] = React.useState<'full' | 'prior_only'>('full')
   const queryClient = useQueryClient()
 
   const invoiceQuery = useQuery({
@@ -36,9 +40,22 @@ export function SettleGroupDialog({ groupId, currentBalance }: { groupId: number
   })
 
   const settleMutation = useMutation({
-    mutationFn: () => groupsApi.settle(groupId, { mark_paid: markPaid }),
-    onSuccess: () => {
-      toast.success(markPaid ? 'Settled — paid in full' : 'Settled — charged, still owed')
+    mutationFn: () => groupsApi.settle(groupId, { mark_paid: markPaid, pay_scope: payScope }),
+    onSuccess: (data: { failed_resets?: string[] }) => {
+      toast.success(
+        !markPaid
+          ? 'Settled — charged, still owed'
+          : payScope === 'prior_only'
+            ? 'Settled — old balance paid, this cycle still owed'
+            : 'Settled — paid in full',
+      )
+      // Every member was still charged and its cycle closed either way (see
+      // the backend's own reasoning) — this only means that member's live
+      // Marzban usage counter didn't get cleared, so it's worth a distinct
+      // heads-up rather than folding silently into the success toast.
+      if (data.failed_resets && data.failed_resets.length > 0) {
+        toast.warning(`Charged, but Marzban usage reset failed for: ${data.failed_resets.join(', ')}`)
+      }
       queryClient.invalidateQueries({ queryKey: ['groups'] })
       queryClient.invalidateQueries({ queryKey: ['ledger'] })
       queryClient.invalidateQueries({ queryKey: ['reports'] })
@@ -52,7 +69,11 @@ export function SettleGroupDialog({ groupId, currentBalance }: { groupId: number
   // individually isn't credited twice. Exact whenever no member is carrying
   // a credit; otherwise the real result lands at or below this.
   const owedAfterCharge = currentBalance + amount
-  const resultingBalance = markPaid ? Math.min(0, owedAfterCharge) : owedAfterCharge
+  const resultingBalance = !markPaid
+    ? owedAfterCharge
+    : payScope === 'prior_only'
+      ? owedAfterCharge - Math.max(0, currentBalance)
+      : Math.min(0, owedAfterCharge)
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -116,6 +137,23 @@ export function SettleGroupDialog({ groupId, currentBalance }: { groupId: number
             </p>
           </span>
         </label>
+
+        {markPaid && currentBalance > 0 && (
+          <label className="ml-6 flex cursor-pointer items-start gap-2 rounded-md border border-border bg-muted/20 p-2.5 text-xs">
+            <Checkbox
+              checked={payScope === 'prior_only'}
+              onCheckedChange={(v) => setPayScope(v === true ? 'prior_only' : 'full')}
+              className="mt-0.5"
+            />
+            <span className="flex-1">
+              <span className="font-medium">Only for the old balance</span>
+              <p className="mt-0.5 text-muted-foreground">
+                This payment covers what was already owed before this cycle — this cycle's {formatToman(amount)} charge
+                stays outstanding, to be paid separately once it's actually collected.
+              </p>
+            </span>
+          </label>
+        )}
 
         <div
           className={cn(

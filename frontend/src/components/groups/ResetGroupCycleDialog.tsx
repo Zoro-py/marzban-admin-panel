@@ -33,8 +33,11 @@ export function ResetGroupCycleDialog({ groupId }: { groupId: number }) {
 
   const resetMutation = useMutation({
     mutationFn: () => groupsApi.resetCycle(groupId),
-    onSuccess: () => {
+    onSuccess: (data: { failed_resets?: string[] }) => {
       toast.success('Cycle reset — no charge was posted')
+      if (data.failed_resets && data.failed_resets.length > 0) {
+        toast.warning(`Cycle closed, but Marzban usage reset failed for: ${data.failed_resets.join(', ')}`)
+      }
       queryClient.invalidateQueries({ queryKey: ['groups'] })
       queryClient.invalidateQueries({ queryKey: ['reports'] })
       setOpen(false)

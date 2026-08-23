@@ -65,9 +65,17 @@ class GroupSettleRequest(BaseModel):
     """Settling posts a CHARGE — the debt becomes formal/real, not a record
     that payment was received. mark_paid additionally posts a matching
     credit in the same call, netting the balance back to 0 (settled) — for
-    the common "they paid me right now" case."""
+    the common "they paid me right now" case.
+
+    pay_scope only matters when mark_paid=True: "full" (default) credits
+    whatever's owed AFTER this cycle's charge lands (old debt + new charge).
+    "prior_only" credits just the balance that existed BEFORE this charge —
+    for a customer who's paying off an old cycle right now but hasn't paid
+    this new one yet, so today's payment doesn't get silently applied to a
+    charge they haven't actually paid for."""
 
     mark_paid: bool = False
+    pay_scope: Literal["full", "prior_only"] = "full"
 
 
 class InvoiceLine(BaseModel):
@@ -165,9 +173,14 @@ class AccountSettleRequest(BaseModel):
     a matching credit in the same call, netting the balance back to 0
     (shown as settled, not owed) — for the common "they paid me right now"
     case, so the operator doesn't have to charge, then separately go find
-    the payment-recording UI and type the same amount in by hand."""
+    the payment-recording UI and type the same amount in by hand.
+
+    pay_scope only matters when mark_paid=True — see GroupSettleRequest for
+    the full explanation. "prior_only" credits just the balance that existed
+    BEFORE this charge, leaving this cycle's new charge itself outstanding."""
 
     mark_paid: bool = False
+    pay_scope: Literal["full", "prior_only"] = "full"
 
 
 class AccountResetRequest(BaseModel):
