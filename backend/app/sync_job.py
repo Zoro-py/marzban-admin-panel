@@ -45,11 +45,18 @@ PAYG_CAP_HIT_REMAINING_GB = 0.0
 _EXCLUDED_STATUSES = ("disabled", "deleted_from_marzban")
 
 
-def _round_down_to_multiple_of_5(gb: float, minimum: float = 5.0) -> float:
+def _round_package_size(gb: float, minimum: float = 5.0) -> float:
     """Always a round package size (65 GB, never 65.8) that reads as a real
-    plan, rounded DOWN so this never queues more than what was actually
-    observed — and never below `minimum`, since a plan rounded to 0 isn't a
-    valid one at all (NextPlanRequest requires data_limit_gb > 0)."""
+    plan. Rounds DOWN by default, so this never queues much more than what
+    was actually observed — except when the average is within 1 GB of the
+    next multiple of 5 (19.8 -> 20, not 15): rounding down there would cut
+    the next plan by nearly a full 5 GB over what's really a rounding
+    technicality, which reads as arbitrary rather than "sized to your usage."
+    Never below `minimum`, since a plan rounded to 0 isn't a valid one at all
+    (NextPlanRequest requires data_limit_gb > 0)."""
+    rounded_up = math.ceil(gb / 5) * 5
+    if rounded_up - gb <= 1.0:
+        return max(minimum, rounded_up)
     return max(minimum, math.floor(gb / 5) * 5)
 
 
@@ -178,7 +185,7 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
         )
         return
 
-    queue_gb = _round_down_to_multiple_of_5(avg_gb)
+    queue_gb = _round_package_size(avg_gb)
 
     # TWO separate Telegram messages, not one with the customer text embedded
     # in the middle — the first version needed manual copy/retyping to pull
