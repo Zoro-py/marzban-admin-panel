@@ -1,20 +1,24 @@
 # VPN Reseller Dashboard
 
 A management layer on top of a Marzban panel: tracks who owns which account, who owes what
-(and who's owed a credit), and settles pay-as-you-go groups (e.g. a company owner paying for
-employee accounts) — all backed by Marzban's own API for usage/status, plus a local database
-for the business data Marzban has no concept of (customers, ownership, money).
+(and who's owed a credit), auto-renews and auto-bills accounts as they run low, and settles
+pay-as-you-go groups (e.g. a company owner paying for employee accounts) — all backed by
+Marzban's own API for usage/status, plus a local database for the business data Marzban has
+no concept of (customers, ownership, money).
 
 Three pieces, one shared backend:
 
 ```
 backend/   FastAPI + SQLite (swap to Postgres later) — the source of truth, talks to Marzban
-frontend/  Vite + React + Tailwind dashboard — full CRUD, live balances, invoices
+frontend/  Vite + React + Tailwind dashboard — full CRUD, live balances, invoices, charts
 bot/       Telegram bot — quick mobile checks + the same actions as the dashboard
 ```
 
-Not yet a git repo — this is local, per-file dev for now; a repo gets created once this is
-ready to be versioned.
+Public repo: `github.com/Zoro-py/marzban-admin-panel`. See `AGENTS.md` before making changes
+— this panel moves real money, and that file documents the failure modes that have actually
+happened here plus the discipline required to avoid repeating them. See `frontend/DESIGN.md`
+for the UI's visual system. See `docs/DOMAIN_AND_BILLING.md` for the full billing/automation
+reference — this file only covers running it.
 
 ## 1. Backend
 
@@ -37,6 +41,13 @@ Edit `.env`:
   built-in defaults (`vless`/`vmess`/`trojan`/`shadowsocks`, all inbounds) don't match how
   your panel's inbounds are actually tagged. Check `GET /api/inbounds` on your Marzban panel
   if new-account creation from the dashboard picks the wrong inbounds.
+- `BOT_TOKEN` / `BOT_ADMIN_CHAT_ID` (optional but recommended) — without these, every
+  automatic Telegram notification (next-plan auto-queue/activation, payg cap-hit resets, the
+  monthly payg settlement report, nightly backups) is silently skipped rather than sent. See
+  `docs/DOMAIN_AND_BILLING.md` for why several of these features refuse to act at all if the
+  notification can't be sent.
+- `PAYG_MONTHLY_SETTLE_HOUR` / `PAYG_MONTHLY_SETTLE_MINUTE` (optional, default `23:30`
+  server-local time) — when the daily check for "is a Jalali month ending tonight" runs.
 
 Run it:
 
@@ -85,9 +96,16 @@ venv/Scripts/python bot.py
 ```
 
 Commands: `/report`, `/customer <name or id>`, `/charge <customer> <amount> [note]`,
-`/credit <customer> <amount> [note]`, `/extend <username> <days> [gb]`, `/sync`.
+`/credit <customer> <amount> [note]`, `/extend <username> <days> [gb]`, `/sync`,
+`/backup` (on-demand DB backup, sent as a file to this chat).
 
-## How ownership/billing works
+Note: `BOT_TOKEN`/`BOT_ADMIN_CHAT_ID` in `backend/.env` are a **separate** thing from this
+bot process — the backend uses them directly (via `app/notify.py`) to push automatic
+notifications (next-plan, cap-hit, monthly settlement, nightly backup) to your chat, without
+going through this bot's own polling loop at all. Point both at the same bot/chat in normal
+use; the backend's notify path works even if this bot process isn't running.
+
+## How ownership/billing works (short version)
 
 - **Accounts** mirror Marzban users (created/synced via its API). Usage, limits, expiry,
   status all live in Marzban — this project never re-implements them, only mirrors a
@@ -95,15 +113,28 @@ Commands: `/report`, `/customer <name or id>`, `/charge <customer> <amount> [not
 - **Customers** are the people you actually deal with — a customer can own several accounts
   (e.g. one person, several family members' accounts).
 - **Groups** are pay-as-you-go billing units (e.g. a company): several accounts billed
-  together against one representative customer, on a recurring cycle. `POST
-  /api/groups/{id}/settle` charges the cycle's usage and rolls the baseline forward — call it
-  whenever you're ready to bill (end of month, etc.), it doesn't happen automatically.
+  together against one representative customer, on a recurring cycle.
+- Every account/group is billed **prepay** (pay for a package up front, sized at sale time)
+  or **payg** (metered — pay for what was actually used since the last settle). A group's
+  mode governs every member's billing regardless of that member's own field.
 - **Ledger** is an append-only transaction log (`charge` = debt owed to you, `credit` =
   payment received). A customer's or group's balance is always the sum of its ledger rows —
   never a field that gets overwritten, so there's a full audit trail.
+- **Settle** posts a charge for what's currently owed and rolls the billing baseline forward
+  — for payg, it also resets the account's actual usage in Marzban (the meter really reads 0
+  after being billed for it). Never happens on its own; you (or an automatic job — see below)
+  trigger it.
+- Several things happen **automatically** without anyone clicking a button: renewing an
+  account before it runs out (and billing the operator's chosen amount only after they
+  approve it), auto-billing+resetting a payg account that hits a hard usage cap, and closing
+  out every payg group/account on the last night of each real Jalali (Persian) calendar
+  month. **Full details, thresholds, and the safety rules behind each of these are in
+  `docs/DOMAIN_AND_BILLING.md`** — read it before touching any of `sync_job.py`,
+  `payg_monthly_job.py`, or the settle/reset endpoints.
 - A background job re-syncs every account's usage/status from Marzban on an interval
   (`SYNC_INTERVAL_SECONDS` in `backend/.env`, default 60); `POST /api/sync/run` or the bot's
-  `/sync` trigger it immediately.
+  `/sync` trigger it immediately. This same cycle is what drives the auto-renew and cap-hit
+  checks above.
 
 ## Deployment
 
@@ -138,18 +169,29 @@ First run on a fresh server, this single line:
    background updates — common on a freshly booted VPS).
 2. Clones the repo to `/opt/marzban-admin-panel` (plain HTTPS, no auth needed).
 3. Hands off to `scripts/install.sh`, which installs Docker/nginx/certbot if missing, then
-   asks for: the two subdomains (defaults to `ops.melobuds.ir` / `ops-api.melobuds.ir` —
-   confirmed free via DNS lookup; avoided `admin.melobuds.ir`, `vpn*`, since those either
-   were taken or you didn't want "vpn" in the name), your email for Let's Encrypt, your real
-   Marzban admin URL/username/password, and your Telegram bot token/chat id — every field is
-   validated non-blank before it moves on, so a stray blind Enter can't silently write an
-   empty value into a `.env` file and fail confusingly later.
+   asks for: the two subdomains (this deployment uses `ops.melobuds.ir` / `ops-api.melobuds.ir`
+   — confirmed free via DNS lookup at the time; `admin.melobuds.ir` and anything with `vpn*`
+   were avoided, either taken or intentionally not wanted in the name), your email for Let's
+   Encrypt, your real Marzban admin URL/username/password, and your Telegram bot token/chat
+   id — every field is validated non-blank before it moves on, so a stray blind Enter can't
+   silently write an empty value into a `.env` file and fail confusingly later.
 4. **Pauses**, printing this server's public IP — go do Step 2 before it requests SSL
    certificates.
 
 Re-running the exact same command later (on this server or a new one) picks up exactly where
 it left off — already cloned → straight to `install.sh`; already configured → straight to
 whichever of nginx/certs/containers still needs doing.
+
+**Routine redeploy on an already-set-up server** (e.g. after pulling a fix): from
+`/opt/marzban-admin-panel`,
+
+```bash
+git pull && docker compose up -d --build
+```
+
+`docker compose ls` on the server will show every Compose project currently running
+(`marzban` itself is a **separate** project/directory — never run compose commands from the
+wrong one).
 
 ### Step 2 (your side, when the script pauses) — DNS
 
@@ -189,7 +231,7 @@ secret**, four of them:
 
 After that, **Actions tab → Deploy → Run workflow** SSHes in and runs `git pull && docker
 compose up -d --build` for you — no manual server access needed for routine updates. Without
-this step, redeploying just means running the Step 1 command again on the server yourself.
+this step, redeploying just means running the routine-redeploy command above yourself.
 
 ### Reusing this on another server later
 

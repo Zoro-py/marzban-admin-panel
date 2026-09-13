@@ -10,6 +10,11 @@ A management layer on top of Marzban: tracks ownership, billing, and pay-as-you-
 
 **Critical domain:** This panel moves real money. A billing bug can silently overcharge or forgive real debt with no error shown anywhere.
 
+**Before changing any billing/automation logic, read `docs/DOMAIN_AND_BILLING.md` in full** —
+it documents the settle-vs-reset distinction, the notify-first safety pattern, and the
+standing decisions (e.g. no review delay before auto-activation) that a "fix" must not
+silently reverse.
+
 ---
 
 ## 2. Repo map
@@ -22,6 +27,8 @@ A management layer on top of Marzban: tracks ownership, billing, and pay-as-you-
 | `scripts/` | Install/bootstrap scripts |
 | `docker-compose.yml` | Deployment |
 | `.env.example` | Reference for required env vars |
+| `docs/DOMAIN_AND_BILLING.md` | Full billing/automation reference — read before touching money logic |
+| `frontend/DESIGN.md` | Frontend visual system |
 
 ---
 
