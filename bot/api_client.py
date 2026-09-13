@@ -31,8 +31,14 @@ class BackendClient:
         self._token_expires_at = time.monotonic() + 12 * 60 * 60
         return self._token
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        async with httpx.AsyncClient(timeout=20) as client:
+    async def _request(self, method: str, path: str, timeout: float = 20, **kwargs: Any) -> httpx.Response:
+        # `timeout` is per call, not a constant: 20s is right for the reads and
+        # single-row writes every other command makes, but bulk account
+        # creation is one Marzban round-trip PER ACCOUNT, so a 40-account batch
+        # legitimately runs for minutes. Timing that out client-side wouldn't
+        # cancel it — the backend keeps creating accounts either way — it would
+        # only throw away the response that says which ones were made.
+        async with httpx.AsyncClient(timeout=timeout) as client:
             token = await self._get_token(client)
             headers = {"Authorization": f"Bearer {token}"}
             resp = await client.request(method, f"{self._base_url}{path}", headers=headers, **kwargs)
@@ -48,10 +54,17 @@ class BackendClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def post(self, path: str, json: Optional[dict] = None) -> Any:
-        resp = await self._request("POST", path, json=json)
+    async def post(self, path: str, json: Optional[dict] = None, timeout: float = 20) -> Any:
+        resp = await self._request("POST", path, json=json, timeout=timeout)
         if resp.status_code >= 400:
-            raise ValueError(resp.json().get("detail", resp.text))
+            # A 422 from FastAPI carries a LIST under "detail", not a string —
+            # str()ing it here keeps the caller's `except ValueError as exc`
+            # printable instead of leaking a raw Python list into the chat.
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except ValueError:
+                detail = resp.text
+            raise ValueError(detail if isinstance(detail, str) else str(detail))
         return resp.json()
 
     async def patch(self, path: str, json: Optional[dict] = None) -> Any:

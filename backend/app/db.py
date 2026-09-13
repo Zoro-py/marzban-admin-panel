@@ -43,6 +43,14 @@ def _run_lightweight_migrations() -> None:
         if existing and "online_at" not in existing:
             conn.execute(text("ALTER TABLE account ADD COLUMN online_at DATETIME"))
 
+        if existing and "subscription_url" not in existing:
+            # No backfill: Marzban is the only place this value exists and we
+            # can't invent it. The sync job fills it in for every account on
+            # its next pass (see sync_marzban_fields), so leaving it NULL here
+            # self-heals within one sync interval rather than needing a
+            # migration that makes its own Marzban calls at startup.
+            conn.execute(text("ALTER TABLE account ADD COLUMN subscription_url VARCHAR"))
+
         if existing and "first_seen_traffic" not in existing:
             conn.execute(text("ALTER TABLE account ADD COLUMN first_seen_traffic INTEGER NOT NULL DEFAULT 0"))
             conn.execute(text("ALTER TABLE account ADD COLUMN first_seen_traffic_at DATETIME"))

@@ -64,6 +64,20 @@ class Settings(BaseSettings):
     marzban_default_proxies: dict[str, dict] = {"vless": {}, "vmess": {}, "trojan": {}, "shadowsocks": {}}
     marzban_default_inbounds: dict[str, list[str]] = {}
 
+    # Marzban returns each user's `subscription_url` as a RELATIVE path
+    # ("/sub/<token>") unless its own XRAY_SUBSCRIPTION_URL_PREFIX is set, in
+    # which case it is already absolute. A relative path is useless to a
+    # customer, so this backend resolves it against a base before handing it
+    # out. Left blank, that base is MARZBAN_BASE_URL — correct for the common
+    # setup where the panel and the subscription endpoint share a hostname.
+    # Set this only when subscriptions are served from a DIFFERENT public
+    # host than the panel itself (a separate sub-domain, a CDN in front of
+    # it): getting it wrong produces links that resolve but 404, which looks
+    # identical to a broken account from the customer's side.
+    # Absolute subscription_url values from Marzban are passed through
+    # untouched either way — this never rewrites a host Marzban chose.
+    marzban_subscription_base_url: str = ""
+
 
 def _load_or_create_jwt_secret() -> str:
     secret_file = Path(__file__).resolve().parent.parent / ".jwt_secret"

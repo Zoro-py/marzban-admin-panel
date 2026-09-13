@@ -4,6 +4,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 from app.models import AccountRole, BillingMode, LedgerSource, LedgerType
+from app.bulk_accounts import MAX_BULK_COUNT, MAX_NAME_INDEX
 
 # ---- Customer ----------------------------------------------------------
 
@@ -325,3 +326,99 @@ class BalanceRead(BaseModel):
     total_charge: float
     total_credit: float
     balance: float  # total_charge - total_credit; positive = they owe us
+
+
+# ---- Bulk ("family") account creation ----------------------------------
+
+
+class BulkAccountCreateRequest(BaseModel):
+    """One base name + a count, expanded into base1, base2, … — the "family
+    package" flow (one operator instruction, N identical accounts).
+
+    Plan size is expressed in DAYS and GB here, not as the absolute unix
+    `expire` AccountCreateRequest takes. Both front-ends already convert
+    days -> timestamp themselves, and doing it once here instead of once per
+    item is what guarantees every account in a batch carries the exact same
+    expiry rather than drifting by however long the batch took to run.
+    """
+
+    # Two chars minimum so a stray single keystroke can't quietly claim a huge
+    # namespace. The max leaves room for the numeric suffix; the real check is
+    # bulk_accounts.validate_base_name, which knows the batch's highest index.
+    base_name: str = Field(min_length=2, max_length=28, pattern=r"^[a-zA-Z0-9_]+$")
+    count: int = Field(ge=1, le=MAX_BULK_COUNT)
+    # None = continue from the highest existing suffix for this base name.
+    # Set = use exactly these numbers; names already taken are reported as
+    # skipped rather than shifting the rest along (see plan_bulk_usernames).
+    start_index: Optional[int] = Field(default=None, ge=1, le=MAX_NAME_INDEX)
+
+    customer_id: Optional[int] = None
+    group_id: Optional[int] = None
+    role: AccountRole = AccountRole.primary
+    rate_per_gb: Optional[float] = Field(default=None, ge=0.0)
+
+    # None = never expires / unlimited, matching Marzban's own semantics for
+    # expire=None and data_limit=None. Not 0 — 0 would mean "already expired".
+    expire_days: Optional[int] = Field(default=None, ge=1, le=3650)
+    data_limit_gb: Optional[float] = Field(default=None, gt=0.0, le=10240.0)
+    data_limit_reset_strategy: str = "no_reset"
+    status: str = "active"
+    note: Optional[str] = None
+
+    proxies: Optional[dict[str, dict[str, Any]]] = None
+    inbounds: Optional[dict[str, list[str]]] = None
+
+    # Off only for a caller that wants the links in the HTTP response without
+    # filling the operator's chat (e.g. re-running a preview-driven flow).
+    notify: bool = True
+
+
+class BulkAccountPlannedName(BaseModel):
+    index: int
+    marzban_username: str
+    already_exists: bool
+
+
+class BulkAccountPreview(BaseModel):
+    """What POST /bulk would do, without doing it. Exists so the operator sees
+    the exact usernames before N irreversible Marzban creates, rather than
+    after."""
+
+    base_name: str
+    start_index: int
+    names: list[BulkAccountPlannedName]
+    will_create: int
+    will_skip: int
+
+
+class BulkAccountItem(BaseModel):
+    marzban_username: str
+    # created           — exists in Marzban AND tracked locally
+    # skipped_exists    — the name was already taken; nothing was done
+    # created_untracked — created in Marzban but the local row failed to save.
+    #                     Needs operator attention: the account is live and
+    #                     billable but invisible to this dashboard until the
+    #                     sync job adopts it.
+    # failed            — nothing was created
+    status: Literal["created", "skipped_exists", "created_untracked", "failed"]
+    account_id: Optional[int] = None
+    subscription_url: Optional[str] = None
+    error: Optional[str] = None
+
+
+class BulkAccountCreateResult(BaseModel):
+    base_name: str
+    start_index: int
+    requested: int
+    created: int
+    skipped: int
+    failed: int
+    items: list[BulkAccountItem]
+    # False when BOT_TOKEN/BOT_ADMIN_CHAT_ID aren't configured or notify=False
+    # — the accounts still exist, the QR messages just aren't coming, and the
+    # caller needs to say so rather than let the operator wait for a chat that
+    # stays silent.
+    notifications_queued: bool
+    # Set when the batch stopped early because Marzban became unreachable
+    # mid-run. Everything before it was still really created.
+    aborted_reason: Optional[str] = None

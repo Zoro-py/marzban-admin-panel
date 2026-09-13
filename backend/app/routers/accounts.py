@@ -1,11 +1,20 @@
+import logging
 import time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.auth import require_auth
+from app.bulk_accounts import (
+    DeliveryItem,
+    build_caption,
+    deliver_bulk_qr_messages,
+    format_plan_line,
+    plan_bulk_usernames,
+    resolve_subscription_url,
+)
 from app.config import settings
 from app.db import get_session
 from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_client
@@ -20,6 +29,11 @@ from app.schemas import (
     AccountResetRequest,
     AccountRow,
     AccountSettleRequest,
+    BulkAccountCreateRequest,
+    BulkAccountCreateResult,
+    BulkAccountItem,
+    BulkAccountPlannedName,
+    BulkAccountPreview,
     NextPlanRead,
     NextPlanRequest,
 )
@@ -33,6 +47,8 @@ from app.services import (
     roll_payg_baseline_after_reset,
     sync_marzban_fields,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"], dependencies=[Depends(require_auth)])
 
@@ -168,6 +184,281 @@ async def create_account(body: AccountCreateRequest, session: Session = Depends(
         raise
 
     return account
+
+
+
+# ── Bulk ("family") account creation ──────────────────────────────────────
+#
+# Blast radius: MEDIUM-HIGH. Each item is an irreversible Marzban create.
+# Two rules follow from that and must not be "simplified" away:
+#
+#   1. ONE COMMIT PER ITEM (AGENTS.md §4.5). A single transaction wrapping
+#      the loop would roll the local rows back on a failure at item k while
+#      leaving items 1..k-1 live in Marzban — the exact split-brain state
+#      reset_group_cycle once produced. Every item is therefore durable the
+#      moment it succeeds, and the response reports per-item outcomes rather
+#      than one all-or-nothing status.
+#
+#   2. NOTIFICATIONS NEVER GATE CREATION. Elsewhere in this codebase a failed
+#      Telegram send deliberately blocks the action (see notify.py) — because
+#      there the action is a charge the operator must get a chance to review.
+#      Here the action is already irreversible by the time any message could
+#      be sent, so blocking on delivery would buy nothing and lose the links.
+#      Sends run as a background task and report their own failures.
+
+
+async def _collect_taken_usernames(session: Session) -> set[str]:
+    """Every username already in use, from BOTH sides.
+
+    Local rows alone are not enough: a Marzban user this dashboard has never
+    synced is invisible locally, so a local-only check would happily plan a
+    name Marzban rejects, and the operator would discover it as a mid-batch
+    failure instead of an up-front skip.
+
+    One call for the whole batch, never one per item — see
+    MarzbanClient.list_all_users.
+    """
+    local = {row for row in session.exec(select(Account.marzban_username)).all() if row}
+    marzban_users = await marzban_client.list_all_users()
+    remote = {u.get("username") for u in marzban_users if u.get("username")}
+    return local | remote
+
+
+def _validate_bulk_relations(body: BulkAccountCreateRequest, session: Session) -> None:
+    if body.customer_id is not None and not session.get(Customer, body.customer_id):
+        raise HTTPException(404, "customer_id not found")
+    if body.group_id is not None and not session.get(Group, body.group_id):
+        raise HTTPException(404, "group_id not found")
+
+
+async def _plan_bulk(body: BulkAccountCreateRequest, session: Session):
+    _validate_bulk_relations(body, session)
+    try:
+        taken = await _collect_taken_usernames(session)
+    except (MarzbanUnavailable, MarzbanAuthError) as exc:
+        # Deliberately fatal before anything is created: without Marzban's own
+        # user list the name plan would be based on local rows only, and could
+        # collide with users this dashboard has never seen.
+        raise HTTPException(502, f"Could not read the existing user list from Marzban: {exc}")
+    try:
+        return plan_bulk_usernames(
+            base_name=body.base_name,
+            count=body.count,
+            taken=taken,
+            start_index=body.start_index,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post("/bulk/preview", response_model=BulkAccountPreview)
+async def preview_bulk_accounts(body: BulkAccountCreateRequest, session: Session = Depends(get_session)):
+    """Exactly which usernames POST /bulk would create, without creating any.
+
+    POST and not GET despite being read-only: it takes the same request body
+    as the real endpoint, and any drift between the two would make the preview
+    a lie. Sharing one schema is what keeps the shown names and the created
+    names the same names.
+    """
+    plan = await _plan_bulk(body, session)
+    return BulkAccountPreview(
+        base_name=plan.base_name,
+        start_index=plan.start_index,
+        names=[
+            BulkAccountPlannedName(
+                index=n.index, marzban_username=n.username, already_exists=n.already_exists
+            )
+            for n in plan.names
+        ],
+        will_create=len(plan.free),
+        will_skip=len(plan.taken),
+    )
+
+
+@router.post("/bulk", response_model=BulkAccountCreateResult)
+async def create_bulk_accounts(
+    body: BulkAccountCreateRequest,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(get_session),
+):
+    """Creates `count` accounts named base1, base2, … and sends the operator
+    one Telegram message per account (QR + subscription link + username).
+
+    Money: this posts NO ledger entry, by design and per the operator's
+    explicit decision. It is the same contract as POST /api/accounts — an
+    account can be attached to a customer or group here, but what to charge
+    for it stays a separate, deliberate action. Do not add automatic billing
+    to this endpoint without re-reading AGENTS.md §4.3.
+    """
+    plan = await _plan_bulk(body, session)
+
+    # Computed ONCE, before the loop, so every account in the batch carries
+    # the identical expiry. Computing it per item would make the last account
+    # of a slow 50-account batch expire measurably later than the first.
+    expire_ts = int(time.time()) + body.expire_days * SECONDS_IN_DAY if body.expire_days else None
+    data_limit_bytes = bytes_from_gb(body.data_limit_gb) if body.data_limit_gb else None
+    plan_line = format_plan_line(body.data_limit_gb, body.expire_days)
+
+    items: list[BulkAccountItem] = []
+    deliveries: list[DeliveryItem] = []
+    aborted_reason: Optional[str] = None
+
+    for planned in plan.names:
+        if aborted_reason is not None:
+            items.append(BulkAccountItem(
+                marzban_username=planned.username,
+                status="failed",
+                error=f"Not attempted — the batch stopped earlier: {aborted_reason}",
+            ))
+            continue
+
+        if planned.already_exists:
+            items.append(BulkAccountItem(
+                marzban_username=planned.username,
+                status="skipped_exists",
+                error="A user with this name already exists in Marzban or is already tracked here",
+            ))
+            continue
+
+        marzban_payload = {
+            "username": planned.username,
+            "proxies": body.proxies if body.proxies is not None else settings.marzban_default_proxies,
+            "inbounds": body.inbounds if body.inbounds is not None else settings.marzban_default_inbounds,
+            "expire": expire_ts,
+            "data_limit": data_limit_bytes,
+            "data_limit_reset_strategy": body.data_limit_reset_strategy,
+            "status": body.status,
+            "note": body.note,
+        }
+
+        try:
+            marzban_user = await marzban_client.create_user(marzban_payload)
+        except ValueError as exc:
+            # A 4xx for THIS user (duplicate, bad inbound tag). Specific to one
+            # item, so the rest of the batch is still worth attempting.
+            items.append(BulkAccountItem(
+                marzban_username=planned.username, status="failed", error=str(exc),
+            ))
+            continue
+        except (MarzbanUnavailable, MarzbanAuthError) as exc:
+            # The panel itself is down or rejecting our credentials. Every
+            # remaining item would fail the same way, so stop rather than
+            # hammer a dead panel — and say so, instead of returning a wall of
+            # identical errors that hides where the batch actually stopped.
+            aborted_reason = str(exc)
+            items.append(BulkAccountItem(
+                marzban_username=planned.username, status="failed", error=str(exc),
+            ))
+            continue
+
+        subscription_url = resolve_subscription_url(marzban_user.get("subscription_url"))
+        now = utcnow()
+        account = Account(
+            marzban_username=planned.username,
+            customer_id=body.customer_id,
+            group_id=body.group_id,
+            role=body.role,
+            rate_per_gb=body.rate_per_gb,
+            used_traffic=marzban_user.get("used_traffic", 0),
+            lifetime_used_traffic=marzban_user.get("lifetime_used_traffic", 0),
+            first_seen_traffic=marzban_user.get("lifetime_used_traffic", 0),
+            first_seen_traffic_at=now,
+            # usage_baseline left at the model default (0) — same reasoning as
+            # create_account above: this user was created seconds ago, so its
+            # real usage is 0, and billing should start from observed usage
+            # rather than from whatever Marzban happens to report.
+            usage_baseline_at=now,
+            data_limit=marzban_user.get("data_limit"),
+            expire=marzban_user.get("expire"),
+            status=marzban_user.get("status"),
+            subscription_url=marzban_user.get("subscription_url"),
+            last_synced_at=now,
+        )
+        try:
+            session.add(account)
+            # flush, not commit: this assigns account.id so the audit event can
+            # reference it, while keeping the account row and its event in ONE
+            # transaction. A commit here instead would allow an account with no
+            # creation event if the next statement failed.
+            session.flush()
+            session.add(AccountEvent(
+                account_id=account.id,
+                action="create",
+                detail=f"Created via bulk batch '{body.base_name}' ({plan_line})",
+            ))
+            session.commit()
+            session.refresh(account)
+        except Exception as exc:  # noqa: BLE001 — the Marzban user already exists; never swallow silently
+            session.rollback()
+            logger.exception(
+                "Bulk batch '%s': created %s in Marzban but failed to track it locally",
+                body.base_name, planned.username,
+            )
+            items.append(BulkAccountItem(
+                marzban_username=planned.username,
+                status="created_untracked",
+                subscription_url=subscription_url,
+                error=(
+                    f"Created in Marzban but NOT saved locally ({exc}). The account is live "
+                    f"and usable; the sync job will adopt it on its next pass."
+                ),
+            ))
+            # Still worth sending: the customer's link is valid regardless of
+            # whether this dashboard managed to record the row.
+            if subscription_url:
+                deliveries.append(DeliveryItem(
+                    username=planned.username,
+                    subscription_url=subscription_url,
+                    caption=build_caption(planned.username, subscription_url, plan_line),
+                ))
+            continue
+
+        items.append(BulkAccountItem(
+            marzban_username=planned.username,
+            status="created",
+            account_id=account.id,
+            subscription_url=subscription_url,
+        ))
+        if subscription_url:
+            deliveries.append(DeliveryItem(
+                username=planned.username,
+                subscription_url=subscription_url,
+                caption=build_caption(planned.username, subscription_url, plan_line),
+            ))
+        else:
+            # Recorded here too, not only in the delivery summary: a caller
+            # that passed notify=False would otherwise never learn the link
+            # is missing.
+            logger.warning(
+                "Bulk batch '%s': %s has no resolvable subscription link",
+                body.base_name, planned.username,
+            )
+
+    notifications_queued = bool(
+        body.notify and deliveries and settings.bot_token and settings.bot_admin_chat_id
+    )
+    if notifications_queued:
+        # Background, not awaited: 50 photo uploads take minutes, and holding
+        # the HTTP response open for them would hit the client's timeout long
+        # before finishing — leaving the operator with no record of a batch
+        # that did in fact create every account.
+        background_tasks.add_task(
+            deliver_bulk_qr_messages,
+            deliveries,
+            batch_label=f"Bulk batch '{body.base_name}'",
+        )
+
+    return BulkAccountCreateResult(
+        base_name=plan.base_name,
+        start_index=plan.start_index,
+        requested=body.count,
+        created=sum(1 for i in items if i.status in ("created", "created_untracked")),
+        skipped=sum(1 for i in items if i.status == "skipped_exists"),
+        failed=sum(1 for i in items if i.status == "failed"),
+        items=items,
+        notifications_queued=notifications_queued,
+        aborted_reason=aborted_reason,
+    )
 
 
 @router.patch("/{account_id}/relationship", response_model=AccountRead)

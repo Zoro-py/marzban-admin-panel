@@ -315,16 +315,11 @@ def _parse_online_at(value) -> datetime | None:
 
 
 async def _fetch_all_marzban_users() -> list[dict]:
-    users: list[dict] = []
-    offset = 0
-    while True:
-        page = await marzban_client.list_users(offset=offset, limit=PAGE_SIZE)
-        batch = page.get("users", [])
-        users.extend(batch)
-        if len(batch) < PAGE_SIZE:
-            break
-        offset += PAGE_SIZE
-    return users
+    # Same paging loop as before, now owned by the client so the bulk-account
+    # path can reuse it without a second copy (see MarzbanClient.list_all_users).
+    # Signature and PAGE_SIZE are unchanged, so every existing caller behaves
+    # exactly as it did.
+    return await marzban_client.list_all_users(page_size=PAGE_SIZE)
 
 
 async def _activate_next_plan(session: Session, account: Account, plan: QueuedPlan, now) -> None:
@@ -549,6 +544,14 @@ async def _run_sync_impl() -> dict:
             account.data_limit = mu.get("data_limit")
             account.expire = mu.get("expire")
             account.status = mu.get("status")
+            # `or account.subscription_url`, not a plain assignment: the token
+            # in this URL only exists in Marzban, so if a panel version ever
+            # omits the field from its list response, overwriting with None
+            # would destroy the only copy we have and there would be nothing
+            # to recompute it from. Keeping the old value is always safe —
+            # Marzban regenerates the URL only when the operator revokes a
+            # sub, which shows up as a new non-empty value, not as an absence.
+            account.subscription_url = mu.get("subscription_url") or account.subscription_url
             account.online_at = _parse_online_at(mu.get("online_at"))
             account.last_synced_at = now
             session.add(account)

@@ -41,6 +41,10 @@ Edit `.env`:
   built-in defaults (`vless`/`vmess`/`trojan`/`shadowsocks`, all inbounds) don't match how
   your panel's inbounds are actually tagged. Check `GET /api/inbounds` on your Marzban panel
   if new-account creation from the dashboard picks the wrong inbounds.
+- `MARZBAN_SUBSCRIPTION_BASE_URL` (optional) — only needed if your Marzban serves
+  subscription links from a different public host than the panel. Left blank, a
+  relative `/sub/<token>` from Marzban is resolved against `MARZBAN_BASE_URL`; an
+  absolute subscription URL from Marzban is always used as-is.
 - `BOT_TOKEN` / `BOT_ADMIN_CHAT_ID` (optional but recommended) — without these, every
   automatic Telegram notification (next-plan auto-queue/activation, payg cap-hit resets, the
   monthly payg settlement report, nightly backups) is silently skipped rather than sent. See
@@ -96,14 +100,49 @@ venv/Scripts/python bot.py
 ```
 
 Commands: `/report`, `/customer <name or id>`, `/charge <customer> <amount> [note]`,
-`/credit <customer> <amount> [note]`, `/extend <username> <days> [gb]`, `/sync`,
+`/credit <customer> <amount> [note]`, `/extend <username> <days> [gb]`,
+`/bulk <name> <count> [30gb] [30d] [from=N]`, `/sync`,
 `/backup` (on-demand DB backup, sent as a file to this chat).
+
+`/bulk` previews the exact usernames and waits for a confirmation tap before
+creating anything — see "Family batches" below.
 
 Note: `BOT_TOKEN`/`BOT_ADMIN_CHAT_ID` in `backend/.env` are a **separate** thing from this
 bot process — the backend uses them directly (via `app/notify.py`) to push automatic
 notifications (next-plan, cap-hit, monthly settlement, nightly backup) to your chat, without
 going through this bot's own polling loop at all. Point both at the same bot/chat in normal
 use; the backend's notify path works even if this bot process isn't running.
+
+## Family batches (many accounts, one name)
+
+Selling a household or a small office several accounts at once: give a base
+name and a count, and you get `khanevade1`, `khanevade2`, … all on the same
+plan, plus one Telegram message per account carrying its QR code, its
+subscription link and its username — each one ready to forward straight to the
+person it belongs to.
+
+- **Dashboard:** Accounts → *Family batch*. It shows the exact usernames it
+  will create (and strikes through any that are already taken) *before* you
+  commit, because creating a Marzban user cannot be undone.
+- **Bot:** `/bulk khanevade 5 30gb 30d`. Same preview, as a confirm button.
+- **Numbering** continues after the highest number already in use for that base
+  name — a second batch for the same family carries on at `khanevade6` rather
+  than colliding or restarting. `from=N` overrides that when you want specific
+  numbers; names in that range that already exist are reported and skipped, and
+  the rest keep the numbers you asked for.
+- **Nothing is charged.** A batch creates accounts and can attach them to a
+  customer or group, but posts no ledger entry — billing stays a separate,
+  deliberate action, exactly as it is for a single account.
+- **Partial failures are reported, never rolled back.** Each account is
+  committed on its own, so if account 7 of 10 fails, accounts 1–6 really exist
+  and the response says exactly which ones did and didn't. If Marzban itself
+  goes down mid-batch, the rest are not attempted and the reason is shown.
+- Up to 50 accounts per batch.
+
+The QR/link messages are sent by the **backend** (using `BOT_TOKEN` /
+`BOT_ADMIN_CHAT_ID` in `backend/.env`), not by the bot process — so they arrive
+whether or not `bot.py` is running. With those unset, the accounts are still
+created and both front-ends say plainly that no messages are coming.
 
 ## How ownership/billing works (short version)
 

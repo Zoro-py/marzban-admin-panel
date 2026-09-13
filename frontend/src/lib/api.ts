@@ -6,6 +6,9 @@ import type {
   AccountRow,
   Balance,
   BillingMode,
+  BulkAccountPreview,
+  BulkAccountRequest,
+  BulkAccountResult,
   Customer,
   CustomerWithBalance,
   FinanceSummary,
@@ -146,6 +149,16 @@ export const accountsApi = {
     status?: string
     note?: string
   }) => (await api.post<Account>('/api/accounts', body)).data,
+  // ---- bulk ("family") creation ----
+  // Both take the SAME request shape on purpose: the preview is only
+  // trustworthy as long as it is computed from exactly what create would send.
+  previewBulk: async (body: BulkAccountRequest) =>
+    (await api.post<BulkAccountPreview>('/api/accounts/bulk/preview', body)).data,
+  // Slow by nature — one Marzban create per account — so this deliberately
+  // overrides the default timeout rather than letting a 40-account batch look
+  // like a failure to the operator while it is in fact still running.
+  createBulk: async (body: BulkAccountRequest) =>
+    (await api.post<BulkAccountResult>('/api/accounts/bulk', body, { timeout: 180_000 })).data,
   updateRelationship: async (id: number, body: { customer_id?: number | null; group_id?: number | null; role?: 'primary' | 'sub' }) =>
     (await api.patch<Account>(`/api/accounts/${id}/relationship`, body)).data,
   updateBilling: async (id: number, body: { rate_per_gb?: number | null; billing_mode?: BillingMode; clear_rate?: boolean }) =>

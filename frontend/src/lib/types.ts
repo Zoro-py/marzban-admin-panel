@@ -67,8 +67,63 @@ export interface Account {
   data_limit: number | null
   expire: number | null
   status: string | null
+  // Marzban's own subscription link for this user — relative ("/sub/<token>")
+  // or absolute depending on the panel's config. The backend already resolves
+  // it to something openable before sending it here.
+  subscription_url: string | null
   last_synced_at: string | null
   created_at: string
+}
+
+// ---- bulk ("family") account creation ----
+
+export interface BulkAccountPlannedName {
+  index: number
+  marzban_username: string
+  already_exists: boolean
+}
+
+export interface BulkAccountPreview {
+  base_name: string
+  start_index: number
+  names: BulkAccountPlannedName[]
+  will_create: number
+  will_skip: number
+}
+
+export type BulkAccountItemStatus = 'created' | 'skipped_exists' | 'created_untracked' | 'failed'
+
+export interface BulkAccountItem {
+  marzban_username: string
+  status: BulkAccountItemStatus
+  account_id: number | null
+  subscription_url: string | null
+  error: string | null
+}
+
+export interface BulkAccountResult {
+  base_name: string
+  start_index: number
+  requested: number
+  created: number
+  skipped: number
+  failed: number
+  items: BulkAccountItem[]
+  notifications_queued: boolean
+  aborted_reason: string | null
+}
+
+export interface BulkAccountRequest {
+  base_name: string
+  count: number
+  start_index?: number | null
+  customer_id?: number | null
+  group_id?: number | null
+  rate_per_gb?: number | null
+  expire_days?: number | null
+  data_limit_gb?: number | null
+  note?: string | null
+  notify?: boolean
 }
 
 export type UsageConfidence = 'insufficient_data' | 'preliminary' | 'full'

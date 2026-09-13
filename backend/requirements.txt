@@ -8,3 +8,6 @@ pydantic-settings==2.7.1
 python-multipart==0.0.20
 jdatetime==6.1.0
 psutil==6.1.1
+# Pure-Python QR rendering for bulk account subscription links (app/qr.py).
+# No native build and no Pillow, unlike the `qrcode` package.
+segno==1.6.1

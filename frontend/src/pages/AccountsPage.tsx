@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { SortableHeader, nextSort, type SortState } from '@/components/ui/sortable-header'
+import { BulkAccountDialog } from '@/components/accounts/BulkAccountDialog'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
 import { AccountsBoard } from '@/components/accounts/AccountsBoard'
@@ -126,7 +127,10 @@ export function AccountsPage() {
             Every Marzban user, with synced usage. Click a row for details &amp; actions.
           </p>
         </div>
-        <NewAccountDialog />
+        <div className="flex items-center gap-2">
+          <BulkAccountDialog />
+          <NewAccountDialog />
+        </div>
       </div>
 
       <Tabs defaultValue="table">

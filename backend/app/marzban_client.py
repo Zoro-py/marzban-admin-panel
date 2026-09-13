@@ -114,6 +114,28 @@ class MarzbanClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def list_all_users(self, page_size: int = 200) -> list[dict]:
+        """Every user on the panel, paged. Lives here rather than in a caller
+        because "how Marzban paginates" is this client's concern — sync_job's
+        _fetch_all_marzban_users now delegates to it instead of keeping a
+        second copy of the same loop.
+
+        Callers must treat this as expensive and call it ONCE per operation,
+        not per item: on a panel with a few thousand users it is a handful of
+        round-trips, and a per-item call inside a loop turns a 30-account
+        batch into 30 full panel scans.
+        """
+        users: list[dict] = []
+        offset = 0
+        while True:
+            page = await self.list_users(offset=offset, limit=page_size)
+            batch = page.get("users", [])
+            users.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+        return users
+
     async def get_user(self, username: str) -> Optional[dict]:
         resp = await self._request("GET", f"/api/user/{username}")
         if resp.status_code == 404:

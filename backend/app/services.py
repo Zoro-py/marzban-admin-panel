@@ -194,15 +194,21 @@ def billable_bytes(account: Account, mode: BillingMode) -> int:
 
 def sync_marzban_fields(account: Account, marzban_user: dict) -> None:
     """Mirrors a Marzban API response (reset/modify/create) onto the local
-    Account row — the 5 fields any such call can change. Shared by
+    Account row — the 6 fields any such call can change. Shared by
     reset_account and every payg settle path (settle_account/settle_group/
     settle_group_member) so this stays in one place instead of drifting
-    across copies."""
+    across copies.
+
+    subscription_url is mirrored with `or`, never a plain assignment: the
+    token in it exists only in Marzban and cannot be recomputed here, so a
+    response that simply omits the field must leave the stored value alone
+    rather than blanking the one copy this dashboard has."""
     account.used_traffic = marzban_user.get("used_traffic", 0)
     account.lifetime_used_traffic = marzban_user.get("lifetime_used_traffic", account.lifetime_used_traffic)
     account.expire = marzban_user.get("expire", account.expire)
     account.data_limit = marzban_user.get("data_limit", account.data_limit)
     account.status = marzban_user.get("status", account.status)
+    account.subscription_url = marzban_user.get("subscription_url") or account.subscription_url
 
 
 def roll_payg_baseline_after_reset(account: Account, now: datetime) -> None:
