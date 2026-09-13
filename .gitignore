@@ -14,6 +14,16 @@ frontend/.env
 backend/vpn.db
 backend/vpn.db-*
 backend/.jwt_secret
+# Any SQLite DB under backend/, not just the two names above. This repo is
+# public and these files hold real customer names, contacts and ledger
+# history — a DB named anything else (marzban_admin.db, a dated copy taken
+# before a migration) was previously untracked-but-committable, one
+# `git add -A` away from being published.
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+backend/*.sqlite
+backend/*.sqlite3
 
 # scripts/install.sh's own resume-state (subdomains/email from the last run)
 .install_state
