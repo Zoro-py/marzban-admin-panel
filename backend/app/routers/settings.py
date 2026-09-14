@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session
 
 from app.auth import require_auth
@@ -14,7 +14,8 @@ class SettingsRead(BaseModel):
 
 
 class SettingsUpdate(BaseModel):
-    default_rate_per_gb: float | None = None
+    # A negative or non-finite rate would flow straight into every charge.
+    default_rate_per_gb: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 @router.get("", response_model=SettingsRead)

@@ -6,6 +6,7 @@ activation, payg_monthly_job's monthly settlement and cap-hit reset.
 """
 
 import asyncio
+import json
 import logging
 
 import httpx
@@ -127,15 +128,61 @@ async def notify_admin_with_buttons(text: str, reply_markup: dict) -> None:
         raise RuntimeError(f"Telegram rejected admin notification ({resp.status_code}): {resp.text}")
 
 
-async def forward_photo_to_admin(file_id: str, caption: str, reply_markup: dict | None = None) -> None:
-    """Re-sends a photo the operator's bot can already see, by file_id.
+async def relay_shop_photo_to_admin(file_id: str, caption: str, reply_markup: dict | None = None) -> None:
+    """Puts a customer's receipt in front of the operator, with the buttons.
 
-    Used for payment receipts. Telegram file_ids are per-bot, so this only
-    works because the SHOP bot forwards the id to the backend and the backend
-    re-sends with the OPERATOR's token — which Telegram allows for a photo the
-    operator's bot is being asked to send by id only if that bot has seen it.
-    When it hasn't, Telegram answers with an error and the caller falls back
-    to a text-only notification rather than losing the alert entirely.
+    The receipt reaches the SHOP bot, so its file_id is meaningful only to
+    that bot: Telegram states a file_id "can't be transferred from one bot to
+    another". Handing it to the operator bot's sendPhoto therefore failed
+    every single time, and the caller's text-only fallback meant the operator
+    never saw a receipt image in Telegram at all — they had to open the
+    dashboard for every payment, which is exactly what the buttons exist to
+    avoid.
+
+    So the bytes are moved, not the id: download the photo with the shop
+    bot's token (the one that can see it) and upload it with the operator's.
+    """
+    if not settings.shop_bot_token:
+        raise RuntimeError("SHOP_BOT_TOKEN not set — the receipt can only be fetched with the shop bot's token")
+    if not settings.bot_token or not settings.bot_admin_chat_id:
+        raise RuntimeError("BOT_TOKEN/BOT_ADMIN_CHAT_ID not set — nowhere to send this notification")
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        meta = await client.get(
+            f"https://api.telegram.org/bot{settings.shop_bot_token}/getFile",
+            params={"file_id": file_id},
+        )
+        if meta.status_code != 200:
+            raise RuntimeError(f"Telegram would not describe the receipt ({meta.status_code}): {meta.text}")
+        file_path = meta.json().get("result", {}).get("file_path")
+        if not file_path:
+            raise RuntimeError("Telegram returned no file_path for the receipt")
+        blob = await client.get(
+            f"https://api.telegram.org/file/bot{settings.shop_bot_token}/{file_path}"
+        )
+        if blob.status_code != 200:
+            raise RuntimeError(f"Could not download the receipt ({blob.status_code})")
+
+    data = {"chat_id": settings.bot_admin_chat_id, "caption": _truncate_caption(caption)}
+    if reply_markup is not None:
+        # multipart, so the markup travels as a JSON string rather than a dict.
+        data["reply_markup"] = json.dumps(reply_markup)
+    filename = file_path.rsplit("/", 1)[-1] or "receipt.jpg"
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{settings.bot_token}/sendPhoto",
+            data=data,
+            files={"photo": (filename, blob.content, "image/jpeg")},
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Telegram rejected the receipt photo ({resp.status_code}): {resp.text}")
+
+
+async def forward_photo_to_admin(file_id: str, caption: str, reply_markup: dict | None = None) -> None:
+    """Re-sends a photo the OPERATOR's own bot can already see, by file_id.
+
+    Only valid for a photo that bot has seen itself. A shop receipt is not
+    one of those — use relay_shop_photo_to_admin for that.
     """
     if not settings.bot_token or not settings.bot_admin_chat_id:
         raise RuntimeError("BOT_TOKEN/BOT_ADMIN_CHAT_ID not set — nowhere to send this notification")

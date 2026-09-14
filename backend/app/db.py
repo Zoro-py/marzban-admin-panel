@@ -48,7 +48,10 @@ def _run_lightweight_migrations() -> None:
             # a pay-as-you-go group; this keeps their behavior unchanged.
             conn.execute(text("ALTER TABLE \"group\" ADD COLUMN billing_mode VARCHAR NOT NULL DEFAULT 'payg'"))
 
-        if existing and "billed_data_limit" not in existing:
+        # Remembered because the backfill further down must run ONLY in the
+        # startup that introduces this column (see there for why).
+        billed_data_limit_is_new = bool(existing) and "billed_data_limit" not in existing
+        if billed_data_limit_is_new:
             conn.execute(text("ALTER TABLE account ADD COLUMN billed_data_limit INTEGER NOT NULL DEFAULT 0"))
 
         if existing and "online_at" not in existing:
@@ -204,21 +207,28 @@ def _run_lightweight_migrations() -> None:
         # been charged is set to its current data_limit (nothing further
         # pending until the package grows). Self-limiting: once set to a
         # nonzero value here, or by an actual settle, this stops matching it.
-        # Pure SQL update
-        conn.execute(
-            text(
-                """
-                UPDATE account
-                SET billed_data_limit = IFNULL(data_limit, 0)
-                WHERE billed_data_limit = 0
-                AND (
-                    (group_id IS NOT NULL AND group_id IN (SELECT id FROM "group" WHERE last_settled_at IS NOT NULL))
-                    OR 
-                    (group_id IS NULL AND id IN (SELECT DISTINCT account_id FROM ledgerentry WHERE type = 'charge' AND account_id IS NOT NULL))
+        # NOT self-limiting, despite the reasoning above: billed_data_limit
+        # legitimately returns to 0 in normal operation - sync_job sets it
+        # there the moment a queued plan activates, which is exactly how the
+        # new package becomes billable. Re-running this on every startup then
+        # marked that fresh package as already charged, so a restart between
+        # an activation and a settle wrote the whole package off. It is a
+        # backfill for rows that predate the column, so it runs once.
+        if billed_data_limit_is_new:
+            conn.execute(
+                text(
+                    """
+                    UPDATE account
+                    SET billed_data_limit = IFNULL(data_limit, 0)
+                    WHERE billed_data_limit = 0
+                    AND (
+                        (group_id IS NOT NULL AND group_id IN (SELECT id FROM "group" WHERE last_settled_at IS NOT NULL))
+                        OR 
+                        (group_id IS NULL AND id IN (SELECT DISTINCT account_id FROM ledgerentry WHERE type = 'charge' AND account_id IS NOT NULL))
+                    )
+                    """
                 )
-                """
             )
-        )
 
         # "Every account belongs to one person unless it's deliberately
         # grouped" -- customer_id was being treated as an optional admin step

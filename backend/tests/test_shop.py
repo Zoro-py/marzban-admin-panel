@@ -188,12 +188,12 @@ def test_auth_boundary() -> None:
         ("post", "/api/shop/bot/session", {"json": {"telegram_id": 1}}),
         ("post", "/api/shop/bot/quote", {"json": {"telegram_id": 1, "data_limit_gb": 10}}),
         ("post", "/api/shop/bot/purchase", {"json": {"telegram_id": 1, "data_limit_gb": 10}}),
-        ("post", "/api/shop/bot/purchase/1/deliver", {}),
+        ("post", "/api/shop/bot/purchase/1/deliver", {"json": {"telegram_id": 1}}),
         ("post", "/api/shop/bot/topups", {"json": {"telegram_id": 1, "claimed_amount": 50000}}),
         ("get", "/api/shop/bot/accounts", {"params": {"telegram_id": 1}}),
         ("get", "/api/shop/bot/wallet", {"params": {"telegram_id": 1}}),
         ("post", "/api/shop/bot/orders", {"json": {"telegram_id": 1, "data_limit_gb": 10}}),
-        ("post", "/api/shop/bot/orders/1/pay", {}),
+        ("post", "/api/shop/bot/orders/1/pay", {"json": {"telegram_id": 1}}),
         ("post", "/api/shop/bot/trial", {"json": {"telegram_id": 1}}),
         ("get", "/api/shop/bot/orders/pending", {"params": {"telegram_id": 1}}),
         ("get", "/api/shop/bot/topups/status", {"params": {"telegram_id": 1, "code": "ABCD"}}),
@@ -551,6 +551,8 @@ def main() -> int:
         test_order_first_short_approval_waits,
         test_order_paid_from_wallet,
         test_order_cannot_be_paid_twice,
+        test_pay_is_scoped_to_the_orders_owner,
+        test_approval_says_so_when_the_service_could_not_be_built,
         test_topup_cannot_target_someone_elses_order,
         test_trial,
         test_quote_refuses_unbuyable_plans,
@@ -644,7 +646,7 @@ def test_order_paid_from_wallet() -> None:
     check("payable from the wallet", intent["payable_from_wallet"], True)
     check("nothing left to transfer — never a negative number", intent["shortfall"], 0)
 
-    r = client.post(f"/api/shop/bot/orders/{intent['order_id']}/pay", headers=BOT_HEADERS)
+    r = client.post(f"/api/shop/bot/orders/{intent['order_id']}/pay", headers=BOT_HEADERS, json={"telegram_id": 555})
     check("http 200", r.status_code, 200)
     with Session(engine) as session:
         check("debited once", wallet_balance(session, uid), 70_000)
@@ -660,8 +662,8 @@ def test_order_cannot_be_paid_twice() -> None:
 
     oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
                       json={"telegram_id": 555, "data_limit_gb": 10}).json()["order_id"]
-    first = client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS)
-    second = client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS)
+    first = client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS, json={"telegram_id": 555})
+    second = client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS, json={"telegram_id": 555})
     check("first ok", first.status_code, 200)
     check("second refused (400)", second.status_code, 400)
     with Session(engine) as session:
@@ -757,7 +759,7 @@ def test_renewal_warnings() -> None:
     _credit(uid, 100_000)
     oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
                       json={"telegram_id": 555, "data_limit_gb": 10}).json()["order_id"]
-    client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS)
+    client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS, json={"telegram_id": 555})
 
     import time as _time
     original = notify_module.send_to_shop_user
@@ -837,7 +839,7 @@ GB_BYTES = 1024 ** 3
 def _buy_from_wallet(client, gb: float) -> int:
     oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
                       json={"telegram_id": 555, "data_limit_gb": gb}).json()["order_id"]
-    client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS)
+    client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS, json={"telegram_id": 555})
     return oid
 
 
@@ -1024,6 +1026,67 @@ def test_second_photo_does_not_duplicate_payment() -> None:
     after_reject = client.get("/api/shop/bot/orders/pending", headers=BOT_HEADERS,
                               params={"telegram_id": 555}).json()
     check("offered again once the operator rejected it", after_reject["order_id"], oid)
+
+
+def test_pay_is_scoped_to_the_orders_owner() -> None:
+    print("")
+    print("[29] one customer cannot pay, or fetch, another customer's order")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    mine = _make_user(client, telegram_id=555)
+    _make_user(client, telegram_id=777)
+    _credit(mine, 100_000)
+    oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                      json={"telegram_id": 555, "data_limit_gb": 10}).json()["order_id"]
+
+    stranger = client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS,
+                           json={"telegram_id": 777})
+    check("a stranger gets 404, not someone else's plan", stranger.status_code, 404)
+    check("nothing was created", len(fake.created), 0)
+
+    stranger_qr = client.post(f"/api/shop/bot/purchase/{oid}/deliver", headers=BOT_HEADERS,
+                              json={"telegram_id": 777})
+    check("nor can they have its QR", stranger_qr.status_code, 404)
+
+    owner = client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS,
+                        json={"telegram_id": 555})
+    check("the owner still can", owner.status_code, 200)
+
+
+def test_approval_says_so_when_the_service_could_not_be_built() -> None:
+    print("")
+    print("[30] a payment approved for an order that then FAILS says so, and says the money is back")
+    fake = FakeMarzban(fail_with=MarzbanUnavailable("panel down"))
+    client = _reset(fake)
+    _make_user(client)
+    oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                      json={"telegram_id": 555, "data_limit_gb": 10}).json()["order_id"]
+    topup = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "claimed_amount": 30_000, "order_id": oid}).json()
+
+    sent: list[tuple[int, str]] = []
+
+    async def capture(chat_id, text):
+        sent.append((chat_id, text))
+
+    # The endpoint imported the function by name, so the patch has to land in
+    # the router's namespace, not notify's.
+    from app.routers import shop as shop_router
+    original = shop_router.send_to_shop_user
+    shop_router.send_to_shop_user = capture
+    try:
+        r = client.post(f"/api/shop/topups/{topup['id']}/approve", json={})
+    finally:
+        shop_router.send_to_shop_user = original
+
+    check("the approval itself succeeds", r.status_code, 200)
+    with Session(engine) as session:
+        order = session.get(ShopOrder, oid)
+        check("the order is marked failed", order.status.value, "failed")
+        check("the money is in the wallet, not spent", wallet_balance(session, order.shop_user_id), 30_000)
+    body = sent[-1][1] if sent else ""
+    check("the customer is told the service was not built", "ساخت سرویس" in body, True)
+    check("and is not asked for the rest of the money", "شماره کارت" in body, False)
 
 
 if __name__ == "__main__":

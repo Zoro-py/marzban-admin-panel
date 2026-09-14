@@ -78,6 +78,10 @@ async def login(body: LoginRequest, request: Request) -> LoginResponse:
     
     # Check rate limit
     ip_data = FAILED_LOGIN_ATTEMPTS[ip]
+    # Attempts below the threshold used to live forever: four typos spread
+    # over a year would block the fifth honest login. Only recent ones count.
+    if ip_data["last_seen"] and now - ip_data["last_seen"] > 3600:
+        ip_data["attempts"] = 0
     ip_data["last_seen"] = now
     if ip_data["blocked_until"] > now:
         raise HTTPException(

@@ -15,6 +15,7 @@ operator's own single-chat admin bot. Two reasons, both deliberate:
 import logging
 import os
 import sys
+import threading
 
 from dotenv import load_dotenv
 
@@ -50,7 +51,17 @@ async def on_error(update, context) -> None:
 
 
 def main() -> None:
-    token = os.environ["SHOP_BOT_TOKEN"]
+    token = os.environ.get("SHOP_BOT_TOKEN", "").strip()
+    if not token:
+        # The container exists because compose always starts it; the SHOP does
+        # not exist until someone sets a token. Exiting here would restart-loop
+        # forever under `restart: unless-stopped` and fill the logs, so it
+        # simply waits, visibly idle, until the operator configures one.
+        logger.warning("SHOP_BOT_TOKEN is empty - the shop bot stays idle. "
+                       "Set it in shopbot/.env and restart to enable the shop.")
+        threading.Event().wait()
+        return
+
     app = Application.builder().token(token).build()
 
     app.add_handler(CommandHandler("start", start))

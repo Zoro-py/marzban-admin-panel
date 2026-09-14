@@ -139,6 +139,21 @@ def topup_approved_with_order(amount: int, balance: int) -> str:
     )
 
 
+def topup_approved_no_service(amount: int, balance: int, handle: Optional[str]) -> str:
+    """The payment was fine; building the service was not.
+
+    The money is back in the wallet, so the honest thing is to say both parts
+    in that order. Saying only "approved" - which is what used to happen -
+    left the customer waiting for a QR that was never coming."""
+    return (
+        f"✅ پرداختتان تأیید شد — {money_fa(amount)}.\n"
+        "اما ساخت سرویس این بار انجام نشد و مبلغ در کیف پولتان ماند.\n"
+        f"موجودی فعلی: {money_fa(balance)}\n\n"
+        "با «🛒 خرید سرویس» دوباره امتحان کنید؛ چیزی از دست نرفته."
+        + support_line(handle)
+    )
+
+
 def topup_approved_short(
     amount: int,
     balance: int,

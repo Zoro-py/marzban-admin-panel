@@ -337,7 +337,7 @@ confirm_dns() {
 }
 
 write_env_files() {
-  info "Writing backend/.env, bot/.env, .env"
+  info "Writing backend/.env, bot/.env, shopbot/.env, .env"
 
   # Quoted + escaped so a password/token containing '#', a space, or a quote
   # can't get silently truncated or corrupt the file (verified against
@@ -360,6 +360,27 @@ BOT_ADMIN_CHAT_ID="$q_chat"
 BOT_API_BASE_URL=http://backend:8000
 SYNC_INTERVAL_SECONDS=60
 EOF
+
+  # shopbot/.env has to exist even when there is no shop: docker-compose names
+  # it as an env_file, and a missing one stops the WHOLE stack from starting —
+  # backend and operator bot included. Written blank and left disabled; an
+  # existing one is never overwritten, since it holds a token this script
+  # never asked for.
+  if [ ! -f shopbot/.env ]; then
+    shop_key=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d " 
+")
+    cat > shopbot/.env <<EOF
+# Blank = the shop bot stays asleep and nothing else is affected. To turn the
+# self-serve shop on: put the SHOP bot's token here AND the same token plus
+# this key in backend/.env, then re-run: docker compose up -d
+SHOP_BOT_TOKEN=
+API_BASE_URL=http://backend:8000
+SHOP_BOT_API_KEY=$shop_key
+EOF
+    printf 'SHOP_BOT_API_KEY=%s
+SHOP_BOT_TOKEN=
+' "$shop_key" >> backend/.env
+  fi
 
   cat > bot/.env <<EOF
 BOT_TOKEN="$q_token"

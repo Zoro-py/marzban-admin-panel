@@ -623,6 +623,18 @@ class ShopBotSession(BaseModel):
     trial_hours: int = 0
 
 
+class ShopBotOrderAction(BaseModel):
+    """Who the action is for.
+
+    The bot key proves a request came from the shop bot; it says nothing about
+    WHICH customer it is for. Anything addressed by order id therefore carries
+    the asker's telegram_id too, so a wrong id in the bot can only ever act on
+    that customer's own orders.
+    """
+
+    telegram_id: int
+
+
 class ShopBotPurchaseRequest(BaseModel):
     telegram_id: int
     # Bounded here as well as in shop_service.validate_purchase_request: this

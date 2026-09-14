@@ -364,7 +364,8 @@ async def _confirm_wallet_purchase(update: Update, context: ContextTypes.DEFAULT
     context.user_data.clear()
     await _reply(update, texts.BUY_WORKING, session)
     try:
-        await backend.post(f"/api/shop/bot/orders/{order_id}/pay", timeout=120)
+        await backend.post(f"/api/shop/bot/orders/{order_id}/pay",
+                           json={"telegram_id": update.effective_user.id}, timeout=120)
     except ShopApiError:
         logger.exception("Wallet purchase failed for order %s", order_id)
         await _reply(update, texts.generic_error(_handle(session)), session)

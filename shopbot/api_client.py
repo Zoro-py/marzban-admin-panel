@@ -58,7 +58,10 @@ class ShopBackendClient:
         return resp.json()
 
 
+# Defaults rather than KeyError at import: the container is started by
+# compose whether or not a shop is configured, and an unconfigured one has to
+# reach main()'s idle branch instead of dying on the import line.
 backend = ShopBackendClient(
-    base_url=os.environ["API_BASE_URL"],
-    api_key=os.environ["SHOP_BOT_API_KEY"],
+    base_url=os.environ.get("API_BASE_URL", "http://backend:8000"),
+    api_key=os.environ.get("SHOP_BOT_API_KEY", ""),
 )

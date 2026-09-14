@@ -54,7 +54,7 @@ from app.models import (
     ShopWalletEntryType,
 )
 from app.notify import (
-    forward_photo_to_admin,
+    relay_shop_photo_to_admin,
     notify_admin,
     notify_admin_with_buttons,
     send_photo_to_shop_user,
@@ -63,6 +63,7 @@ from app.notify import (
 from app.qr import subscription_qr_png
 from app.schemas import (
     ShopBotAccountRow,
+    ShopBotOrderAction,
     ShopBotPurchaseRequest,
     ShopBotSession,
     ShopBotSessionRequest,
@@ -298,7 +299,7 @@ async def approve_topup_endpoint(
     # the operator into approving twice.
     if user is not None:
         try:
-            if delivered_order is not None:
+            if delivered_order is not None and delivered_order.status == ShopOrderStatus.delivered:
                 # The order-first path: this payment was sent FOR a plan, and
                 # that plan has just been paid and provisioned. Confirm the
                 # money BEFORE the QR arrives so the few seconds of
@@ -309,19 +310,42 @@ async def approve_topup_endpoint(
                 )
                 await deliver_order_to_customer(session, delivered_order)
             elif topup.order_id is not None:
-                # Bound to a plan that could NOT be paid — almost always
-                # because the operator approved less than it costs. Say what
-                # is missing, rather than leaving the customer waiting for a
-                # subscription that is never coming.
+                # Bound to a plan that was not delivered. WHICH message to send
+                # depends on why, and getting that wrong is worse than saying
+                # nothing: a customer whose service failed and got refunded was
+                # being told an amount was still missing, and one whose plan was
+                # already active was told the same.
                 pending = session.get(ShopOrder, topup.order_id)
-                shortfall = max(0, (pending.price if pending else 0) - balance)
-                await send_to_shop_user(
-                    user.telegram_id,
-                    shop_texts.topup_approved_short(
-                        topup.approved_amount, balance, shortfall,
-                        shop_settings.card_number, shop_settings.card_holder, shop_settings.support_handle,
-                    ),
-                )
+                pending_status = pending.status if pending else None
+                if pending_status == ShopOrderStatus.awaiting_payment:
+                    # Almost always: the operator approved less than it costs.
+                    shortfall = max(0, (pending.price if pending else 0) - balance)
+                    await send_to_shop_user(
+                        user.telegram_id,
+                        shop_texts.topup_approved_short(
+                            topup.approved_amount, balance, shortfall,
+                            shop_settings.card_number, shop_settings.card_holder,
+                            shop_settings.support_handle,
+                        ),
+                    )
+                elif pending_status == ShopOrderStatus.failed:
+                    # Paid, then the panel refused. The refund is already in the
+                    # wallet; say so rather than promising a subscription.
+                    await send_to_shop_user(
+                        user.telegram_id,
+                        shop_texts.topup_approved_no_service(
+                            topup.approved_amount, balance, shop_settings.support_handle,
+                        ),
+                    )
+                else:
+                    # Already delivered by another route (a wallet payment that
+                    # beat the receipt, say). The credit is simply credit.
+                    await send_to_shop_user(
+                        user.telegram_id,
+                        shop_texts.topup_approved_plain(
+                            topup.approved_amount, balance, shop_settings.support_handle,
+                        ),
+                    )
             else:
                 await send_to_shop_user(
                     user.telegram_id,
@@ -476,6 +500,10 @@ async def bot_purchase(body: ShopBotPurchaseRequest, session: Session = Depends(
             f"Please try again in a minute.",
         )
 
+    # The same push every other purchase path ends with. Without it this
+    # endpoint charges a wallet and the customer hears nothing back.
+    await deliver_order_to_customer(session, order)
+
     return ShopPurchaseResult(
         order_id=order.id,
         marzban_username=order.marzban_username,
@@ -488,8 +516,23 @@ async def bot_purchase(body: ShopBotPurchaseRequest, session: Session = Depends(
     )
 
 
+def _own_order_or_404(session: Session, order_id: int, telegram_id: int) -> ShopOrder:
+    """The order, but only if it belongs to the customer asking for it.
+
+    Same 404 either way: whether order #900 exists is not something a caller
+    should be able to learn by asking for someone else's.
+    """
+    order = session.get(ShopOrder, order_id)
+    if order is None:
+        raise HTTPException(404, "Order not found")
+    owner = session.exec(select(ShopUser).where(ShopUser.telegram_id == telegram_id)).first()
+    if owner is None or order.shop_user_id != owner.id:
+        raise HTTPException(404, "Order not found")
+    return order
+
+
 @bot_router.post("/purchase/{order_id}/deliver")
-async def bot_deliver_qr(order_id: int, session: Session = Depends(get_session)):
+async def bot_deliver_qr(order_id: int, body: ShopBotOrderAction, session: Session = Depends(get_session)):
     """Sends (or re-sends) an order's QR to the buyer.
 
     Separate from /purchase so a delivery that fails — Telegram hiccup, the
@@ -497,9 +540,7 @@ async def bot_deliver_qr(order_id: int, session: Session = Depends(get_session))
     near the money path. Re-delivering is always safe: it creates nothing and
     charges nothing.
     """
-    order = session.get(ShopOrder, order_id)
-    if order is None:
-        raise HTTPException(404, "Order not found")
+    order = _own_order_or_404(session, order_id, body.telegram_id)
     user = session.get(ShopUser, order.shop_user_id)
     account = session.get(Account, order.account_id) if order.account_id else None
     if user is None or account is None:
@@ -565,7 +606,7 @@ def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depends(ge
 
 
 @bot_router.post("/orders/{order_id}/pay", response_model=ShopPurchaseResult)
-async def bot_pay_order(order_id: int, session: Session = Depends(get_session)):
+async def bot_pay_order(order_id: int, body: ShopBotOrderAction, session: Session = Depends(get_session)):
     """Pays an awaiting order from the wallet and delivers it.
 
     The repeat-customer path: someone with credit already in the wallet taps
@@ -573,9 +614,7 @@ async def bot_pay_order(order_id: int, session: Session = Depends(get_session)):
     and no human in the loop. This is what the wallet is actually FOR — and it
     only earns its place once the customer has been through the flow once.
     """
-    order = session.get(ShopOrder, order_id)
-    if order is None:
-        raise HTTPException(404, "Order not found")
+    order = _own_order_or_404(session, order_id, body.telegram_id)
     try:
         order = await pay_awaiting_order(session, order)
     except ShopError as exc:
@@ -775,17 +814,24 @@ async def _alert_operator_to_topup(
         if receipt_file_id:
             # Preferred: the operator sees the receipt itself next to the
             # buttons, which is the whole decision they're being asked to make.
-            await forward_photo_to_admin(receipt_file_id, caption, keyboard)
+            await relay_shop_photo_to_admin(receipt_file_id, caption, keyboard)
         else:
             await notify_admin_with_buttons(caption, keyboard)
     except Exception:
-        logger.exception("Could not alert the operator to top-up #%s with buttons", topup_id)
-        # Fall back to a plain message. Losing the buttons is an inconvenience;
-        # losing the alert means a customer's money sits unacknowledged.
+        logger.exception("Could not send the receipt image for top-up #%s", topup_id)
+        # The image is the nice-to-have; the BUTTONS are what let the operator
+        # decide from Telegram at all, so losing the image must not cost them.
         try:
-            await notify_admin(caption + "\n\n(Open the dashboard's Shop page to approve.)")
+            await notify_admin_with_buttons(
+                caption + "\n\n(The receipt image could not be attached - see the dashboard.)",
+                keyboard,
+            )
         except Exception:
-            logger.exception("Could not alert the operator to top-up #%s at all", topup_id)
+            logger.exception("Could not alert the operator to top-up #%s with buttons", topup_id)
+            try:
+                await notify_admin(caption + "\n\n(Open the dashboard's Shop page to approve.)")
+            except Exception:
+                logger.exception("Could not alert the operator to top-up #%s at all", topup_id)
 
 
 @bot_router.get("/accounts", response_model=list[ShopBotAccountRow])

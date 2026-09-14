@@ -43,6 +43,24 @@ jobs:
           MARZBAN_PASSWORD: ci
         run: python -c "import bot"
 
+  shopbot:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: shopbot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install -r requirements.txt
+      - name: Import check
+        env:
+          SHOP_BOT_TOKEN: "123:ci"
+          API_BASE_URL: http://localhost:8000
+          SHOP_BOT_API_KEY: ci
+        run: python -c "import bot"
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

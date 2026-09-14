@@ -20,7 +20,7 @@ import secrets
 from datetime import timedelta
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlmodel import Session, select
 
 from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_client
@@ -664,10 +664,21 @@ async def approve_topup(
     if amount <= 0:
         raise ShopError("Approved amount must be positive.")
 
-    topup.approved_amount = amount
-    topup.status = ShopTopupStatus.approved
-    topup.reviewed_at = utcnow()
-    session.add(topup)
+    # The pending -> approved move is the only thing standing between one
+    # receipt and two credits, so it is made as a conditional UPDATE rather
+    # than a read followed by a write. Whoever gets rowcount 1 owns the
+    # crediting; everyone else is told it was already handled. A Python-side
+    # check only holds while this is one process, which is not something the
+    # money path should depend on.
+    claimed = session.execute(
+        update(ShopTopup)
+        .where(ShopTopup.id == topup.id, ShopTopup.status == ShopTopupStatus.pending)
+        .values(status=ShopTopupStatus.approved, approved_amount=amount, reviewed_at=utcnow())
+    )
+    if claimed.rowcount != 1:
+        session.rollback()
+        session.refresh(topup)
+        raise ShopError(f"This top-up was already {topup.status.value}.")
     post_wallet_entry(
         session,
         topup.shop_user_id,
@@ -854,36 +865,40 @@ async def grant_trial(session: Session, shop_user: ShopUser) -> ShopOrder:
     settings = get_shop_settings(session)
     if not settings.trial_enabled:
         raise ShopError("The free trial isn't available right now.")
-    if shop_user.is_blocked:
-        raise ShopError("This account can't take a trial. Contact support.")
-    if shop_user.trial_taken_at is not None:
-        raise ShopError("You've already used your free trial.")
-    if is_existing_customer(session, shop_user.id):
-        # A trial exists to let a stranger see the service work. Someone who
-        # already has one gains nothing from it but free data.
-        raise ShopError("The free trial is for new customers.")
+    # Re-read under the same per-customer lock the paid paths use: two taps
+    # arriving together must not both see trial_taken_at as empty.
+    async with _lock_for(shop_user.id):
+        session.refresh(shop_user)
+        if shop_user.is_blocked:
+            raise ShopError("This account can't take a trial. Contact support.")
+        if shop_user.trial_taken_at is not None:
+            raise ShopError("You've already used your free trial.")
+        if is_existing_customer(session, shop_user.id):
+            # A trial exists to let a stranger see the service work. Someone who
+            # already has one gains nothing from it but free data.
+            raise ShopError("The free trial is for new customers.")
 
-    # Written BEFORE provisioning, and committed. If Marzban then fails, the
-    # customer has burned their trial and gets an error — which is the safe
-    # direction. The opposite order lets a retry loop mint unlimited free
-    # accounts, and this is the one endpoint that hands out something for
-    # nothing, so it is the one that has to fail closed.
-    shop_user.trial_taken_at = utcnow()
-    session.add(shop_user)
+        # Written BEFORE provisioning, and committed. If Marzban then fails, the
+        # customer has burned their trial and gets an error — which is the safe
+        # direction. The opposite order lets a retry loop mint unlimited free
+        # accounts, and this is the one endpoint that hands out something for
+        # nothing, so it is the one that has to fail closed.
+        shop_user.trial_taken_at = utcnow()
+        session.add(shop_user)
 
-    order = ShopOrder(
-        shop_user_id=shop_user.id,
-        data_limit_gb=settings.trial_gb,
-        # Rounded up, and only a LABEL for the operator's order list — the
-        # real expiry is set from trial_hours below, so a 6-hour trial really
-        # lasts 6 hours even though this column has to say 1.
-        duration_days=max(1, (settings.trial_hours + 23) // 24),
-        price=0,
-        status=ShopOrderStatus.provisioning,
-    )
-    session.add(order)
-    session.commit()
-    session.refresh(order)
+        order = ShopOrder(
+            shop_user_id=shop_user.id,
+            data_limit_gb=settings.trial_gb,
+            # Rounded up, and only a LABEL for the operator's order list — the
+            # real expiry is set from trial_hours below, so a 6-hour trial really
+            # lasts 6 hours even though this column has to say 1.
+            duration_days=max(1, (settings.trial_hours + 23) // 24),
+            price=0,
+            status=ShopOrderStatus.provisioning,
+        )
+        session.add(order)
+        session.commit()
+        session.refresh(order)
 
     await _provision_order(session, order, settings, duration_hours=settings.trial_hours)
     session.refresh(order)
@@ -924,10 +939,18 @@ def create_awaiting_order(session: Session, shop_user: ShopUser, data_limit_gb: 
 def reject_topup(session: Session, topup: ShopTopup, *, reason: Optional[str] = None) -> ShopTopup:
     if topup.status != ShopTopupStatus.pending:
         raise ShopError(f"This top-up was already {topup.status.value}.")
-    topup.status = ShopTopupStatus.rejected
-    topup.reject_reason = reason
-    topup.reviewed_at = utcnow()
-    session.add(topup)
+    # Same conditional UPDATE as approve_topup, for the same reason plus one:
+    # a reject that lands next to an approve must not tell the customer their
+    # money was refused after it was already credited.
+    claimed = session.execute(
+        update(ShopTopup)
+        .where(ShopTopup.id == topup.id, ShopTopup.status == ShopTopupStatus.pending)
+        .values(status=ShopTopupStatus.rejected, reject_reason=reason, reviewed_at=utcnow())
+    )
+    if claimed.rowcount != 1:
+        session.rollback()
+        session.refresh(topup)
+        raise ShopError(f"This top-up was already {topup.status.value}.")
     session.commit()
     session.refresh(topup)
     return topup
