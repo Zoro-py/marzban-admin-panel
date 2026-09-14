@@ -87,9 +87,6 @@ from app.shop_service import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/shop", tags=["shop"], dependencies=[Depends(require_auth)])
-bot_router = APIRouter(prefix="/api/shop/bot", tags=["shop-bot"])
-
 
 def require_shop_bot(x_shop_bot_key: Optional[str] = Header(default=None)) -> None:
     """Fails CLOSED when SHOP_BOT_API_KEY is unset.
@@ -104,6 +101,18 @@ def require_shop_bot(x_shop_bot_key: Optional[str] = Header(default=None)) -> No
         raise HTTPException(503, "Shop bot API is not configured on this server")
     if not x_shop_bot_key or not secrets.compare_digest(x_shop_bot_key, expected):
         raise HTTPException(401, "Invalid shop bot key")
+
+
+router = APIRouter(prefix="/api/shop", tags=["shop"], dependencies=[Depends(require_auth)])
+# The guard lives on the ROUTER, not on each route, deliberately. Declared
+# per-route it has to be remembered every time an endpoint is added here, and
+# forgetting it produces an unauthenticated endpoint that looks exactly like
+# its guarded neighbours in the file — silent, and on the one surface in this
+# codebase that faces the public. On the router it is the default and an
+# omission is impossible rather than merely unlikely.
+bot_router = APIRouter(
+    prefix="/api/shop/bot", tags=["shop-bot"], dependencies=[Depends(require_shop_bot)]
+)
 
 
 # ══════════════════════════════════════════════════ operator-facing endpoints
@@ -319,7 +328,7 @@ def list_orders(limit: int = 100, session: Session = Depends(get_session)):
 # ══════════════════════════════════════════════════════ shop-bot endpoints
 
 
-@bot_router.post("/session", response_model=ShopBotSession, dependencies=[Depends(require_shop_bot)])
+@bot_router.post("/session", response_model=ShopBotSession)
 def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_session)):
     """Everything the bot needs to draw its menu for one customer, in one call.
 
@@ -350,7 +359,7 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
     )
 
 
-@bot_router.post("/quote", dependencies=[Depends(require_shop_bot)])
+@bot_router.post("/quote")
 def bot_quote(body: ShopBotPurchaseRequest, session: Session = Depends(get_session)):
     """Price without buying. Lets the bot show a confirmation screen carrying
     the real number, rather than one the bot computed itself from a cached
@@ -363,7 +372,7 @@ def bot_quote(body: ShopBotPurchaseRequest, session: Session = Depends(get_sessi
         raise HTTPException(400, str(exc))
 
 
-@bot_router.post("/purchase", response_model=ShopPurchaseResult, dependencies=[Depends(require_shop_bot)])
+@bot_router.post("/purchase", response_model=ShopPurchaseResult)
 async def bot_purchase(body: ShopBotPurchaseRequest, session: Session = Depends(get_session)):
     user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
     if user is None:
@@ -404,7 +413,7 @@ async def bot_purchase(body: ShopBotPurchaseRequest, session: Session = Depends(
     )
 
 
-@bot_router.post("/purchase/{order_id}/deliver", dependencies=[Depends(require_shop_bot)])
+@bot_router.post("/purchase/{order_id}/deliver")
 async def bot_deliver_qr(order_id: int, session: Session = Depends(get_session)):
     """Sends (or re-sends) an order's QR to the buyer.
 
@@ -438,7 +447,7 @@ async def bot_deliver_qr(order_id: int, session: Session = Depends(get_session))
     return {"delivered": True}
 
 
-@bot_router.post("/topups", response_model=ShopTopupRead, dependencies=[Depends(require_shop_bot)])
+@bot_router.post("/topups", response_model=ShopTopupRead)
 async def bot_create_topup(
     body: ShopBotTopupRequest,
     background_tasks: BackgroundTasks,
@@ -498,7 +507,7 @@ async def _alert_operator_to_topup(
             logger.exception("Could not alert the operator to top-up #%s at all", topup_id)
 
 
-@bot_router.get("/accounts", response_model=list[ShopBotAccountRow], dependencies=[Depends(require_shop_bot)])
+@bot_router.get("/accounts", response_model=list[ShopBotAccountRow])
 def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session)):
     """The customer's own delivered accounts, with live-ish usage from the
     last sync. Scoped by their orders — never by a name pattern, which would
@@ -529,7 +538,7 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
     return rows
 
 
-@bot_router.get("/wallet", response_model=list[ShopWalletEntryRead], dependencies=[Depends(require_shop_bot)])
+@bot_router.get("/wallet", response_model=list[ShopWalletEntryRead])
 def bot_wallet_history(telegram_id: int, limit: int = 20, session: Session = Depends(get_session)):
     user = session.exec(select(ShopUser).where(ShopUser.telegram_id == telegram_id)).first()
     if user is None:
