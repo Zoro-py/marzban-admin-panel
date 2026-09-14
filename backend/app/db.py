@@ -288,10 +288,65 @@ def _run_lightweight_migrations() -> None:
             conn.execute(text("ALTER TABLE appsettings ADD COLUMN last_payg_monthly_settlement VARCHAR"))
 
 
+def _run_shop_migrations() -> None:
+    """Columns added to shop tables after they were first deployed.
+
+    Separate from _run_lightweight_migrations only for readability — same
+    rules apply (AGENTS.md §4.7): create_all() never ALTERs an existing table,
+    so every one of these is a real statement that has to run, and every one
+    is a no-op once its column exists.
+
+    All of these support the order-first purchase flow. The old flow made a
+    customer fund a wallet before choosing anything; these columns let a
+    payment be bound to the plan it was sent for.
+    """
+    with engine.begin() as conn:
+        user_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(shopuser)"))}
+        if user_cols and "trial_taken_at" not in user_cols:
+            conn.execute(text("ALTER TABLE shopuser ADD COLUMN trial_taken_at DATETIME"))
+
+        topup_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(shoptopup)"))}
+        if topup_cols and "order_id" not in topup_cols:
+            conn.execute(text("ALTER TABLE shoptopup ADD COLUMN order_id INTEGER"))
+        if topup_cols and "reference_code" not in topup_cols:
+            conn.execute(text("ALTER TABLE shoptopup ADD COLUMN reference_code VARCHAR"))
+            # No backfill. A reference code exists so the CUSTOMER can quote it;
+            # inventing one for a payment they were never told about would put a
+            # code in the operator's dashboard that the customer has never seen.
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shoptopup_reference_code ON shoptopup (reference_code)"))
+        if topup_cols:
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shoptopup_order_id ON shoptopup (order_id)"))
+
+        order_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(shoporder)"))}
+        if order_cols and "expiry_warned_at" not in order_cols:
+            conn.execute(text("ALTER TABLE shoporder ADD COLUMN expiry_warned_at DATETIME"))
+        if order_cols and "usage_warned_at" not in order_cols:
+            conn.execute(text("ALTER TABLE shoporder ADD COLUMN usage_warned_at DATETIME"))
+
+        settings_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(shopsettings)"))}
+        if settings_cols:
+            for column, ddl in [
+                ("shop_name", "ALTER TABLE shopsettings ADD COLUMN shop_name VARCHAR"),
+                ("support_handle", "ALTER TABLE shopsettings ADD COLUMN support_handle VARCHAR"),
+                ("approval_eta_minutes",
+                 "ALTER TABLE shopsettings ADD COLUMN approval_eta_minutes INTEGER NOT NULL DEFAULT 30"),
+                # Trial defaults to OFF on an existing shop even though it is the
+                # single highest-value change here: turning on free accounts
+                # under an operator who hasn't been told is not a migration's
+                # decision to make.
+                ("trial_enabled", "ALTER TABLE shopsettings ADD COLUMN trial_enabled BOOLEAN NOT NULL DEFAULT 0"),
+                ("trial_gb", "ALTER TABLE shopsettings ADD COLUMN trial_gb FLOAT NOT NULL DEFAULT 1.0"),
+                ("trial_hours", "ALTER TABLE shopsettings ADD COLUMN trial_hours INTEGER NOT NULL DEFAULT 24"),
+            ]:
+                if column not in settings_cols:
+                    conn.execute(text(ddl))
+
+
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     if settings.database_url.startswith("sqlite"):
         _run_lightweight_migrations()
+        _run_shop_migrations()
 
 
 def get_session():

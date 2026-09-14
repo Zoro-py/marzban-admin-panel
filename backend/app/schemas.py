@@ -453,6 +453,12 @@ class ShopSettingsRead(BaseModel):
     username_prefix: str
     min_topup: int
     max_topup: int
+    shop_name: Optional[str] = None
+    support_handle: Optional[str] = None
+    approval_eta_minutes: int = 30
+    trial_enabled: bool = False
+    trial_gb: float = 1.0
+    trial_hours: int = 24
 
 
 class ShopSettingsUpdate(BaseModel):
@@ -469,6 +475,19 @@ class ShopSettingsUpdate(BaseModel):
     username_prefix: Optional[str] = Field(default=None, min_length=2, max_length=12, pattern=r"^[a-zA-Z0-9_]+$")
     min_topup: Optional[int] = Field(default=None, ge=0)
     max_topup: Optional[int] = Field(default=None, ge=1)
+    shop_name: Optional[str] = Field(default=None, max_length=60)
+    # Stored without the leading @ — the bot adds it. Accepting one and
+    # stripping it means an operator who types @myshop and one who types
+    # myshop get the same working link, instead of one of them shipping
+    # "@@myshop" to every customer.
+    support_handle: Optional[str] = Field(default=None, max_length=40)
+    # Capped at a day: this is a promise shown to someone who has already sent
+    # money, and "we'll look at it within a week" is not a promise that keeps
+    # anyone waiting — it loses the sale outright.
+    approval_eta_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
+    trial_enabled: Optional[bool] = None
+    trial_gb: Optional[float] = Field(default=None, gt=0, le=100)
+    trial_hours: Optional[int] = Field(default=None, ge=1, le=720)
 
 
 class ShopUserRead(BaseModel):
@@ -521,6 +540,14 @@ class ShopTopupRead(BaseModel):
     reject_reason: Optional[str]
     created_at: datetime
     reviewed_at: Optional[datetime]
+    # The code the customer was given and will quote back. Shown in the
+    # operator's pending list so a "what happened to A7K2?" message can be
+    # answered by scanning the screen rather than searching.
+    reference_code: Optional[str] = None
+    # Set when this payment was sent FOR a plan: approving it delivers that
+    # plan too. The operator needs to see the difference, because approving a
+    # short amount leaves the customer waiting for a subscription.
+    order_id: Optional[int] = None
     # Denormalised for display so the dashboard's pending list doesn't need a
     # second request per row to say who it's from.
     telegram_id: Optional[int] = None
@@ -573,6 +600,26 @@ class ShopBotSession(BaseModel):
     min_topup: int
     max_topup: int
 
+    # Who the customer is buying from. A shop with no name and no reachable
+    # human is indistinguishable from every other bot asking for a card
+    # transfer, which is the whole competitive problem.
+    shop_name: Optional[str] = None
+    support_handle: Optional[str] = None
+    # The promise made about how long approval takes. Sent to the bot rather
+    # than hardcoded there so the operator can change what they promise
+    # without a redeploy of a separate process.
+    approval_eta_minutes: int = 30
+
+    # Whether to show the trial button at all, and whether THIS customer can
+    # still take it. Two separate booleans on purpose: "the shop doesn't offer
+    # trials" and "you have already had yours" need different sentences, and a
+    # single flag would make the button vanish for returning customers with no
+    # explanation of where it went.
+    trial_enabled: bool = False
+    trial_available: bool = False
+    trial_gb: float = 0.0
+    trial_hours: int = 0
+
 
 class ShopBotPurchaseRequest(BaseModel):
     telegram_id: int
@@ -598,6 +645,32 @@ class ShopBotTopupRequest(BaseModel):
     telegram_id: int
     claimed_amount: int = Field(gt=0, le=1_000_000_000)
     receipt_file_id: Optional[str] = Field(default=None, max_length=256)
+    # The plan this payment was sent FOR, when the customer chose first.
+    # Approving such a top-up credits the wallet AND delivers the plan, so the
+    # customer never has to come back and place the order a second time.
+    # None = a plain wallet top-up, which is still supported for anyone who
+    # wants to pre-load credit.
+    order_id: Optional[int] = None
+
+
+class ShopOrderIntent(BaseModel):
+    """What the bot needs after the customer picks a volume but before any
+    money moves — enough to choose between a one-tap confirm and a payment
+    request, without a second round-trip."""
+
+    order_id: int
+    data_limit_gb: float
+    duration_days: int
+    price: int
+    balance: int
+    # Never negative: a wallet that more than covers the plan yields 0 here and
+    # `payable_from_wallet` true. Showing a customer a negative amount owed was
+    # one of the concrete defects in the previous flow.
+    shortfall: int
+    payable_from_wallet: bool
+    card_number: Optional[str] = None
+    card_holder: Optional[str] = None
+    approval_eta_minutes: int
 
 
 class ShopBotAccountRow(BaseModel):

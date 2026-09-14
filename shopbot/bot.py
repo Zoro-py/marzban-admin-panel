@@ -44,7 +44,7 @@ async def on_error(update, context) -> None:
     try:
         if update is not None and getattr(update, "effective_message", None) is not None:
             import texts
-            await update.effective_message.reply_text(texts.GENERIC_ERROR)
+            await update.effective_message.reply_text(texts.generic_error(None))
     except Exception:
         logger.exception("Could not even send the fallback error message")
 

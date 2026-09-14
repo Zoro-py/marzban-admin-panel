@@ -354,6 +354,12 @@ export interface ShopSettings {
   username_prefix: string
   min_topup: number
   max_topup: number
+  shop_name: string | null
+  support_handle: string | null
+  approval_eta_minutes: number
+  trial_enabled: boolean
+  trial_gb: number
+  trial_hours: number
 }
 
 export interface ShopUser {
@@ -394,11 +400,17 @@ export interface ShopTopup {
   reject_reason: string | null
   created_at: string
   reviewed_at: string | null
+  // The code the customer was given and will quote back to you.
+  reference_code: string | null
+  // Set when this payment was sent FOR a plan — approving it delivers that
+  // plan too, so an under-approval leaves the customer waiting.
+  order_id: number | null
   telegram_id: number | null
   display_name: string | null
 }
 
-export type ShopOrderStatus = 'provisioning' | 'delivered' | 'failed'
+// awaiting_payment: chosen, nothing paid, nothing held — safe to ignore.
+export type ShopOrderStatus = 'awaiting_payment' | 'provisioning' | 'delivered' | 'failed'
 
 export interface ShopOrder {
   id: number

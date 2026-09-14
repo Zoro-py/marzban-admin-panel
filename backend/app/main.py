@@ -58,6 +58,26 @@ async def _scheduled_shop_order_sweep() -> None:
         logger.exception("Shop stuck-order sweep failed")
 
 
+async def _scheduled_shop_renewal_warnings() -> None:
+    """Tells shop customers their service is about to end, while it still
+    works. Without it the month simply ran out and the customer's first news
+    was a VPN that had stopped connecting — the worst possible moment to ask
+    them to buy again, and the point at which most of them didn't."""
+    from app.db import get_session
+    from app.shop_service import warn_customers_before_service_ends
+    try:
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            sent = await warn_customers_before_service_ends(session)
+            if sent:
+                logger.info("Sent %d shop renewal warning(s)", sent)
+        finally:
+            session_gen.close()
+    except Exception:
+        logger.exception("Shop renewal-warning pass failed")
+
+
 async def _scheduled_payg_monthly_settlement() -> None:
     # Same reasoning as _scheduled_backup. Also: a raised exception here is
     # expected and routine, not exceptional — it's exactly how
@@ -95,6 +115,13 @@ async def lifespan(app: FastAPI):
     # for it rather than sitting until someone notices.
     scheduler.add_job(
         _scheduled_shop_order_sweep, "interval", minutes=5, id="shop_order_sweep",
+        max_instances=1, coalesce=True,
+    )
+    # Every 15 minutes. The thresholds are days (paid plans) and hours
+    # (trials), so this is precise enough, and each warning fires at most once
+    # per order no matter how often the pass runs.
+    scheduler.add_job(
+        _scheduled_shop_renewal_warnings, "interval", minutes=15, id="shop_renewal_warnings",
         max_instances=1, coalesce=True,
     )
     # Runs daily (not just "on the last day") on purpose — see

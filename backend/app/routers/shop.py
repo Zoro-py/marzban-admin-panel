@@ -41,6 +41,7 @@ from app.auth import require_auth
 from app.bulk_accounts import build_caption, format_plan_line, resolve_subscription_url
 from app.config import settings as app_settings
 from app.db import get_session
+from app import shop_texts
 from app.models import (
     Account,
     Customer,
@@ -66,6 +67,7 @@ from app.schemas import (
     ShopBotSession,
     ShopBotSessionRequest,
     ShopBotTopupRequest,
+    ShopOrderIntent,
     ShopOrderRead,
     ShopPurchaseResult,
     ShopSettingsRead,
@@ -80,6 +82,10 @@ from app.schemas import (
 from app.shop_service import (
     ShopError,
     approve_topup,
+    create_awaiting_order,
+    deliver_order_to_customer,
+    grant_trial,
+    pay_awaiting_order,
     create_topup,
     get_or_create_shop_user,
     get_shop_settings,
@@ -177,6 +183,12 @@ def update_settings(body: ShopSettingsUpdate, session: Session = Depends(get_ses
     if updates.get("min_topup", settings.min_topup) > updates.get("max_topup", settings.max_topup):
         raise HTTPException(400, "min_topup cannot be greater than max_topup")
 
+    # An operator will type "@myshop" as often as "myshop". Stripping here
+    # rather than at every read means the bot never ships "@@myshop" in a
+    # message to a customer, and there is one place that decides the form.
+    if "support_handle" in updates and updates["support_handle"]:
+        updates["support_handle"] = updates["support_handle"].strip().lstrip("@") or None
+
     for field, value in updates.items():
         setattr(settings, field, value)
     session.add(settings)
@@ -270,24 +282,49 @@ async def approve_topup_endpoint(
     if not topup:
         raise HTTPException(404, "Top-up not found")
     try:
-        topup = approve_topup(session, topup, approved_amount=body.amount)
+        topup, delivered_order = await approve_topup(session, topup, approved_amount=body.amount)
     except ShopError as exc:
         raise HTTPException(400, str(exc))
 
     user = session.get(ShopUser, topup.shop_user_id)
     balance = wallet_balance(session, topup.shop_user_id)
-    # Best-effort: the money is already credited and committed. A customer who
-    # doesn't get the message can still see the new balance in the bot, so
-    # failing the request here would undo nothing and only confuse the
-    # operator into approving twice.
+    shop_settings = get_shop_settings(session)
+    # Best-effort throughout: the money is already credited and committed. A
+    # customer who doesn't get the message can still see the new balance in
+    # the bot, so failing the request here would undo nothing and only confuse
+    # the operator into approving twice.
     if user is not None:
         try:
-            await send_to_shop_user(
-                user.telegram_id,
-                f"✅ پرداخت شما تأیید شد.\n"
-                f"مبلغ: {topup.approved_amount:,} تومان\n"
-                f"موجودی کیف پول: {balance:,} تومان",
-            )
+            if delivered_order is not None:
+                # The order-first path: this payment was sent FOR a plan, and
+                # that plan has just been paid and provisioned. Confirm the
+                # money BEFORE the QR arrives so the few seconds of
+                # provisioning aren't silence.
+                await send_to_shop_user(
+                    user.telegram_id,
+                    shop_texts.topup_approved_with_order(topup.approved_amount, balance),
+                )
+                await deliver_order_to_customer(session, delivered_order)
+            elif topup.order_id is not None:
+                # Bound to a plan that could NOT be paid — almost always
+                # because the operator approved less than it costs. Say what
+                # is missing, rather than leaving the customer waiting for a
+                # subscription that is never coming.
+                pending = session.get(ShopOrder, topup.order_id)
+                shortfall = max(0, (pending.price if pending else 0) - balance)
+                await send_to_shop_user(
+                    user.telegram_id,
+                    shop_texts.topup_approved_short(
+                        topup.approved_amount, balance, shortfall, shop_settings.support_handle,
+                    ),
+                )
+            else:
+                await send_to_shop_user(
+                    user.telegram_id,
+                    shop_texts.topup_approved_plain(
+                        topup.approved_amount, balance, shop_settings.support_handle,
+                    ),
+                )
         except Exception:
             logger.exception("Top-up #%s approved but the customer could not be notified", topup.id)
 
@@ -370,6 +407,13 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
         card_holder=settings.card_holder,
         min_topup=settings.min_topup,
         max_topup=settings.max_topup,
+        shop_name=settings.shop_name,
+        support_handle=settings.support_handle,
+        approval_eta_minutes=settings.approval_eta_minutes,
+        trial_enabled=settings.trial_enabled,
+        trial_available=settings.trial_enabled and user.trial_taken_at is None and not user.is_blocked,
+        trial_gb=settings.trial_gb,
+        trial_hours=settings.trial_hours,
     )
 
 
@@ -469,6 +513,132 @@ async def bot_deliver_qr(order_id: int, session: Session = Depends(get_session))
     return {"delivered": True}
 
 
+@bot_router.post("/orders", response_model=ShopOrderIntent)
+def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depends(get_session)):
+    """Records what the customer chose, BEFORE asking them for money.
+
+    This is the order-first flow. The old shape made a first-time buyer fund a
+    wallet before they could pick anything, which meant: inventing an amount
+    with no idea what things cost, doing the price multiplication themselves,
+    and — worst — coming BACK after approval to place the order they thought
+    they had already placed. Most didn't. The money sat in a wallet and the
+    subscription was never collected.
+
+    Takes no money. Returns what the bot needs to decide which of two screens
+    to show: a one-tap confirm when the wallet already covers it, or a payment
+    request carrying a single exact figure when it doesn't.
+    """
+    user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
+    if user is None:
+        raise HTTPException(404, "Unknown shop user — call /session first")
+    try:
+        order = create_awaiting_order(session, user, body.data_limit_gb)
+    except ShopError as exc:
+        raise HTTPException(400, str(exc))
+
+    balance = wallet_balance(session, user.id)
+    settings = get_shop_settings(session)
+    return ShopOrderIntent(
+        order_id=order.id,
+        data_limit_gb=order.data_limit_gb,
+        duration_days=order.duration_days,
+        price=order.price,
+        balance=balance,
+        # The amount still to transfer. Never negative — a customer whose
+        # wallet more than covers the plan is shown a confirm button, not a
+        # bill for a negative sum.
+        shortfall=max(0, order.price - balance),
+        payable_from_wallet=balance >= order.price,
+        card_number=settings.card_number,
+        card_holder=settings.card_holder,
+        approval_eta_minutes=settings.approval_eta_minutes,
+    )
+
+
+@bot_router.post("/orders/{order_id}/pay", response_model=ShopPurchaseResult)
+async def bot_pay_order(order_id: int, session: Session = Depends(get_session)):
+    """Pays an awaiting order from the wallet and delivers it.
+
+    The repeat-customer path: someone with credit already in the wallet taps
+    confirm and has their subscription seconds later, with no card transfer
+    and no human in the loop. This is what the wallet is actually FOR — and it
+    only earns its place once the customer has been through the flow once.
+    """
+    order = session.get(ShopOrder, order_id)
+    if order is None:
+        raise HTTPException(404, "Order not found")
+    try:
+        order = await pay_awaiting_order(session, order)
+    except ShopError as exc:
+        raise HTTPException(400, str(exc))
+
+    if order.status == ShopOrderStatus.failed:
+        raise HTTPException(502, order.error or "Could not create the account")
+
+    # The bot deliberately sends nothing but "working on it" and relies on
+    # this push — the same delivery an approved card payment gets. Omitting it
+    # here meant a wallet purchase charged the customer and then went silent.
+    await deliver_order_to_customer(session, order)
+
+    account = session.get(Account, order.account_id) if order.account_id else None
+    return ShopPurchaseResult(
+        order_id=order.id,
+        marzban_username=order.marzban_username,
+        data_limit_gb=order.data_limit_gb,
+        duration_days=order.duration_days,
+        price=order.price,
+        balance=wallet_balance(session, order.shop_user_id),
+        subscription_url=resolve_subscription_url(account.subscription_url) if account else None,
+        status=order.status,
+    )
+
+
+@bot_router.post("/trial", response_model=ShopPurchaseResult)
+async def bot_grant_trial(body: ShopBotSessionRequest, session: Session = Depends(get_session)):
+    """Hands a first-time visitor a real, working subscription for nothing.
+
+    The one endpoint that gives away inventory, and the reason it exists is in
+    grant_trial's docstring: in a market with no escrow, no refunds and no
+    ratings, a trial is the only mechanism by which the shop can go first.
+
+    Delivery is done here rather than left to the bot so a trial arrives
+    looking exactly like a purchase — same QR, same link, same setup guide.
+    The customer's first experience of the product should be the real one.
+    """
+    user = get_or_create_shop_user(
+        session,
+        body.telegram_id,
+        telegram_username=body.telegram_username,
+        display_name=body.display_name,
+    )
+    try:
+        order = await grant_trial(session, user)
+    except ShopError as exc:
+        raise HTTPException(400, str(exc))
+
+    if order.status == ShopOrderStatus.failed:
+        # The trial was already marked as taken before provisioning (see
+        # grant_trial) so a retry loop can't mint free accounts. That means
+        # this customer has lost their trial to a panel failure, which is the
+        # operator's problem to fix, not something to paper over silently.
+        logger.error("Trial order #%s failed for telegram_id=%s", order.id, body.telegram_id)
+        raise HTTPException(502, order.error or "Could not create the trial account")
+
+    await deliver_order_to_customer(session, order)
+
+    account = session.get(Account, order.account_id) if order.account_id else None
+    return ShopPurchaseResult(
+        order_id=order.id,
+        marzban_username=order.marzban_username,
+        data_limit_gb=order.data_limit_gb,
+        duration_days=order.duration_days,
+        price=0,
+        balance=wallet_balance(session, user.id),
+        subscription_url=resolve_subscription_url(account.subscription_url) if account else None,
+        status=order.status,
+    )
+
+
 @bot_router.post("/topups", response_model=ShopTopupRead)
 async def bot_create_topup(
     body: ShopBotTopupRequest,
@@ -479,7 +649,8 @@ async def bot_create_topup(
     if user is None:
         raise HTTPException(404, "Unknown shop user — call /session first")
     try:
-        topup = create_topup(session, user, body.claimed_amount, body.receipt_file_id)
+        topup = create_topup(session, user, body.claimed_amount, body.receipt_file_id,
+                             order_id=body.order_id)
     except ShopError as exc:
         raise HTTPException(400, str(exc))
 
@@ -487,9 +658,14 @@ async def bot_create_topup(
     # because of, a Telegram call to the OPERATOR. The row is already
     # committed, so a failed alert loses the notification, not the request —
     # and the dashboard's pending list shows it regardless.
+    order_summary = None
+    if topup.order_id is not None:
+        bound = session.get(ShopOrder, topup.order_id)
+        if bound is not None:
+            order_summary = f"{bound.data_limit_gb:g} GB / {bound.duration_days} days, price {bound.price:,} T"
     background_tasks.add_task(_alert_operator_to_topup, topup.id, user.telegram_id,
                               user.display_name or user.telegram_username, body.receipt_file_id,
-                              topup.claimed_amount)
+                              topup.claimed_amount, topup.reference_code, order_summary)
 
     return ShopTopupRead(**topup.model_dump(), telegram_id=user.telegram_id, display_name=user.display_name)
 
@@ -500,11 +676,22 @@ async def _alert_operator_to_topup(
     who: Optional[str],
     receipt_file_id: Optional[str],
     claimed_amount: int,
+    reference_code: Optional[str] = None,
+    order_summary: Optional[str] = None,
 ) -> None:
+    # The reference code is shown because the customer was given it and will
+    # quote it back. The order line matters more: approving an order-bound
+    # payment also DELIVERS a plan, and approving less than it costs leaves the
+    # customer waiting for one — the operator needs to know which kind of
+    # approval they are making before they tap.
+    ref = f" · code {reference_code}" if reference_code else ""
+    kind = (f"\nFor: {order_summary} (approving delivers it)" if order_summary
+            else "\nFor: wallet credit only")
     caption = (
-        f"💳 New top-up request #{topup_id}\n"
+        f"💳 New payment #{topup_id}{ref}\n"
         f"From: {who or 'unknown'} (id {telegram_id})\n"
         f"Claimed: {claimed_amount:,} T"
+        f"{kind}"
     )
     keyboard = {
         "inline_keyboard": [[

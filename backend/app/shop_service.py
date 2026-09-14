@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from datetime import timedelta
 from typing import Optional
 
@@ -373,22 +374,35 @@ def _record_delivered(session: Session, order: ShopOrder, username: str, marzban
     session.commit()
 
 
-async def _provision_order(session: Session, order: ShopOrder, settings: ShopSettings) -> None:
+async def _provision_order(
+    session: Session,
+    order: ShopOrder,
+    settings: ShopSettings,
+    *,
+    duration_hours: Optional[int] = None,
+) -> None:
     """Creates the Marzban user for an already-paid order.
 
     Never raises. By this point the customer's money is already gone, so an
     exception propagating up to the bot would leave them charged with no
     explanation and no refund — every outcome has to be recorded on the order
     instead.
+
+    `duration_hours` overrides the order's whole-day duration, and exists for
+    the trial: ShopOrder.duration_days is an int, so a 6-hour trial expressed
+    in days would either floor to zero (an account that is already expired
+    when it is handed over) or round up to a full day the operator did not
+    intend to give away. Paid plans never pass it — they are sold in days.
     """
     from app.config import settings as app_settings
 
+    seconds = duration_hours * 3600 if duration_hours is not None else order.duration_days * SECONDS_IN_DAY
     username = f"{settings.username_prefix}{order.id}"
     payload = {
         "username": username,
         "proxies": app_settings.marzban_default_proxies,
         "inbounds": app_settings.marzban_default_inbounds,
-        "expire": int(utcnow().timestamp()) + order.duration_days * SECONDS_IN_DAY,
+        "expire": int(utcnow().timestamp()) + seconds,
         "data_limit": bytes_from_gb(order.data_limit_gb),
         "data_limit_reset_strategy": "no_reset",
         "status": "active",
@@ -542,12 +556,43 @@ async def sweep_stuck_orders(session: Session) -> list[ShopOrder]:
 # ── top-ups ───────────────────────────────────────────────────────────────
 
 
+# Characters a reference code is built from. No 0/O/1/I/L: the customer reads
+# this off their screen and types it into a chat to ask "what happened to my
+# payment", and those four are the pairs people get wrong.
+_REFERENCE_ALPHABET = "ACDEFGHJKMNPQRTUVWXYZ2345789"
+
+
+def _generate_reference_code(session: Session) -> str:
+    """Short, unambiguous, unique. Retried rather than trusted: at four
+    characters a collision is unlikely but not impossible, and two customers
+    quoting the same code would make the operator's lookup ambiguous exactly
+    when someone is anxious about money."""
+    for _ in range(12):
+        code = "".join(secrets.choice(_REFERENCE_ALPHABET) for _ in range(4))
+        exists = session.exec(select(ShopTopup).where(ShopTopup.reference_code == code)).first()
+        if exists is None:
+            return code
+    # Fall back to something guaranteed unique rather than raising — a
+    # customer's payment must never fail to register because of a code.
+    return f"R{secrets.token_hex(3).upper()}"
+
+
 def create_topup(
     session: Session,
     shop_user: ShopUser,
     claimed_amount: int,
     receipt_file_id: Optional[str],
+    order_id: Optional[int] = None,
 ) -> ShopTopup:
+    """Records a claimed card-to-card payment.
+
+    `order_id` binds the payment to a plan the customer already chose. That is
+    what makes the flow one motion instead of two: approving such a top-up
+    credits the wallet AND delivers the plan, so the customer never has to come
+    back and buy a second time. The old shape — top up, wait, return, buy —
+    lost people at the "return" step, who reasonably believed that sending the
+    receipt WAS the purchase.
+    """
     settings = get_shop_settings(session)
     if shop_user.is_blocked:
         raise ShopError("This account can't top up. Contact support.")
@@ -556,10 +601,19 @@ def create_topup(
     if claimed_amount > settings.max_topup:
         raise ShopError(f"The largest top-up is {settings.max_topup:,} T.")
 
+    if order_id is not None:
+        order = session.get(ShopOrder, order_id)
+        if order is None or order.shop_user_id != shop_user.id:
+            raise ShopError("That order doesn't belong to this account.")
+        if order.status != ShopOrderStatus.awaiting_payment:
+            raise ShopError("That order has already been paid for.")
+
     topup = ShopTopup(
         shop_user_id=shop_user.id,
         claimed_amount=claimed_amount,
         receipt_file_id=receipt_file_id,
+        order_id=order_id,
+        reference_code=_generate_reference_code(session),
     )
     session.add(topup)
     session.commit()
@@ -567,12 +621,28 @@ def create_topup(
     return topup
 
 
-def approve_topup(session: Session, topup: ShopTopup, *, approved_amount: Optional[int] = None) -> ShopTopup:
-    """Credits the wallet.
+async def approve_topup(
+    session: Session,
+    topup: ShopTopup,
+    *,
+    approved_amount: Optional[int] = None,
+) -> tuple[ShopTopup, Optional[ShopOrder]]:
+    """Credits the wallet and, if this payment was sent FOR a plan, delivers it.
+
+    Returns (topup, delivered_order). delivered_order is None for a plain
+    wallet top-up, and for an order-bound one that could not be fulfilled —
+    the caller reports the difference to the customer, since "your wallet is
+    charged" and "your subscription is ready" are very different messages to
+    receive after sending money to a stranger.
 
     Refuses a top-up that isn't pending. That guard is what stops a double-tap
     on the operator's approve button crediting the same receipt twice — the
-    single most likely way for this system to give money away.
+    single most likely way for this system to give money away. It also makes
+    the delivery below exactly-once: the order is only paid on the one call
+    that moves the top-up out of `pending`.
+
+    Async only because of that delivery step; the money part is synchronous
+    and commits before any network call is made.
     """
     if topup.status != ShopTopupStatus.pending:
         raise ShopError(f"This top-up was already {topup.status.value}.")
@@ -594,9 +664,225 @@ def approve_topup(session: Session, topup: ShopTopup, *, approved_amount: Option
         topup_id=topup.id,
         commit=False,
     )
+    # Committed BEFORE the delivery attempt. The customer paid for credit;
+    # that credit is theirs whether or not provisioning then works, and a
+    # Marzban failure must never roll back money the operator confirmed
+    # arriving in their bank account.
     session.commit()
     session.refresh(topup)
-    return topup
+
+    if topup.order_id is None:
+        return topup, None
+
+    order = session.get(ShopOrder, topup.order_id)
+    if order is None or order.status != ShopOrderStatus.awaiting_payment:
+        # Already handled, cancelled, or gone. The credit stands; the customer
+        # simply has balance rather than a delivered plan.
+        return topup, None
+
+    try:
+        delivered = await pay_awaiting_order(session, order)
+    except ShopError as exc:
+        # Most often: the operator approved LESS than the plan costs. Not an
+        # error the operator needs to fix — the money is banked, the plan is
+        # still waiting, and the customer is told what's missing.
+        logger.info("Order #%s stays awaiting payment after top-up #%s: %s", order.id, topup.id, exc)
+        return topup, None
+    return topup, delivered
+
+
+async def pay_awaiting_order(session: Session, order: ShopOrder) -> ShopOrder:
+    """Turns an `awaiting_payment` order into a paid, provisioned one.
+
+    Separate from purchase() because the money arrives at a different moment:
+    purchase() debits a wallet the customer already funded, this one runs when
+    a payment lands against a plan chosen earlier. Both end in the same
+    _provision_order, so there is exactly one path that creates a Marzban user
+    for a shop order.
+    """
+    if order.status != ShopOrderStatus.awaiting_payment:
+        raise ShopError(f"Order #{order.id} is already {order.status.value}.")
+
+    settings = get_shop_settings(session)
+    async with _lock_for(order.shop_user_id):
+        balance = wallet_balance(session, order.shop_user_id)
+        if balance < order.price:
+            raise ShopError(
+                f"Not enough balance: this plan costs {order.price:,} T "
+                f"and the wallet has {balance:,} T."
+            )
+        order.status = ShopOrderStatus.provisioning
+        session.add(order)
+        post_wallet_entry(
+            session,
+            order.shop_user_id,
+            entry_type=ShopWalletEntryType.purchase,
+            amount=-order.price,
+            note=f"{order.data_limit_gb:g} GB / {order.duration_days} days",
+            order_id=order.id,
+            commit=False,
+        )
+        session.commit()
+        session.refresh(order)
+
+    await _provision_order(session, order, settings)
+    session.refresh(order)
+    return order
+
+
+async def deliver_order_to_customer(session: Session, order: ShopOrder) -> bool:
+    """Sends the customer their QR, their link and how to use it.
+
+    THE ONLY place a subscription is handed over, deliberately. Delivery is
+    triggered from two very different moments — an instant purchase from a
+    funded wallet, and an operator approving a card payment hours later — and
+    the customer must receive exactly the same thing either way. Two copies of
+    this would drift, and it is the most important message in the product.
+
+    Best-effort by design: the account already exists and is already paid for,
+    so a Telegram failure must not undo anything. Returns whether the customer
+    actually got it, so the caller can tell the operator when someone needs
+    their link sent by hand.
+    """
+    from app.bulk_accounts import resolve_subscription_url
+    from app.notify import send_photo_to_shop_user, send_to_shop_user
+    from app.qr import subscription_qr_png
+    from app import shop_texts
+
+    user = session.get(ShopUser, order.shop_user_id)
+    if user is None:
+        logger.error("Order #%s has no shop user to deliver to", order.id)
+        return False
+
+    account = session.get(Account, order.account_id) if order.account_id else None
+    url = resolve_subscription_url(account.subscription_url) if account else None
+    settings = get_shop_settings(session)
+    is_trial = order.price == 0
+
+    if not url:
+        logger.error("Order #%s delivered but has no subscription link to send", order.id)
+        try:
+            await send_to_shop_user(
+                user.telegram_id,
+                "سرویس‌تان ساخته شد ولی لینکش آماده نشد. "
+                "چند لحظه بعد از «📱 سرویس‌های من» برش دارید."
+                + shop_texts.support_line(settings.support_handle),
+            )
+        except Exception:
+            logger.exception("Order #%s: could not warn the customer about the missing link", order.id)
+        return False
+
+    delivered = False
+    try:
+        await send_photo_to_shop_user(
+            user.telegram_id,
+            subscription_qr_png(url),
+            shop_texts.delivery_caption(order.data_limit_gb, order.duration_days, is_trial=is_trial),
+            filename=f"{order.marzban_username or order.id}.png",
+        )
+        delivered = True
+    except Exception:
+        logger.exception("Order #%s: QR image could not be sent", order.id)
+
+    # The link goes as its own message even when the QR failed — a customer
+    # who can copy a URL is not blocked by a missing image, and this is the
+    # part that actually carries the service.
+    try:
+        await send_to_shop_user(user.telegram_id, shop_texts.delivery_link(url))
+        await send_to_shop_user(user.telegram_id, shop_texts.setup_guide(settings.support_handle))
+        delivered = True
+    except Exception:
+        logger.exception("Order #%s: subscription link could not be sent", order.id)
+
+    return delivered
+
+
+async def grant_trial(session: Session, shop_user: ShopUser) -> ShopOrder:
+    """Gives a first-time visitor a real, working subscription for free.
+
+    WHY THIS EXISTS, since it is the only place this codebase deliberately
+    gives away inventory: in this market there is no escrow, no refund, no
+    app-store rating and no payment gateway. The buyer is asked to send money
+    to a stranger's personal card and wait. Every competitor asks the same,
+    which means nothing distinguishes an honest shop from a dishonest one at
+    the moment the customer has to decide.
+
+    A trial is the only mechanism that reverses that order: the shop goes
+    first. It also moves the genuinely hard step — installing a client app and
+    importing a subscription — to BEFORE any money changes hands, where
+    failure costs the customer nothing instead of looking like fraud.
+
+    Priced as one gigabyte of bandwidth. A single support conversation with a
+    customer who paid and then couldn't connect costs more.
+
+    Recorded as a normal ShopOrder with price=0 so it appears in the operator's
+    order list, counts toward nothing in the wallet, and reuses the one
+    provisioning path rather than inventing a second way to create an account.
+    """
+    settings = get_shop_settings(session)
+    if not settings.trial_enabled:
+        raise ShopError("The free trial isn't available right now.")
+    if shop_user.is_blocked:
+        raise ShopError("This account can't take a trial. Contact support.")
+    if shop_user.trial_taken_at is not None:
+        raise ShopError("You've already used your free trial.")
+
+    # Written BEFORE provisioning, and committed. If Marzban then fails, the
+    # customer has burned their trial and gets an error — which is the safe
+    # direction. The opposite order lets a retry loop mint unlimited free
+    # accounts, and this is the one endpoint that hands out something for
+    # nothing, so it is the one that has to fail closed.
+    shop_user.trial_taken_at = utcnow()
+    session.add(shop_user)
+
+    order = ShopOrder(
+        shop_user_id=shop_user.id,
+        data_limit_gb=settings.trial_gb,
+        # Rounded up, and only a LABEL for the operator's order list — the
+        # real expiry is set from trial_hours below, so a 6-hour trial really
+        # lasts 6 hours even though this column has to say 1.
+        duration_days=max(1, (settings.trial_hours + 23) // 24),
+        price=0,
+        status=ShopOrderStatus.provisioning,
+    )
+    session.add(order)
+    session.commit()
+    session.refresh(order)
+
+    await _provision_order(session, order, settings, duration_hours=settings.trial_hours)
+    session.refresh(order)
+    return order
+
+
+def create_awaiting_order(session: Session, shop_user: ShopUser, data_limit_gb: float) -> ShopOrder:
+    """Records what the customer chose, before asking them for any money.
+
+    This is the whole point of the order-first flow: the customer commits to a
+    plan while it costs them nothing, and the payment request that follows
+    carries a single exact number instead of asking them to invent one and do
+    the multiplication themselves.
+
+    Takes no money and holds nothing, so an abandoned order is free. They are
+    not cleaned up on a timer for that reason — an old awaiting_payment row is
+    a record of what someone was interested in, not a leak.
+    """
+    if shop_user.is_blocked:
+        raise ShopError("This account can't make purchases. Contact support.")
+    settings = get_shop_settings(session)
+    validate_purchase_request(settings, data_limit_gb)
+    price = quote_price(settings, data_limit_gb)
+
+    order = ShopOrder(
+        shop_user_id=shop_user.id,
+        data_limit_gb=data_limit_gb,
+        duration_days=settings.plan_duration_days,
+        price=price,
+        status=ShopOrderStatus.awaiting_payment,
+    )
+    session.add(order)
+    session.commit()
+    session.refresh(order)
+    return order
 
 
 def reject_topup(session: Session, topup: ShopTopup, *, reason: Optional[str] = None) -> ShopTopup:
@@ -609,3 +895,96 @@ def reject_topup(session: Session, topup: ShopTopup, *, reason: Optional[str] = 
     session.commit()
     session.refresh(topup)
     return topup
+
+
+# ── renewal: warn before the service stops, not after ─────────────────────
+#
+# The previous flow had no renewal path at all: when a month ended the VPN
+# simply stopped, and the customer's first news of it was a connection that
+# no longer worked. For a business selling monthly subscriptions that is the
+# single largest revenue leak there is — the customer who was satisfied
+# enough to renew is lost at exactly the moment they would have paid again.
+#
+# The panel-tracking layer already knows every account's expiry and usage
+# (the sync job refreshes them every minute). This points that knowledge at
+# the customer.
+
+# How far ahead a paid plan's expiry is announced. Three days: enough time to
+# arrange a card transfer and have it approved, not so early that the message
+# is forgotten by the time it matters.
+EXPIRY_WARN_DAYS = 3
+# Share of the data allowance used before a usage warning. 80% leaves room for
+# a renewal to land before the connection actually stops.
+USAGE_WARN_PERCENT = 80
+# A trial is measured in hours, so its warning is too.
+TRIAL_WARN_HOURS = 2
+
+
+async def warn_customers_before_service_ends(session: Session) -> int:
+    """Sends each delivered order at most one expiry warning and one usage
+    warning, ever. Returns how many were sent.
+
+    Only a warning that was actually DELIVERED is recorded — a Telegram
+    failure leaves the order unmarked so the next pass tries again, instead
+    of the customer silently never hearing.
+    """
+    from app import shop_texts
+    from app.notify import send_to_shop_user
+
+    settings = get_shop_settings(session)
+    handle = settings.support_handle
+    now_ts = utcnow().timestamp()
+    sent = 0
+
+    orders = session.exec(
+        select(ShopOrder).where(
+            ShopOrder.status == ShopOrderStatus.delivered,
+            ShopOrder.account_id.is_not(None),
+        )
+    ).all()
+    for order in orders:
+        account = session.get(Account, order.account_id)
+        user = session.get(ShopUser, order.shop_user_id)
+        if account is None or user is None or user.is_blocked:
+            continue
+        # An account the operator disabled or that Marzban no longer has is
+        # not the customer's to renew; warning them about it would only
+        # generate a confused support message.
+        if account.status in ("disabled", "deleted_from_marzban"):
+            continue
+        is_trial = order.price == 0
+
+        message = None
+        mark = None
+        if order.expiry_warned_at is None and account.expire:
+            seconds_left = account.expire - now_ts
+            if is_trial:
+                if 0 < seconds_left <= TRIAL_WARN_HOURS * 3600:
+                    message = shop_texts.trial_ending(max(1, int(seconds_left // 3600)), handle)
+                    mark = "expiry"
+            elif 0 < seconds_left <= EXPIRY_WARN_DAYS * 86400:
+                days_left = max(1, int(-(-seconds_left // 86400)))
+                message = shop_texts.expiring_soon(order.data_limit_gb, days_left, handle)
+                mark = "expiry"
+
+        if message is None and order.usage_warned_at is None and not is_trial and account.data_limit:
+            percent = int(account.used_traffic * 100 / account.data_limit)
+            if USAGE_WARN_PERCENT <= percent < 100:
+                message = shop_texts.data_almost_gone(order.data_limit_gb, percent, handle)
+                mark = "usage"
+
+        if message is None:
+            continue
+        try:
+            await send_to_shop_user(user.telegram_id, message)
+        except Exception:
+            logger.exception("Could not send the %s warning for order #%s", mark, order.id)
+            continue
+        if mark == "expiry":
+            order.expiry_warned_at = utcnow()
+        else:
+            order.usage_warned_at = utcnow()
+        session.add(order)
+        session.commit()
+        sent += 1
+    return sent

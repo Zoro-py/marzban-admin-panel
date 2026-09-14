@@ -174,6 +174,9 @@ def test_auth_boundary() -> None:
         ("post", "/api/shop/bot/topups", {"json": {"telegram_id": 1, "claimed_amount": 50000}}),
         ("get", "/api/shop/bot/accounts", {"params": {"telegram_id": 1}}),
         ("get", "/api/shop/bot/wallet", {"params": {"telegram_id": 1}}),
+        ("post", "/api/shop/bot/orders", {"json": {"telegram_id": 1, "data_limit_gb": 10}}),
+        ("post", "/api/shop/bot/orders/1/pay", {}),
+        ("post", "/api/shop/bot/trial", {"json": {"telegram_id": 1}}),
     ]:
         if getattr(client, method)(path, **kwargs).status_code != 401:
             unguarded.append(path)
@@ -524,6 +527,14 @@ def main() -> int:
         test_closed_shop_and_bounds,
         test_cannot_open_shop_half_configured,
         test_accounts_are_scoped_to_their_buyer,
+        test_order_first_approval_delivers,
+        test_order_first_short_approval_waits,
+        test_order_paid_from_wallet,
+        test_order_cannot_be_paid_twice,
+        test_topup_cannot_target_someone_elses_order,
+        test_trial,
+        test_quote_refuses_unbuyable_plans,
+        test_renewal_warnings,
     ):
         test()
     print()
@@ -532,6 +543,264 @@ def main() -> int:
         return 1
     print("all checks passed")
     return 0
+
+
+# ── the order-first flow ─────────────────────────────────────────────────
+#
+# The flow these cover replaced "fund a wallet, wait, come back, buy". What
+# they protect is that ONE approval both banks the money and hands over the
+# plan — and that it never does the second half for less than the plan costs.
+
+
+def test_order_first_approval_delivers() -> None:
+    print("\n[13] choosing first, then paying: one approval delivers the plan")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+
+    intent = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                         json={"telegram_id": 555, "data_limit_gb": 10}).json()
+    check("price is the plan's", intent["price"], 30_000)
+    check("the whole price is still to pay", intent["shortfall"], 30_000)
+    check("not payable from an empty wallet", intent["payable_from_wallet"], False)
+    check("choosing created no account", fake.created, [])
+
+    topup = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "claimed_amount": 30_000,
+                              "receipt_file_id": "r1", "order_id": intent["order_id"]}).json()
+    check("the customer gets a reference code", bool(topup.get("reference_code")), True)
+    check("the payment remembers its order", topup.get("order_id"), intent["order_id"])
+
+    r = client.post(f"/api/shop/topups/{topup['id']}/approve", json={})
+    check("approval ok", r.status_code, 200)
+    with Session(engine) as session:
+        order = session.get(ShopOrder, intent["order_id"])
+        check("the plan was delivered by the approval itself", order.status, ShopOrderStatus.delivered)
+        check("paid exactly once — nothing left over", wallet_balance(session, uid), 0)
+    check("exactly one account on the panel", fake.created, [f"shop{intent['order_id']}"])
+
+
+def test_order_first_short_approval_waits() -> None:
+    print("\n[14] an approval for LESS than the plan banks the money and delivers nothing")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+
+    intent = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                         json={"telegram_id": 555, "data_limit_gb": 10}).json()
+    topup = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "claimed_amount": 30_000,
+                              "order_id": intent["order_id"]}).json()
+    client.post(f"/api/shop/topups/{topup['id']}/approve", json={"amount": 10_000})
+    with Session(engine) as session:
+        order = session.get(ShopOrder, intent["order_id"])
+        check("the plan still waits for payment", order.status, ShopOrderStatus.awaiting_payment)
+        check("the money that did arrive is kept", wallet_balance(session, uid), 10_000)
+    check("no account handed over for a partial payment", fake.created, [])
+
+    # And the next quote knows about that credit: only the rest is asked for.
+    again = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "data_limit_gb": 10}).json()
+    check("the shortfall counts the credit already held", again["shortfall"], 20_000)
+
+
+def test_order_paid_from_wallet() -> None:
+    print("\n[15] a funded wallet pays an order in one tap, no card, no human")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 100_000)
+
+    intent = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                         json={"telegram_id": 555, "data_limit_gb": 10}).json()
+    check("payable from the wallet", intent["payable_from_wallet"], True)
+    check("nothing left to transfer — never a negative number", intent["shortfall"], 0)
+
+    r = client.post(f"/api/shop/bot/orders/{intent['order_id']}/pay", headers=BOT_HEADERS)
+    check("http 200", r.status_code, 200)
+    with Session(engine) as session:
+        check("debited once", wallet_balance(session, uid), 70_000)
+    check("delivered", len(fake.created), 1)
+
+
+def test_order_cannot_be_paid_twice() -> None:
+    print("\n[16] paying the same order twice charges once")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 100_000)
+
+    oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                      json={"telegram_id": 555, "data_limit_gb": 10}).json()["order_id"]
+    first = client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS)
+    second = client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS)
+    check("first ok", first.status_code, 200)
+    check("second refused (400)", second.status_code, 400)
+    with Session(engine) as session:
+        check("charged once", wallet_balance(session, uid), 70_000)
+    check("one account", len(fake.created), 1)
+
+
+def test_topup_cannot_target_someone_elses_order() -> None:
+    print("\n[17] a payment cannot be pointed at another customer's order")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client, telegram_id=555)
+    _make_user(client, telegram_id=777)
+
+    victim_order = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                               json={"telegram_id": 555, "data_limit_gb": 10}).json()["order_id"]
+    r = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                    json={"telegram_id": 777, "claimed_amount": 30_000, "order_id": victim_order})
+    check("refused (400)", r.status_code, 400)
+
+
+def test_trial() -> None:
+    print("\n[18] the free trial: real, once per person, off unless switched on, hours honoured")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+
+    off = client.post("/api/shop/bot/trial", headers=BOT_HEADERS, json={"telegram_id": 555})
+    check("refused while trials are switched off", off.status_code, 400)
+    check("nothing created while off", fake.created, [])
+
+    client.patch("/api/shop/settings", json={"trial_enabled": True, "trial_gb": 1, "trial_hours": 6})
+    session_before = client.post("/api/shop/bot/session", headers=BOT_HEADERS,
+                                 json={"telegram_id": 555}).json()
+    check("offered to a newcomer", session_before["trial_available"], True)
+
+    import time as _time
+    started = _time.time()
+    first = client.post("/api/shop/bot/trial", headers=BOT_HEADERS, json={"telegram_id": 555})
+    check("granted", first.status_code, 200)
+    check("costs nothing", first.json()["price"], 0)
+    with Session(engine) as session:
+        check("the wallet is untouched", wallet_balance(session, uid), 0)
+    username = fake.created[0]
+    lasts = fake.panel[username]["expire"] - started
+    # 6 hours, not rounded up to a day: ShopOrder stores whole days, and an
+    # earlier draft let that turn a 6-hour trial into a 24-hour one.
+    check("expires after the configured hours, not a whole day",
+          6 * 3600 - 60 <= lasts <= 6 * 3600 + 60, True)
+
+    second = client.post("/api/shop/bot/trial", headers=BOT_HEADERS, json={"telegram_id": 555})
+    check("a second trial is refused", second.status_code, 400)
+    check("still exactly one account", len(fake.created), 1)
+    session_after = client.post("/api/shop/bot/session", headers=BOT_HEADERS,
+                                json={"telegram_id": 555}).json()
+    check("no longer offered", session_after["trial_available"], False)
+    check("but the shop still says it has trials", session_after["trial_enabled"], True)
+
+
+def test_quote_refuses_unbuyable_plans() -> None:
+    print("\n[19] a quote refuses exactly what a purchase would refuse")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+    huge = client.post("/api/shop/bot/quote", headers=BOT_HEADERS,
+                       json={"telegram_id": 555, "data_limit_gb": 5000})
+    check("over the maximum -> 400", huge.status_code, 400)
+
+    client = _reset(fake, open_shop=False)
+    _make_user(client)
+    closed = client.post("/api/shop/bot/quote", headers=BOT_HEADERS,
+                         json={"telegram_id": 555, "data_limit_gb": 10})
+    check("shop closed -> 400", closed.status_code, 400)
+
+
+def test_renewal_warnings() -> None:
+    print("")
+    print("[20] renewal warnings: before the service ends, once each, retried if unsent")
+    from app import notify as notify_module
+    from app.shop_service import warn_customers_before_service_ends
+
+    sent: list[tuple[int, str]] = []
+
+    async def capture(chat_id, text):
+        sent.append((chat_id, text))
+
+    async def broken(chat_id, text):
+        raise RuntimeError("telegram down")
+
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 100_000)
+    oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                      json={"telegram_id": 555, "data_limit_gb": 10}).json()["order_id"]
+    client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS)
+
+    import time as _time
+    original = notify_module.send_to_shop_user
+    try:
+        with Session(engine) as session:
+            order = session.get(ShopOrder, oid)
+            account = session.get(Account, order.account_id)
+            account.expire = int(_time.time()) + 20 * 86400
+            account.used_traffic = int(account.data_limit * 0.10)
+            session.add(account)
+            session.commit()
+
+            notify_module.send_to_shop_user = capture
+            check("nothing to say while far from the end",
+                  asyncio.run(warn_customers_before_service_ends(session)), 0)
+
+            account.expire = int(_time.time()) + 2 * 86400
+            session.add(account)
+            session.commit()
+
+            # A failed send must NOT mark the order, or the customer never hears.
+            notify_module.send_to_shop_user = broken
+            check("a failed send counts as not sent",
+                  asyncio.run(warn_customers_before_service_ends(session)), 0)
+            session.refresh(order)
+            check("...and leaves the order unmarked", order.expiry_warned_at, None)
+
+            notify_module.send_to_shop_user = capture
+            check("expiry warning sent once Telegram is back",
+                  asyncio.run(warn_customers_before_service_ends(session)), 1)
+            check("never twice", asyncio.run(warn_customers_before_service_ends(session)), 0)
+
+            account.used_traffic = int(account.data_limit * 0.85)
+            session.add(account)
+            session.commit()
+            check("usage warning is separate and also once",
+                  asyncio.run(warn_customers_before_service_ends(session)), 1)
+            check("usage never twice", asyncio.run(warn_customers_before_service_ends(session)), 0)
+
+            account.status = "disabled"
+            order.expiry_warned_at = None
+            order.usage_warned_at = None
+            session.add(account)
+            session.add(order)
+            session.commit()
+            check("a disabled account is not the customer's to renew",
+                  asyncio.run(warn_customers_before_service_ends(session)), 0)
+    finally:
+        notify_module.send_to_shop_user = original
+
+    # A trial is warned in hours, not days.
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client, telegram_id=888)
+    client.patch("/api/shop/settings", json={"trial_enabled": True, "trial_gb": 1, "trial_hours": 6})
+    client.post("/api/shop/bot/trial", headers=BOT_HEADERS, json={"telegram_id": 888})
+    sent.clear()
+    try:
+        notify_module.send_to_shop_user = capture
+        with Session(engine) as session:
+            trial = session.exec(select(ShopOrder).where(ShopOrder.price == 0)).one()
+            check("six hours left: too early to nudge",
+                  asyncio.run(warn_customers_before_service_ends(session)), 0)
+            account = session.get(Account, trial.account_id)
+            account.expire = int(_time.time()) + 3600
+            session.add(account)
+            session.commit()
+            check("one hour left: nudged", asyncio.run(warn_customers_before_service_ends(session)), 1)
+            check("the nudge is the trial one", "تست" in sent[-1][1], True)
+    finally:
+        notify_module.send_to_shop_user = original
 
 
 if __name__ == "__main__":

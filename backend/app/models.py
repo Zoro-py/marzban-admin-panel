@@ -283,9 +283,20 @@ class ShopTopupStatus(str, Enum):
 
 
 class ShopOrderStatus(str, Enum):
-    # No "paid but not yet charged" state on purpose: the wallet debit and the
-    # order row are written in the same transaction, so an order always exists
-    # already paid for. What can still fail after that is provisioning.
+    # An order the customer has chosen but not yet paid for. This exists so a
+    # first-time buyer can pick a plan BEFORE being asked for money — the
+    # top-up they then send is bound to this order, and approving it both
+    # credits the wallet and delivers the plan in one motion.
+    #
+    # Without this state the customer had to come back after approval and buy
+    # again, and the most common outcome was that they didn't: they believed
+    # sending the receipt WAS the purchase, so the money sat in a wallet and
+    # the subscription was never collected. An order in this state has taken
+    # no money and holds nothing; it is a stated intention, safe to abandon.
+    awaiting_payment = "awaiting_payment"
+    # Paid for. The wallet debit and the order row are written in the same
+    # transaction, so from here on an order always exists already paid for.
+    # What can still fail after that is provisioning.
     provisioning = "provisioning"
     delivered = "delivered"
     # Wallet was refunded — see shop_service.refund_order. There is
@@ -325,6 +336,15 @@ class ShopUser(SQLModel, table=True):
     telegram_username: Optional[str] = None
     display_name: Optional[str] = None
     phone: Optional[str] = None
+
+    # When this person took their free trial. NULL = never taken.
+    # A timestamp rather than a bool so the operator can see when, and so a
+    # future "one trial per N months" policy has the data it needs without a
+    # second migration. The trial is capped per ShopUser, i.e. per Telegram
+    # account — deliberately weak, because the alternatives (phone
+    # verification, device fingerprinting) cost more trust than the single
+    # gigabyte they would protect.
+    trial_taken_at: Optional[datetime] = None
 
     customer_id: Optional[int] = Field(default=None, foreign_key="customer.id", index=True)
     # Blocks buying and topping up, without deleting history. Deleting a
@@ -385,6 +405,21 @@ class ShopTopup(SQLModel, table=True):
     approved_amount: Optional[int] = None
 
     receipt_file_id: Optional[str] = None
+
+    # The order this payment was sent FOR, when the customer chose a plan
+    # first. Approving such a top-up credits the wallet and then immediately
+    # pays and delivers this order, so the customer never has to come back and
+    # buy a second time. NULL = a plain wallet top-up with no plan attached
+    # (the repeat-customer path, which is still supported).
+    order_id: Optional[int] = Field(default=None, foreign_key="shoporder.id", index=True)
+
+    # Short human-readable code the customer can quote. The point is not
+    # lookup — id already does that — it is that the customer HOLDS something
+    # the moment their money leaves. Sending cash to a stranger's card and
+    # receiving no reference at all is the single biggest driver of "did I
+    # just get scammed?" messages.
+    reference_code: Optional[str] = Field(default=None, index=True)
+
     status: ShopTopupStatus = Field(default=ShopTopupStatus.pending, index=True)
     reject_reason: Optional[str] = None
 
@@ -412,6 +447,13 @@ class ShopOrder(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=utcnow, index=True)
     delivered_at: Optional[datetime] = None
+
+    # When the customer was warned that this plan is about to run out — by
+    # time, and by data. One of each, ever, per order: a warning that repeats
+    # every sync cycle is spam, and spam is the fastest way to get a bot
+    # blocked by the very customer it is trying to keep.
+    expiry_warned_at: Optional[datetime] = None
+    usage_warned_at: Optional[datetime] = None
 
 
 class ShopSettings(SQLModel, table=True):
@@ -456,3 +498,31 @@ class ShopSettings(SQLModel, table=True):
     # Minimum and maximum a single top-up request may claim, whole Toman.
     min_topup: int = 10000
     max_topup: int = 50000000
+
+    # ── Who the customer is buying from ──────────────────────────────────
+    # A shop with no name is a commodity. "به ربات فروش اشتراک خوش آمدید"
+    # describes a category, not a seller, and the buyer comparing two
+    # identical bots has nothing to remember either of them by.
+    shop_name: Optional[str] = None
+    # Telegram @handle of a real person the customer can message. The flow
+    # previously had no way to reach a human at all — which, combined with a
+    # subscription link that needs setting up, is indistinguishable from being
+    # scammed if anything goes wrong. Stored without the leading @.
+    support_handle: Optional[str] = None
+
+    # ── The promise made about the wait ──────────────────────────────────
+    # Stated to the customer the moment they send a receipt. A promise that
+    # can be kept beats silence that can be defended: the customer has already
+    # sent money to a stranger's card, and "we'll tell you when it's done" is
+    # not an answer to "when do I stop worrying?".
+    # Set it to what the operator can honestly manage on a bad day, not a good
+    # one — this number is a commitment, not a hope.
+    approval_eta_minutes: int = 30
+
+    # ── The free trial ───────────────────────────────────────────────────
+    # The only mechanism that reverses the order of trust in a market with no
+    # escrow, no refunds and no ratings: the shop goes first. Off by default,
+    # like is_open — the operator turns it on deliberately.
+    trial_enabled: bool = False
+    trial_gb: float = 1.0
+    trial_hours: int = 24

@@ -157,8 +157,25 @@ function PendingTopups({ query }: { query: ReturnType<typeof useQuery<ShopTopup[
                   <div className="text-sm font-medium">
                     {topup.display_name ?? 'Unknown'}{' '}
                     <span className="text-xs text-muted-foreground">#{topup.id} · id {topup.telegram_id}</span>
+                    {/* The code the customer holds. When they write "what happened
+                        to A7K2?", this is what you scan for. */}
+                    {topup.reference_code && (
+                      <Badge variant="outline" className="ml-1.5 font-mono text-xs">
+                        {topup.reference_code}
+                      </Badge>
+                    )}
                   </div>
                   <div className="text-xs text-muted-foreground">{when(topup.created_at)}</div>
+                  {/* Approving an order-bound payment also DELIVERS the plan, and
+                      approving less than it costs leaves the customer waiting —
+                      so the two kinds must not look the same. */}
+                  <div className="text-xs">
+                    {topup.order_id ? (
+                      <span className="text-primary">For order #{topup.order_id} — approving delivers it</span>
+                    ) : (
+                      <span className="text-muted-foreground">Wallet credit only</span>
+                    )}
+                  </div>
                 </div>
                 <div className="text-sm font-medium tabular-nums">{toman(topup.claimed_amount)} claimed</div>
               </div>
@@ -388,6 +405,12 @@ function ShopSettingsForm() {
         username_prefix: draft.username_prefix ?? 'shop',
         min_topup: Number(draft.min_topup ?? 0),
         max_topup: Number(draft.max_topup ?? 0),
+        shop_name: draft.shop_name?.trim() || null,
+        support_handle: draft.support_handle?.trim() || null,
+        approval_eta_minutes: Number(draft.approval_eta_minutes ?? 30),
+        trial_enabled: Boolean(draft.trial_enabled),
+        trial_gb: Number(draft.trial_gb ?? 1),
+        trial_hours: Number(draft.trial_hours ?? 24),
       }),
     onSuccess: () => {
       toast.success('Shop settings saved')
@@ -469,6 +492,69 @@ function ShopSettingsForm() {
               placeholder="shop"
             />
           </Field>
+        </div>
+
+        {/* Who the customer is buying from. A nameless bot with no reachable
+            person is indistinguishable from every other shop asking for a card
+            transfer — these two fields are most of what makes it trustworthy. */}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Shop name (shown to customers)">
+            <Input
+              value={draft.shop_name ?? ''}
+              onChange={(e) => set('shop_name', e.target.value)}
+              placeholder="e.g. Nova VPN"
+            />
+          </Field>
+          <Field label="Support Telegram handle">
+            <Input
+              value={draft.support_handle ?? ''}
+              onChange={(e) => set('support_handle', e.target.value)}
+              placeholder="@yourname"
+            />
+          </Field>
+          <Field label="Promised approval time (minutes)">
+            <Input
+              type="number"
+              value={draft.approval_eta_minutes ?? ''}
+              onChange={(e) => set('approval_eta_minutes', Number(e.target.value))}
+            />
+          </Field>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Customers are told this number the moment they send a receipt. Set what you can keep on a bad day, not a
+          good one — it is a promise, and a missed one costs more trust than a longer honest one.
+        </p>
+
+        <div className="flex flex-col gap-3 rounded-md border p-3">
+          <label className="flex items-center gap-2">
+            <Checkbox
+              checked={Boolean(draft.trial_enabled)}
+              onCheckedChange={(c) => set('trial_enabled', Boolean(c))}
+            />
+            <span className="text-sm">Offer a free trial to new customers</span>
+          </label>
+          <p className="text-xs text-muted-foreground">
+            One per Telegram account, created instantly with no payment. It lets a stranger see the service work before
+            sending money — the one thing no card-to-card shop can otherwise offer.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Trial volume (GB)">
+              <Input
+                type="number"
+                value={draft.trial_gb ?? ''}
+                onChange={(e) => set('trial_gb', Number(e.target.value))}
+                disabled={!draft.trial_enabled}
+              />
+            </Field>
+            <Field label="Trial length (hours)">
+              <Input
+                type="number"
+                value={draft.trial_hours ?? ''}
+                onChange={(e) => set('trial_hours', Number(e.target.value))}
+                disabled={!draft.trial_enabled}
+              />
+            </Field>
+          </div>
         </div>
 
         <div>

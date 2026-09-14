@@ -42,8 +42,13 @@ async def topups_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     lines = [f"{len(pending)} top-up(s) waiting:", ""]
     for topup in pending[:20]:
         who = topup.get("display_name") or topup.get("telegram_id") or "unknown"
+        # The code is what the customer will quote; the order marker says
+        # whether approving also DELIVERS a plan (and so whether approving
+        # less than the price leaves someone waiting for one).
+        code = f" [{topup['reference_code']}]" if topup.get("reference_code") else ""
+        kind = f" · for order #{topup['order_id']}" if topup.get("order_id") else " · wallet only"
         lines.append(
-            f"#{topup['id']} — {who} — {format_toman(topup['claimed_amount'])}\n"
+            f"#{topup['id']}{code} — {who} — {format_toman(topup['claimed_amount'])}{kind}\n"
             f"   /approve_{topup['id']}   /reject_{topup['id']}"
         )
     if len(pending) > 20:
