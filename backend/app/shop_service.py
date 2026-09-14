@@ -1303,12 +1303,23 @@ def latest_awaiting_order(session: Session, shop_user_id: int, max_age_hours: in
     means the receipt still lands on the right plan.
     """
     cutoff = utcnow() - timedelta(hours=max_age_hours)
+    # An order that already has a receipt waiting for review is NOT a
+    # candidate. Without this, a second photo sent right after the first (the
+    # bot clears its memory as soon as the first is submitted) was recovered
+    # onto the same order and opened a duplicate pending payment with a second
+    # reference code. A receipt the operator REJECTED no longer counts, so a
+    # clearer re-send after a rejection still lands on the order.
+    already_under_review = select(ShopTopup.order_id).where(
+        ShopTopup.status == ShopTopupStatus.pending,
+        ShopTopup.order_id.is_not(None),
+    )
     return session.exec(
         select(ShopOrder)
         .where(
             ShopOrder.shop_user_id == shop_user_id,
             ShopOrder.status == ShopOrderStatus.awaiting_payment,
             ShopOrder.created_at > cutoff,
+            ShopOrder.id.not_in(already_under_review),
         )
         .order_by(ShopOrder.id.desc())
     ).first()

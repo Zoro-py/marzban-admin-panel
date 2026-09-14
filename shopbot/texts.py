@@ -332,6 +332,11 @@ def delivered_but_no_qr(handle: Optional[str]) -> str:
 
 CANCELLED = "باشد، لغو شد. هر وقت خواستید از منو ادامه بدهید."
 
+# For a cancel tap that arrives when nothing is in progress — most often one
+# that was queued behind a purchase already going through. Saying "cancelled"
+# there told a customer whose service was on its way that it wasn't.
+NOTHING_TO_CANCEL = "کاری در جریان نبود که لغو شود. اگر خریدی را تأیید کرده بودید، ادامه‌اش همینجا می‌آید."
+
 
 def not_understood(handle: Optional[str]) -> str:
     """Replaces bouncing every unrecognised message back to the welcome screen.

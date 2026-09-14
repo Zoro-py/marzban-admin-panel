@@ -611,9 +611,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return await show_support(update, context)
 
     if text == texts.CANCEL:
+        # Only claim a cancellation when something was actually in progress.
+        # Updates are processed in order, so a Cancel tapped during a purchase
+        # runs AFTER it — and answering "cancelled" then told a customer whose
+        # service was being delivered that it had been stopped.
+        had_flow = context.user_data.get(_STATE) is not None
         context.user_data.clear()
         session = await _session(update)
-        await _reply(update, texts.CANCELLED, session)
+        await _reply(update, texts.CANCELLED if had_flow else texts.NOTHING_TO_CANCEL, session)
         return
 
     state = context.user_data.get(_STATE)

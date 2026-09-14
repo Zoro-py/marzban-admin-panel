@@ -562,6 +562,7 @@ def main() -> int:
         test_existing_customer_gets_no_trial,
         test_overdue_payment_is_announced_once,
         test_receipt_recovery_and_status_by_code,
+        test_second_photo_does_not_duplicate_payment,
     ):
         test()
     print()
@@ -1004,6 +1005,25 @@ def test_receipt_recovery_and_status_by_code() -> None:
     after = client.get("/api/shop/bot/topups/status", headers=BOT_HEADERS,
                        params={"telegram_id": 555, "code": code}).json()
     check("after approval: delivered", after["order_status"], "delivered")
+
+
+def test_second_photo_does_not_duplicate_payment() -> None:
+    print("")
+    print("[28] an order already under review is not recovered for a second receipt")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+    oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                      json={"telegram_id": 555, "data_limit_gb": 10}).json()["order_id"]
+    first = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "claimed_amount": 30_000, "order_id": oid}).json()
+    again = client.get("/api/shop/bot/orders/pending", headers=BOT_HEADERS, params={"telegram_id": 555})
+    check("not offered again while its receipt is pending", again.json(), None)
+
+    client.post(f"/api/shop/topups/{first['id']}/reject", json={"reason": "blurry"})
+    after_reject = client.get("/api/shop/bot/orders/pending", headers=BOT_HEADERS,
+                              params={"telegram_id": 555}).json()
+    check("offered again once the operator rejected it", after_reject["order_id"], oid)
 
 
 if __name__ == "__main__":
