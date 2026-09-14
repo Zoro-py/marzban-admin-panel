@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 # Telegram's own limit for a bot-uploaded document.
 TELEGRAM_MAX_FILE_BYTES = 45 * 1024 * 1024
 
-JWT_SECRET_PATH = Path(__file__).resolve().parent.parent / ".jwt_secret"
+# Imported, not recomputed — see config.jwt_secret_path for why a second
+# copy of this expression is a backup that silently archives nothing.
+from app.config import JWT_SECRET_PATH  # noqa: E402
 
 
 def _sqlite_path_from_url(database_url: str) -> str | None:

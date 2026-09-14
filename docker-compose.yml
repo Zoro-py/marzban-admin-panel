@@ -4,6 +4,9 @@ services:
     env_file: ./backend/.env
     environment:
       DATABASE_URL: sqlite:////app/data/vpn.db
+      # In the volume, not the image layer: otherwise every rebuild mints a
+      # new signing secret and logs every session out.
+      JWT_SECRET_FILE: /app/data/.jwt_secret
     volumes:
       - backend_data:/app/data
     ports:

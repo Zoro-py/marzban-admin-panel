@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     # first run (see _load_or_create_jwt_secret below) so this is genuinely a "never
     # touch it" value, not one more env var to set.
     jwt_secret: str = ""
+    # Where that auto-generated secret is kept. Blank = backend/.jwt_secret,
+    # which is right for a local checkout and WRONG inside a container: that
+    # path lives in the image layer, not in the data volume, so every
+    # `docker compose up --build` produced a fresh secret and logged every
+    # dashboard and bot session out — while backup_job.py was bundling the old
+    # secret into the nightly archive specifically so that would not happen.
+    # docker-compose.yml points this at /app/data/.jwt_secret, inside the
+    # volume. Existing non-container installs leave it blank and are unaffected.
+    jwt_secret_file: str = ""
     jwt_expire_minutes: int = 1440  # 1 day
     # "Remember me" checkbox on login uses this instead of jwt_expire_minutes.
     jwt_remember_expire_minutes: int = 43200  # 30 days
@@ -97,15 +106,33 @@ class Settings(BaseSettings):
     shop_bot_token: str = ""
 
 
-def _load_or_create_jwt_secret() -> str:
-    secret_file = Path(__file__).resolve().parent.parent / ".jwt_secret"
-    if secret_file.exists():
-        return secret_file.read_text().strip()
+DEFAULT_JWT_SECRET_PATH = Path(__file__).resolve().parent.parent / ".jwt_secret"
+
+
+def jwt_secret_path(configured: str = "") -> Path:
+    """The single source of truth for where the signing secret lives.
+
+    backup_job.py imports this rather than recomputing the path. It used to
+    keep its own copy of the same expression, which meant making the location
+    configurable here would have silently left the backup archiving a file
+    that no longer existed — a backup that "ran without error" and was quietly
+    useless, which is a failure mode this project has already had once.
+    """
+    return Path(configured).expanduser() if configured else DEFAULT_JWT_SECRET_PATH
+
+
+def _load_or_create_jwt_secret(path: Path) -> str:
+    if path.exists():
+        return path.read_text().strip()
+    # The configured location may be a volume mount that exists but has no
+    # parent dirs yet on a first run.
+    path.parent.mkdir(parents=True, exist_ok=True)
     secret = secrets.token_hex(32)
-    secret_file.write_text(secret)
+    path.write_text(secret)
     return secret
 
 
 settings = Settings()
+JWT_SECRET_PATH = jwt_secret_path(settings.jwt_secret_file)
 if not settings.jwt_secret:
-    settings.jwt_secret = _load_or_create_jwt_secret()
+    settings.jwt_secret = _load_or_create_jwt_secret(JWT_SECRET_PATH)
