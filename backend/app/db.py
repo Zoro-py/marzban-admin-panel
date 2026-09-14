@@ -5,6 +5,17 @@ from sqlmodel import SQLModel, Session, create_engine
 
 from app.config import settings
 
+# Imported for its side effect, and load-bearing: SQLModel.metadata is only
+# populated by importing the modules that define the tables. Without this,
+# init_db()'s create_all() has an EMPTY metadata and silently creates nothing
+# — and _run_lightweight_migrations() then dies on the first statement that
+# touches a table it assumed create_all had made. main.py happens to import
+# the models transitively via the routers, so the app has always worked; any
+# other entry point (a management script, a test, a migration runner) would
+# hit the silent-no-op version. Importing it here makes that impossible
+# instead of merely unlikely.
+from app import models  # noqa: F401
+
 connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
 engine_kwargs = {"echo": False, "connect_args": connect_args}
 if not settings.database_url.startswith("sqlite"):
