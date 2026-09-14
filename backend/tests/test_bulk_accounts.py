@@ -223,17 +223,38 @@ def test_bad_input_rejected() -> None:
     print("\n[8] input that would produce unusable usernames is refused up front")
     fake = FakeMarzban()
     client = _fresh_client(fake)
-    # 28 chars + a 5-digit index = 33, one over Marzban's limit. The SAME base
-    # with a 2-digit index fits and is allowed — the guard is about the batch's
-    # highest index, not the base name on its own.
+    # The username-LENGTH guard (validate_base_name). start_index must stay at
+    # or below MAX_NAME_INDEX or the index cap fires first and this asserts a
+    # different code path than the comment claims — which is exactly what this
+    # test did before: 99999 + count 2 reaches 100000 and trips the cap, so
+    # validate_base_name had zero coverage while appearing to be covered.
+    # 28 chars + a 5-digit index = 33, one over Marzban's 32.
     too_long = client.post("/api/accounts/bulk",
-                           json={"base_name": "a" * 28, "count": 2, "start_index": 99999})
+                           json={"base_name": "a" * 28, "count": 2, "start_index": 99998})
+    # The index cap itself, asserted separately and named for what it is.
+    over_index = client.post("/api/accounts/bulk",
+                             json={"base_name": "kh", "count": 2, "start_index": 99999})
     bad_chars = client.post("/api/accounts/bulk", json={"base_name": "kh an", "count": 2})
     too_many = client.post("/api/accounts/bulk", json={"base_name": "kh", "count": 500})
-    check("over-long base rejected (400)", too_long.status_code, 400)
-    check("nothing created for it", fake.created, [])
+
+    check("over-long username rejected (400)", too_long.status_code, 400)
+    check("...and it is the LENGTH guard that rejected it",
+          "characters" in too_long.json()["detail"], True)
+    check("index past the cap rejected (400)", over_index.status_code, 400)
+    check("...and it is the INDEX guard that rejected it",
+          "above the" in over_index.json()["detail"], True)
     check("invalid characters rejected (422)", bad_chars.status_code, 422)
     check("over-cap count rejected (422)", too_many.status_code, 422)
+    # Asserted here, while every request so far has been a rejection — the
+    # accepted case below legitimately creates accounts, so checking after it
+    # would be checking the wrong thing.
+    check("none of the rejected batches created anything", fake.created, [])
+
+    # The same base with a 2-digit index FITS and must still be allowed — the
+    # guard is about the batch's highest index, not the base name on its own.
+    fits = client.post("/api/accounts/bulk", json={"base_name": "a" * 28, "count": 2})
+    check("the same base at a low index is allowed", fits.status_code, 200)
+    check("and it really created them", len(fake.created), 2)
 
 
 def main() -> int:

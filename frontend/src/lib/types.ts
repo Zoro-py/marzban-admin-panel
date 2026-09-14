@@ -398,7 +398,7 @@ export interface ShopTopup {
   display_name: string | null
 }
 
-export type ShopOrderStatus = 'provisioning' | 'delivered' | 'failed' | 'refunded'
+export type ShopOrderStatus = 'provisioning' | 'delivered' | 'failed'
 
 export interface ShopOrder {
   id: number

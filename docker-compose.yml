@@ -30,6 +30,10 @@ services:
   shopbot:
     build: ./shopbot
     env_file: ./shopbot/.env
+    environment:
+      # Overrides whatever is in shopbot/.env: inside this network the backend
+      # is reachable by service name, never on the bot's own loopback.
+      API_BASE_URL: http://backend:8000
     depends_on:
       - backend
     restart: unless-stopped

@@ -288,8 +288,14 @@ class ShopOrderStatus(str, Enum):
     # already paid for. What can still fail after that is provisioning.
     provisioning = "provisioning"
     delivered = "delivered"
-    failed = "failed"        # wallet was refunded — see shop_service.fail_order
-    refunded = "refunded"    # operator-initiated refund after delivery
+    # Wallet was refunded — see shop_service.refund_order. There is
+    # deliberately no separate "refunded" state: nothing set it, so it was a
+    # value the UI rendered a badge for and the code could never produce. A
+    # state machine with a member no transition reaches is a place for a
+    # future reader to assume behaviour that does not exist. If an
+    # operator-initiated refund after delivery is ever added, add the state
+    # together with the transition that writes it.
+    failed = "failed"
 
 
 class ShopWalletEntryType(str, Enum):

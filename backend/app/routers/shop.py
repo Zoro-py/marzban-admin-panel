@@ -15,7 +15,12 @@ not "simplify" this by putting the bot endpoints behind require_auth and
 handing the bot the Marzban admin credentials; that is precisely the
 consolidation this split exists to prevent.
 
-Every /bot/ endpoint takes a telegram_id in its body and acts on THAT user.
+Endpoints identify the customer by telegram_id — in the body for the POSTs,
+as a query parameter for /accounts and /wallet. The one exception is
+/purchase/{order_id}/deliver, which names no customer at all and acts on
+whoever owns that order; re-sending a QR creates nothing and charges nothing,
+so the order id is sufficient authority there.
+
 The key authenticates the bot as a whole, not the individual customer — the
 bot is trusted to report who is talking to it, exactly as it is trusted to
 report what they asked for. That trust is bounded: a compromised shop bot can
@@ -82,6 +87,7 @@ from app.shop_service import (
     purchase,
     quote_price,
     reject_topup,
+    validate_purchase_request,
     wallet_balance,
 )
 
@@ -99,7 +105,15 @@ def require_shop_bot(x_shop_bot_key: Optional[str] = Header(default=None)) -> No
     expected = app_settings.shop_bot_api_key
     if not expected:
         raise HTTPException(503, "Shop bot API is not configured on this server")
-    if not x_shop_bot_key or not secrets.compare_digest(x_shop_bot_key, expected):
+    if not x_shop_bot_key:
+        raise HTTPException(401, "Invalid shop bot key")
+    # Compared as BYTES. compare_digest refuses str operands containing any
+    # non-ASCII character, and uvicorn hands header values through as latin-1
+    # — so a key header with any byte >= 0x80 raised TypeError out of the auth
+    # dependency and returned 500 instead of 401. Encoding first makes every
+    # rejection look the same, which is also the point of using it at all.
+    if not secrets.compare_digest(x_shop_bot_key.encode("utf-8", "surrogateescape"),
+                                  expected.encode("utf-8")):
         raise HTTPException(401, "Invalid shop bot key")
 
 
@@ -363,9 +377,17 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
 def bot_quote(body: ShopBotPurchaseRequest, session: Session = Depends(get_session)):
     """Price without buying. Lets the bot show a confirmation screen carrying
     the real number, rather than one the bot computed itself from a cached
-    rate that may since have changed."""
+    rate that may since have changed.
+
+    Runs the SAME validation as /purchase. Quoting without it meant the
+    confirm screen would happily price a 5000 GB plan against a 200 GB
+    maximum, or quote at all while the shop was closed — the customer only
+    discovering it after tapping buy. A quote that cannot be honoured is
+    worse than no quote.
+    """
     settings = get_shop_settings(session)
     try:
+        validate_purchase_request(settings, body.data_limit_gb)
         return {"data_limit_gb": body.data_limit_gb, "price": quote_price(settings, body.data_limit_gb),
                 "duration_days": settings.plan_duration_days}
     except ShopError as exc:

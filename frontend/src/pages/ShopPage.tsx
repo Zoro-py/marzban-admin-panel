@@ -351,7 +351,6 @@ function ShopOrders() {
                   failed · refunded
                 </Badge>
               )}
-              {order.status === 'refunded' && <Badge variant="outline">refunded</Badge>}
               {order.error && order.status === 'delivered' && (
                 <span className="ml-1 text-xs text-warning" title={order.error}>
                   ⚠

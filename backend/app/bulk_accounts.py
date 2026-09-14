@@ -133,8 +133,23 @@ def next_free_index(base_name: str, taken_lower: set[str]) -> int:
     highest = 0
     for name in taken_lower:
         match = pattern.match(name)
-        if match:
-            highest = max(highest, int(match.group(1)))
+        if not match:
+            continue
+        index = int(match.group(1))
+        # Suffixes ABOVE the cap are not part of a series this code manages —
+        # they can only have come from somewhere else. Counting one would set
+        # the next index above MAX_NAME_INDEX, and then EVERY future batch for
+        # that base name fails with "would reach index N, above the limit",
+        # permanently, with no way out but renaming the family. Ignoring it
+        # means the series continues from the highest index we could have
+        # produced ourselves, and any real collision is reported per-name.
+        if index > MAX_NAME_INDEX:
+            logger.warning(
+                "Ignoring %r when continuing the %r series: its suffix is above the %d limit",
+                name, base_name, MAX_NAME_INDEX,
+            )
+            continue
+        highest = max(highest, index)
     return highest + 1
 
 
