@@ -1,3 +1,4 @@
+import os
 import secrets
 from pathlib import Path
 
@@ -128,7 +129,10 @@ def _load_or_create_jwt_secret(path: Path) -> str:
     # parent dirs yet on a first run.
     path.parent.mkdir(parents=True, exist_ok=True)
     secret = secrets.token_hex(32)
-    path.write_text(secret)
+    # 0600: whoever can read this file can forge a login for any admin.
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(secret)
     return secret
 
 

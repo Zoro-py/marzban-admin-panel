@@ -284,7 +284,7 @@ class AccountRow(AccountRead):
 class NextPlanRequest(BaseModel):
     """Queue a plan to activate when the current plan ends."""
 
-    data_limit_gb: float = Field(gt=0, description="Package size in GB")
+    data_limit_gb: float = Field(gt=0, le=10240, allow_inf_nan=False, description="Package size in GB")
     duration_days: int = Field(gt=0, le=365, description="Duration in days from activation")
     # None = keep whatever billing_mode the account has at activation time.
     billing_mode: Optional[BillingMode] = None
@@ -308,7 +308,9 @@ class NextPlanRead(BaseModel):
 
 class LedgerCreate(BaseModel):
     type: LedgerType
-    amount: float
+    # NaN slips past the router's `amount <= 0` check (every comparison with
+    # NaN is False) and would poison every balance it is summed into.
+    amount: float = Field(gt=0, allow_inf_nan=False)
     customer_id: Optional[int] = None
     group_id: Optional[int] = None
     account_id: Optional[int] = None

@@ -1,10 +1,14 @@
 from fastapi import APIRouter, HTTPException, status, Request
 from pydantic import BaseModel
+import ipaddress
+import logging
 import time
 from collections import defaultdict
 
 from app.auth import create_access_token
 from app.marzban_client import MarzbanUnavailable, marzban_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -30,14 +34,32 @@ def get_client_ip(request: Request) -> str:
     # replacing it, so a client can prepend a fake IP and this rate limiter
     # would key off the fake one (the first entry) instead of the real one
     # nginx appended last.
+    #
+    # But only when the request really came through such a proxy. Port 8010
+    # can be published on every interface (the manual setup in .env.example
+    # does exactly that), and a client talking to it directly can put any
+    # value in X-Real-IP — one fresh "IP" per batch of guesses would make
+    # this limiter never fire. A proxy on this box reaches us from loopback or
+    # the Docker bridge; a direct internet client does not.
+    peer = request.client.host if request.client else None
     real_ip = request.headers.get("x-real-ip")
-    if real_ip:
+    if real_ip and _is_local_peer(peer):
         return real_ip.strip()
 
     # Fallback to standard request client host (e.g. running without nginx in front)
     if request.client and request.client.host:
         return request.client.host
     return "unknown"
+
+
+def _is_local_peer(host: str | None) -> bool:
+    if not host:
+        return False
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return addr.is_loopback or addr.is_private
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -70,8 +92,11 @@ async def login(body: LoginRequest, request: Request) -> LoginResponse:
 
     try:
         ok = await marzban_client.verify_admin_login(body.username, body.password)
-    except MarzbanUnavailable as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc))
+    except MarzbanUnavailable:
+        # The raw error names the internal Marzban address; this endpoint is
+        # unauthenticated, so that stays in the log.
+        logger.exception("Login: Marzban unreachable")
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "The VPN panel is not reachable right now. Try again in a minute.")
 
     if not ok:
         ip_data["attempts"] += 1

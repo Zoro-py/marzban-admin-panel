@@ -369,8 +369,11 @@ MARZBAN_USERNAME="$q_user"
 MARZBAN_PASSWORD="$q_pass"
 EOF
 
+  # BIND_ADDRESS: this setup always fronts both ports with the host's nginx,
+  # so neither needs to be reachable from outside the box.
   cat > .env <<EOF
 PUBLIC_BACKEND_URL=https://$API_DOMAIN
+BIND_ADDRESS=127.0.0.1
 EOF
 }
 
