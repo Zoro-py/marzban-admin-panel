@@ -249,3 +249,204 @@ class QueuedPlan(SQLModel, table=True):
     activated_at: Optional[datetime] = None
     status: QueuedPlanStatus = QueuedPlanStatus.pending
 
+
+# ══════════════════════════════════════════════════════ the self-serve shop
+#
+# A SECOND, SEPARATE money system, deliberately not reusing LedgerEntry.
+#
+# LedgerEntry answers "how much does this reseller customer OWE me" — debt
+# accrued and settled after the fact. A shop wallet answers the opposite
+# question: "how much has this person already PAID me that they haven't spent
+# yet" — credit held in advance. Both are money, but they are not the same
+# quantity, and every roll-up in services.py (account -> group -> customer)
+# assumes every row it sums is the first kind. Putting prepaid wallet credit
+# into that table would make every customer balance on the dashboard wrong,
+# in the same shape as the bug documented in AGENTS.md §4.3 where a CHARGE
+# posted to cancel a CREDIT silently erased money a customer was owed.
+#
+# So: ShopWalletEntry is its own append-only ledger, summed by its own
+# function, and services.py never reads it. A ShopUser MAY be linked to a
+# Customer for reporting, but that link carries no money in either direction.
+#
+# AMOUNTS ARE WHOLE TOMAN, stored as int, everywhere in this section. The
+# reseller-side ledger uses float for historical reasons; a wallet is
+# different because a balance is repeatedly added to and subtracted from, and
+# float drift there eventually shows a customer a balance that doesn't match
+# the sum of what they can see. Toman has no subunit in practice, so int
+# costs nothing and removes the problem instead of managing it.
+
+
+class ShopTopupStatus(str, Enum):
+    pending = "pending"      # receipt uploaded, waiting for the operator
+    approved = "approved"    # operator confirmed; wallet credited
+    rejected = "rejected"    # operator declined; wallet untouched
+
+
+class ShopOrderStatus(str, Enum):
+    # No "paid but not yet charged" state on purpose: the wallet debit and the
+    # order row are written in the same transaction, so an order always exists
+    # already paid for. What can still fail after that is provisioning.
+    provisioning = "provisioning"
+    delivered = "delivered"
+    failed = "failed"        # wallet was refunded — see shop_service.fail_order
+    refunded = "refunded"    # operator-initiated refund after delivery
+
+
+class ShopWalletEntryType(str, Enum):
+    topup = "topup"          # + operator-approved card-to-card payment
+    purchase = "purchase"    # − spent on an order
+    refund = "refund"        # + returned after a failed or refunded order
+    adjust = "adjust"        # ± manual correction by the operator
+
+
+class ShopUser(SQLModel, table=True):
+    """One Telegram user of the customer-facing shop bot.
+
+    Distinct from Customer: a Customer is someone the operator deals with
+    personally and bills by hand; a ShopUser is anonymous self-serve traffic
+    that pays up front. `customer_id` optionally links the two once the
+    operator recognises a shop user as someone they already know — it exists
+    for reporting only and moves no money (see the section header above).
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # Telegram's own numeric user id. Unique because it is the identity the
+    # whole shop hangs off — every wallet entry and order is keyed to it, and
+    # a duplicate row here would split one person's balance in two.
+    telegram_id: int = Field(unique=True, index=True)
+    # Snapshot for display. Telegram usernames can change and can be absent
+    # entirely, so nothing is ever looked up by these — only shown.
+    telegram_username: Optional[str] = None
+    display_name: Optional[str] = None
+    phone: Optional[str] = None
+
+    customer_id: Optional[int] = Field(default=None, foreign_key="customer.id", index=True)
+    # Blocks buying and topping up, without deleting history. Deleting a
+    # ShopUser would orphan their orders' account rows and destroy the audit
+    # trail for money they really did pay.
+    is_blocked: bool = False
+
+    created_at: datetime = Field(default_factory=utcnow)
+    last_seen_at: Optional[datetime] = None
+
+
+class ShopWalletEntry(SQLModel, table=True):
+    """Append-only wallet ledger. Balance is ALWAYS the sum of these rows —
+    never a stored field that gets overwritten, for the same reason
+    LedgerEntry works that way: a stored balance and its history can disagree,
+    and when they do there is no way to tell which one is wrong.
+
+    Never UPDATE or DELETE a row to correct a balance. Insert a compensating
+    `adjust` (or `refund`) entry so the trail shows what happened and why.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    shop_user_id: int = Field(foreign_key="shopuser.id", index=True)
+    type: ShopWalletEntryType = Field(index=True)
+    # SIGNED whole Toman: positive adds to the balance, negative subtracts.
+    # The sign lives in the value, not in the type, so a balance is a plain
+    # SUM with no per-type branching that a new type could silently escape.
+    # (`type` is for display and filtering only.)
+    amount: int
+    note: Optional[str] = None
+
+    # Which topup or order produced this entry, when one did. Lets the
+    # operator answer "what is this line" without parsing the note text.
+    topup_id: Optional[int] = Field(default=None, foreign_key="shoptopup.id", index=True)
+    order_id: Optional[int] = Field(default=None, foreign_key="shoporder.id", index=True)
+
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class ShopTopup(SQLModel, table=True):
+    """A claimed card-to-card payment awaiting the operator's eyes.
+
+    The receipt image is kept as a Telegram file_id rather than downloaded
+    bytes: Telegram already stores it, the operator views it inside Telegram
+    anyway, and holding customers' bank receipts on this server would make an
+    otherwise unremarkable SQLite file worth stealing.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    shop_user_id: int = Field(foreign_key="shopuser.id", index=True)
+    # What the user SAYS they paid, in whole Toman. Not trusted — the operator
+    # approves an amount explicitly, and may approve a different one (see
+    # approved_amount) when the receipt shows something else.
+    claimed_amount: int
+    # What was actually credited. Null until approved. Kept separate from
+    # claimed_amount so "user claimed 500k, operator credited 50k" stays
+    # visible forever instead of the claim being overwritten.
+    approved_amount: Optional[int] = None
+
+    receipt_file_id: Optional[str] = None
+    status: ShopTopupStatus = Field(default=ShopTopupStatus.pending, index=True)
+    reject_reason: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    reviewed_at: Optional[datetime] = None
+
+
+class ShopOrder(SQLModel, table=True):
+    """One self-serve purchase. Price and plan are SNAPSHOTTED here at the
+    moment of sale — later edits to the shop's rate must never rewrite what
+    someone already paid."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    shop_user_id: int = Field(foreign_key="shopuser.id", index=True)
+
+    data_limit_gb: float
+    duration_days: int
+    price: int  # whole Toman, snapshot of the price at purchase time
+
+    status: ShopOrderStatus = Field(default=ShopOrderStatus.provisioning, index=True)
+    # Set once Marzban has actually created the user and the local row exists.
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True)
+    marzban_username: Optional[str] = None
+    error: Optional[str] = None
+
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    delivered_at: Optional[datetime] = None
+
+
+class ShopSettings(SQLModel, table=True):
+    """Single-row table (id is always 1), same pattern as AppSettings — the
+    shop's configuration lives in the DB so the operator edits it in the
+    dashboard, not by redeploying with a changed env var."""
+
+    id: Optional[int] = Field(default=1, primary_key=True)
+
+    # Master switch. Off = the bot answers every purchase and top-up with a
+    # "temporarily closed" message instead of silently failing. Defaults OFF
+    # so deploying this code does not put a shop live before the operator has
+    # set a price and a card number.
+    is_open: bool = False
+
+    # Retail price per GB, whole Toman. Deliberately NOT AppSettings'
+    # default_rate_per_gb: that one is the reseller-side metered rate used to
+    # bill customers the operator knows, and the two would drift together in
+    # exactly the wrong way — a retail price change should not silently
+    # re-price every existing pay-as-you-go customer.
+    price_per_gb: int = 0
+    # Bounds on a single self-serve purchase. min stops 0.1GB orders whose
+    # price rounds to nothing; max caps what one order can consume before a
+    # human looks at it.
+    min_gb: float = 5.0
+    max_gb: float = 200.0
+    # Every shop plan is one month; the operator sells volume, not time.
+    # Still a field, not a literal, so changing it is one edit in one place.
+    plan_duration_days: int = 30
+
+    # Card-to-card destination shown to the user. No validation beyond
+    # non-empty — card number formats vary and a wrong-but-valid-looking
+    # number is not something this code can detect anyway.
+    card_number: Optional[str] = None
+    card_holder: Optional[str] = None
+
+    # Prefix for shop-created Marzban usernames, e.g. "shop" -> shop1, shop2.
+    # Kept away from the operator's own naming so a self-serve account can
+    # never collide with a family batch.
+    username_prefix: str = "shop"
+
+    # Minimum and maximum a single top-up request may claim, whole Toman.
+    min_topup: int = 10000
+    max_topup: int = 50000000

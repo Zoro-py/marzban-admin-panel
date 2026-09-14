@@ -1,0 +1,121 @@
+Your last commit on this repo (765d11c, "feat(core): apply 100-point performance,
+security, and UX audit") shipped with 8 critical bugs across the 7 phases you
+claimed to complete. They've since been found in review and fixed in a follow-up
+commit (d4d950a) on the same branch. Before doing more work here, internalize why
+these happened — not just what they were — so the same failure modes don't repeat.
+
+THE CORE PROBLEM: you reported the work as done and pushed it without verifying any
+of it actually worked. Not one test, not one manual trace of a call path, not one
+grep against the actual deployment config. Compare this to an earlier commit on this
+same repo (40d886c5, the MoneyBook rebuild): before calling that one done, it wrote
+an eleven-invariant reconciliation test suite, ran it, and only then reported "all
+pass, backend imports clean, frontend build clean." That discipline is what caught
+zero bugs in production. Yours caught eight, found by a human days later, on a
+billing panel where wrong output means wrong money or a live customer's VPN account
+getting reset.
+
+CONCRETE FAILURES, so you recognize the pattern next time:
+
+1. You broke the thing you were adding in the same commit. You added brute-force
+   rate limiting to /login in auth.py, then in marzban_client.py you made
+   verify_admin_login raise an HTTPException directly on bad credentials — which
+   returns to the caller BEFORE the rate-limit attempt-counting code in auth.py ever
+   runs. The security feature you were asked to add never actually engages for the
+   exact case it exists for. This happens when you reason locally, file by file,
+   instead of tracing the full call path after a change. Before finishing a task
+   that touches more than one file, follow the data/control flow end to end at least
+   once.
+
+2. You contradicted an existing documented invariant without noticing or
+   addressing it. reset_group_cycle had a docstring explicitly stating its entire
+   design purpose: "never posts a ledger charge... starts a new cycle as if payment
+   was already collected some other way" — a deliberately pure, zero-side-effect
+   local operation. You changed it to call Marzban's live reset API per member,
+   with no update to the docstring and no acknowledgment that this reverses the
+   documented contract. Separately, AccountAdjustRequest's own docstring says
+   "Deltas are relative (use a negative number to reduce)" — you then added
+   validation that rejects negative values, breaking a live UI preset button
+   ("-7 days") that depends on exactly that. Read the docstring/comment above a
+   function before changing its behavior. If your change contradicts it, that's a
+   signal to stop and either update the doc deliberately or reconsider the change —
+   not to leave the contradiction sitting there.
+
+3. You didn't check whether new config actually reaches the deployment. You
+   changed CORS from allow_origins=["*"] to read a CORS_ALLOWED_ORIGINS env var,
+   falling back to a placeholder list containing a literal "your-frontend-domain.com"
+   if unset. That env var appears nowhere in docker-compose.yml or any .env.example
+   in this repo. A single grep would have caught that the real frontend's origin
+   would be rejected the moment this deployed — total outage on push. Any time you
+   introduce a new env var, grep the repo for it in the same session to confirm
+   something actually sets it, or wire it into the deploy config yourself.
+
+4. You treated money-math lines with the same weight as UI polish. billable_bytes'
+   negative-diff case went from clamping to 0 to billing the customer's entire
+   used_traffic. settle_group's mark_paid logic went from only clearing group-level
+   DEBT to also erroneously CHARGING to cancel a pre-existing group-level CREDIT —
+   silently erasing money a customer was legitimately owed back. Neither change was
+   requested; both were introduced as a side effect of a refactor (SQL query
+   rewrites, response shape changes) done in the same function. When you touch a
+   function that computes or moves money, diff your before/after logic against the
+   original line by line and ask "does this change what gets charged or credited,"
+   even if that wasn't the stated goal of the edit. A refactor is not license to
+   also silently change behavior.
+
+5. You didn't design for partial failure in code that calls a live external
+   system inside a DB transaction. The original reset_group_cycle-with-Marzban-calls
+   wrapped the whole per-member loop in one try/except that rolled back the DB
+   transaction on any single member's failure — but a Marzban API call that already
+   succeeded for members 1..N-1 can't be rolled back by a local DB rollback. That's
+   a permanent split-brain between Marzban and your bookkeeping. Any time a loop
+   mixes an external side-effecting call with local state changes, ask what happens
+   if it fails on iteration k, not just whether the whole block is wrapped in
+   try/except.
+
+6. You duplicated existing work instead of checking for it. You created both
+   GlobalErrorBoundary.tsx and layout/ErrorBoundary.tsx (near-identical error
+   boundary components), and both EmptyState.tsx and ui/empty-state.tsx
+   (near-identical empty-state components) — only one of each pair is actually
+   imported anywhere. Before adding a new component, grep for whether one already
+   exists.
+
+7. You introduced a behavioral change (offset/limit pagination defaulting to 100)
+   on three list endpoints without checking whether any frontend caller passes
+   those params. None do. Every list screen in the app — plus the customer/group
+   dropdowns in the new-account dialog — would silently show only the first 100
+   rows past that point, with no error, no indicator, nothing. When you add a
+   parameter with a default that changes existing behavior, check every call site
+   of the API you just changed, not just the endpoint itself.
+
+8. You added index=True to several model columns without a migration. This
+   codebase's own db.py has an explicit, already-written comment explaining that
+   SQLModel's create_all() only creates missing tables and never alters existing
+   ones — the exact pattern every other schema change in that file works around
+   with a hand-written ALTER TABLE / CREATE INDEX. You edited that file in the same
+   commit and still missed applying its own documented pattern to your own change,
+   so the indexes are silently inert on the real, already-deployed database.
+
+WHAT TO DO DIFFERENTLY NEXT TIME:
+
+- Before reporting anything as done, verify it: run it, trace the call path, grep
+  for the config you referenced actually being set somewhere, or write a quick
+  test for the specific case you're worried about. "I wrote the code" is not
+  "I confirmed it works." If there's no existing test suite for the area you're
+  touching, that's a reason to write one for the risky parts, not a reason to skip
+  verification.
+- Grade every change by blast radius before you make it. A skeleton-loading-state
+  tweak and a change to how much a customer gets charged are not the same risk
+  category, even if they're in the same commit. Money logic, external API side
+  effects, and auth/security code get read twice and traced end to end; everything
+  else doesn't need that.
+- Read the docstring/comment on a function before changing its behavior. If your
+  change would make that comment false, that's not a detail to skip past — either
+  the comment needs a deliberate update explaining why the contract changed, or
+  your change is wrong.
+- When you add or change a parameter/config value with a default, check who calls
+  it. A new default is safe only if you've confirmed nothing depends on the old
+  behavior, or if you've updated every caller to match.
+- Grep before you create. A new component, helper, or config key might already
+  exist under a different name.
+- State what you verified, specifically, when you report a task done — not "done
+  and pushed," but "done, verified by X, Y, Z." If you didn't verify something,
+  say so, rather than letting silence imply that you did.

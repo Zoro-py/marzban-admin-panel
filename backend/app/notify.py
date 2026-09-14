@@ -100,3 +100,90 @@ async def notify_admin_photo(photo: bytes, caption: str, *, filename: str = "qr.
                 await asyncio.sleep(min(retry_after, 60.0) + 0.5)
                 continue
             raise RuntimeError(f"Telegram rejected admin photo ({resp.status_code}): {resp.text}")
+
+
+async def notify_admin_with_buttons(text: str, reply_markup: dict) -> None:
+    """Same channel as notify_admin, plus an inline keyboard.
+
+    The message is sent with the OPERATOR's bot token, so the taps come back
+    to the operator's own bot process — which is what lets a top-up be
+    approved from the notification itself instead of the operator having to go
+    find it. `reply_markup` is Telegram's own JSON structure, passed through
+    as-is rather than wrapped in a builder: this module has no telegram
+    library dependency and should not grow one for a single dict.
+    """
+    if not settings.bot_token or not settings.bot_admin_chat_id:
+        raise RuntimeError("BOT_TOKEN/BOT_ADMIN_CHAT_ID not set — nowhere to send this notification")
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{settings.bot_token}/sendMessage",
+            json={
+                "chat_id": settings.bot_admin_chat_id,
+                "text": _truncate_caption(text),
+                "reply_markup": reply_markup,
+            },
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Telegram rejected admin notification ({resp.status_code}): {resp.text}")
+
+
+async def forward_photo_to_admin(file_id: str, caption: str, reply_markup: dict | None = None) -> None:
+    """Re-sends a photo the operator's bot can already see, by file_id.
+
+    Used for payment receipts. Telegram file_ids are per-bot, so this only
+    works because the SHOP bot forwards the id to the backend and the backend
+    re-sends with the OPERATOR's token — which Telegram allows for a photo the
+    operator's bot is being asked to send by id only if that bot has seen it.
+    When it hasn't, Telegram answers with an error and the caller falls back
+    to a text-only notification rather than losing the alert entirely.
+    """
+    if not settings.bot_token or not settings.bot_admin_chat_id:
+        raise RuntimeError("BOT_TOKEN/BOT_ADMIN_CHAT_ID not set — nowhere to send this notification")
+    payload = {
+        "chat_id": settings.bot_admin_chat_id,
+        "photo": file_id,
+        "caption": _truncate_caption(caption),
+    }
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{settings.bot_token}/sendPhoto",
+            json=payload,
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Telegram rejected the receipt photo ({resp.status_code}): {resp.text}")
+
+
+async def send_to_shop_user(chat_id: int, text: str) -> None:
+    """Message a SHOP customer directly from the backend, using the shop bot's
+    own token. Needed because a purchase is provisioned inside an HTTP request
+    from the bot — the reply the customer gets for their tap is the bot's job,
+    but anything the backend decides afterwards (a refund, an operator's
+    approval landing) has no open request to ride back on."""
+    if not settings.shop_bot_token:
+        raise RuntimeError("SHOP_BOT_TOKEN not set — nowhere to send this customer message")
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{settings.shop_bot_token}/sendMessage",
+            data={"chat_id": chat_id, "text": text},
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Telegram rejected the customer message ({resp.status_code}): {resp.text}")
+
+
+async def send_photo_to_shop_user(chat_id: int, photo: bytes, caption: str, *, filename: str = "qr.png") -> None:
+    """The shop-bot equivalent of notify_admin_photo — delivers a purchased
+    account's QR to the buyer. Shares notify_admin_photo's rate-limit handling
+    reasoning but targets one customer at a time, so it does not need the
+    batch spacing."""
+    if not settings.shop_bot_token:
+        raise RuntimeError("SHOP_BOT_TOKEN not set — nowhere to send this customer message")
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{settings.shop_bot_token}/sendPhoto",
+            data={"chat_id": chat_id, "caption": _truncate_caption(caption)},
+            files={"photo": (filename, photo, "image/png")},
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Telegram rejected the customer photo ({resp.status_code}): {resp.text}")

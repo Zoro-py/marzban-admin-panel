@@ -17,6 +17,20 @@ services:
       - backend
     restart: unless-stopped
 
+  # Customer-facing shop bot. A SEPARATE process and a separate Telegram
+  # token from `bot` above on purpose: `bot` is locked to one chat id because
+  # every command it has moves money, and this one has to accept anyone. It
+  # also holds only SHOP_BOT_API_KEY, never the Marzban admin credentials —
+  # see backend/app/routers/shop.py for why that split matters.
+  # Remove this service if you aren't running a self-serve shop; nothing else
+  # depends on it.
+  shopbot:
+    build: ./shopbot
+    env_file: ./shopbot/.env
+    depends_on:
+      - backend
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend

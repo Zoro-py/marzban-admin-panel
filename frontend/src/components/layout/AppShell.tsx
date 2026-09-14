@@ -1,19 +1,6 @@
 import * as React from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import {
-  Building2,
-  CalendarCheck,
-  LayoutDashboard,
-  LogOut,
-  Menu,
-  Moon,
-  Network,
-  RefreshCw,
-  Search,
-  Sun,
-  Users,
-  Wallet,
-} from 'lucide-react'
+import { Building2, CalendarCheck, LayoutDashboard, LogOut, Menu, Moon, Network, RefreshCw, Search, Store, Sun, Users, Wallet } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useAuth } from '@/lib/auth'
@@ -32,6 +19,7 @@ const NAV_ITEMS = [
   { to: '/groups', label: 'Groups', icon: Building2 },
   { to: '/accounts', label: 'Accounts', icon: Network },
   { to: '/finance', label: 'Finance', icon: Wallet },
+  { to: '/shop', label: 'Shop', icon: Store },
   { to: '/monthly-settlements', label: 'Monthly Settlements', icon: CalendarCheck },
 ]
 

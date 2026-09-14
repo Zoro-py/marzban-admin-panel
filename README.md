@@ -11,7 +11,8 @@ Three pieces, one shared backend:
 ```
 backend/   FastAPI + SQLite (swap to Postgres later) — the source of truth, talks to Marzban
 frontend/  Vite + React + Tailwind dashboard — full CRUD, live balances, invoices, charts
-bot/       Telegram bot — quick mobile checks + the same actions as the dashboard
+bot/       Telegram bot — YOUR bot: quick mobile checks + the same actions as the dashboard
+shopbot/   Telegram bot — YOUR CUSTOMERS' bot: self-serve wallet + buy an account (optional)
 ```
 
 Public repo: `github.com/Zoro-py/marzban-admin-panel`. See `AGENTS.md` before making changes
@@ -143,6 +144,60 @@ The QR/link messages are sent by the **backend** (using `BOT_TOKEN` /
 `BOT_ADMIN_CHAT_ID` in `backend/.env`), not by the bot process — so they arrive
 whether or not `bot.py` is running. With those unset, the accounts are still
 created and both front-ends say plainly that no messages are coming.
+
+## The self-serve shop (optional)
+
+A second Telegram bot, this one for your customers rather than for you. They
+top up a wallet by card transfer, you approve the receipt, and they buy
+one-month plans out of that balance — the account is created in Marzban and
+its QR arrives in their chat within seconds, with nothing for you to do.
+
+```bash
+cd shopbot
+python -m venv venv
+venv/Scripts/pip install -r requirements.txt
+cp .env.example .env      # SHOP_BOT_TOKEN, API_BASE_URL, SHOP_BOT_API_KEY
+venv/Scripts/python bot.py
+```
+
+`SHOP_BOT_API_KEY` must be the same random string in `shopbot/.env` and
+`backend/.env`. Generate one with
+`python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+
+Then open the dashboard's **Shop** page, set a price per GB and your card
+number, and tick *Shop is open*. It refuses to open without both — customers
+would otherwise see a buy button that can't complete and no card to pay.
+
+**How the money works, and why it is kept apart from everything else:**
+
+- A shop wallet is **prepaid credit**, the opposite quantity from the
+  reseller-side ledger's **debt owed to you**. They live in separate tables and
+  are never summed together; a customer page's balance is unaffected by
+  anything in the shop. See the "self-serve shop" section header in
+  `backend/app/models.py`.
+- Wallet amounts are **whole Toman integers**, not the floats the reseller
+  ledger uses — a balance that is added to and subtracted from repeatedly
+  drifts under floating point until it no longer matches the transactions the
+  customer can see.
+- A balance is always the **sum of the wallet's entries**, never a stored
+  number. Corrections are new entries, so the reason for every change stays
+  readable.
+- **The money moves before Marzban is called.** If provisioning fails, the
+  purchase is refunded automatically and the customer is told their balance is
+  intact. If the server dies mid-purchase, a sweeper refunds the stranded
+  order within about fifteen minutes. The alternative ordering — provision
+  first, charge after — loses a live account for free on the same crash.
+- **You approve every payment.** Nothing credits a wallet except your explicit
+  approval, from the buttons pushed to your Telegram with the receipt, from
+  `/topups` in your own bot, or from the dashboard's Shop page. Approving the
+  same receipt twice credits it once.
+
+**Two bots, two tokens, two privilege levels — on purpose.** Your bot
+(`bot/`) is locked to your chat id and holds the Marzban admin credentials.
+The shop bot accepts messages from anyone, so it holds only
+`SHOP_BOT_API_KEY`, which reaches `/api/shop/bot/*` and nothing else. If the
+public-facing bot is ever compromised, settlements, backups and the reseller
+ledger are not on the other side of it.
 
 ## How ownership/billing works (short version)
 

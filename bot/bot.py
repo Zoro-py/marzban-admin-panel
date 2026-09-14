@@ -13,7 +13,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler  # noqa: E402
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters  # noqa: E402
 
 from handlers.account import extend_command  # noqa: E402
 from handlers.backup import backup_command  # noqa: E402
@@ -22,6 +22,12 @@ from handlers.customer import charge_command, credit_command, customer_command  
 from handlers.report import report_command  # noqa: E402
 from handlers.start import help_command, start_command  # noqa: E402
 from handlers.sync import sync_command  # noqa: E402
+from handlers.topup import (  # noqa: E402
+    approve_by_command,
+    reject_by_command,
+    topup_callback,
+    topups_command,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -42,6 +48,13 @@ def main() -> None:
     # unscoped CallbackQueryHandler would swallow every future feature's
     # callbacks too, and they would silently stop working.
     app.add_handler(CallbackQueryHandler(bulk_callback, pattern=r"^bulk:"))
+    app.add_handler(CommandHandler("topups", topups_command))
+    # /approve_12 and /reject_12 are dynamic command names, so CommandHandler
+    # (which matches a fixed name) can't see them — a Regex MessageHandler is
+    # the only way to catch a command whose id is part of the word.
+    app.add_handler(MessageHandler(filters.Regex(r"^/approve_\d+(@\w+)?$"), approve_by_command))
+    app.add_handler(MessageHandler(filters.Regex(r"^/reject_\d+(@\w+)?$"), reject_by_command))
+    app.add_handler(CallbackQueryHandler(topup_callback, pattern=r"^topup:"))
     app.add_handler(CommandHandler("sync", sync_command))
     app.add_handler(CommandHandler("backup", backup_command))
 

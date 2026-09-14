@@ -222,3 +222,108 @@ dashboard's own backend. Fixed by moving to HostVDS's **Highload** tier (dedicat
 RAM-per-dollar tier as one step up in Burstable, but with a real CPU guarantee instead of a
 shared/oversold one. If this ever recurs, check `%st` in `top` first before suspecting this
 app's own code.
+
+---
+
+## 7. The self-serve shop — a second, separate money system
+
+Added alongside the reseller side, not inside it. Everything in sections 1-6
+above describes money the operator is **owed**; this section describes money
+the operator has **already been paid** and holds on a customer's behalf. The
+two are different quantities and are never mixed.
+
+### 7.1 Why it is not in `LedgerEntry`
+
+`LedgerEntry` is summed by `services.py` into account → group → customer
+roll-ups, and every one of those assumes each row is debt accrued against a
+reseller customer. A prepaid wallet balance in that table would be added into
+those figures, making every customer balance on the dashboard wrong — the same
+shape as the failure in AGENTS.md §4.3 where a CHARGE posted to cancel a
+CREDIT erased money a customer was legitimately owed.
+
+So the shop has its own append-only ledger, `ShopWalletEntry`, summed by
+`shop_service.wallet_balance` and read by nothing in `services.py`. A
+`ShopUser` may be linked to a `Customer` for reporting; that link carries no
+money in either direction.
+
+### 7.2 Integers, not floats
+
+Wallet amounts are whole Toman stored as `int`. The reseller ledger uses
+`float` for historical reasons, which is survivable there because a settle
+computes an amount once from usage. A wallet is different: it is repeatedly
+added to and subtracted from, and float drift eventually shows a customer a
+balance that disagrees with the sum of the transactions they can see.
+Toman has no subunit in practice, so integers cost nothing.
+
+### 7.3 Order of operations in a purchase — and why
+
+`shop_service.purchase`:
+
+1. Take a per-user lock, so two taps on "buy" serialise.
+2. In ONE transaction: re-read the balance, check affordability, write the
+   `ShopOrder` and its matching negative wallet entry, commit.
+3. Only then call Marzban.
+4. On success, write the `Account` row and mark the order delivered. On
+   failure, post a compensating refund and mark it failed.
+
+The debit happens **before** provisioning deliberately. Provisioning first and
+charging after loses real inventory on any crash in between — a live account
+nobody paid for, indistinguishable from a legitimate one. This ordering's
+worst case is an order stuck in `provisioning` with the money held, which
+`sweep_stuck_orders` (every 5 minutes, threshold 10 minutes) turns back into a
+refund. A customer briefly out of pocket and then refunded is recoverable; a
+free account is not.
+
+Re-reading the balance **inside** the lock, rather than trusting a figure read
+earlier in the request, is what stops a stale number authorising a purchase
+the wallet can no longer cover.
+
+**The lock is in-process.** It is sufficient only because the backend runs as
+a single uvicorn process with no `--workers`. Deploying with multiple workers
+or replicas silently removes this protection; the balance check would have to
+move into the database (`SELECT ... FOR UPDATE` on Postgres, `BEGIN IMMEDIATE`
+on SQLite). Nothing fails loudly if that happens, which is why it is written
+down here as well as in the code.
+
+### 7.4 Refunds are idempotent, approvals are single-use
+
+`refund_order` checks for an existing refund entry against the same order
+before posting one. It is reachable from both the provisioning path and the
+sweeper, which can race after a restart — and because a balance IS the sum of
+its entries, a double refund would invent money with no discrepancy anywhere
+to notice it by.
+
+`approve_topup` refuses any top-up that is not still `pending`. That guard is
+what makes a double-tap on the operator's approve button credit once. A
+rejection credits nothing and is equally single-use.
+
+`claimed_amount` (what the customer said they paid) and `approved_amount`
+(what was actually credited) are separate columns, so "claimed 500,000,
+credited 50,000" stays on the record instead of the claim being overwritten.
+
+### 7.5 The two bots have different privileges
+
+| | `bot/` | `shopbot/` |
+|---|---|---|
+| Audience | the operator only, gated to one chat id | the public |
+| Backend credential | Marzban admin username/password | `SHOP_BOT_API_KEY` |
+| Can reach | every endpoint | `/api/shop/bot/*` only |
+
+`SHOP_BOT_API_KEY` unset means every `/api/shop/bot/*` request is refused —
+fail closed. A shop bot that cannot authenticate must not fall back to
+working.
+
+The shop bot is trusted to report *which* Telegram user is talking to it, in
+the same way it is trusted to report what they asked for. That trust is
+bounded: a compromised shop bot could spend its own customers' wallets, but it
+cannot create money (only an operator approval does that) and cannot reach
+anything outside `/api/shop`.
+
+### 7.6 What the shop deliberately does NOT do
+
+- It never posts to `LedgerEntry`, so shop revenue does not appear in the
+  reseller-side Finance figures. Those two numbers answer different questions
+  and merging them would make both misleading.
+- It does not auto-approve payments. Every credit is an operator decision.
+- It does not store receipt images. Only Telegram's `file_id` is kept, so a
+  stolen database does not carry customers' bank receipts with it.

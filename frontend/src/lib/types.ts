@@ -336,3 +336,82 @@ export interface MonthlySettlementRunResult {
   failed?: number
   total?: number
 }
+
+// ---- self-serve shop ----
+// Every amount below is WHOLE TOMAN as a number with no decimal part — the
+// backend stores these as int for a reason (see the shop section header in
+// backend/app/models.py). Never format them with decimals; never divide one.
+
+export interface ShopSettings {
+  id: number
+  is_open: boolean
+  price_per_gb: number
+  min_gb: number
+  max_gb: number
+  plan_duration_days: number
+  card_number: string | null
+  card_holder: string | null
+  username_prefix: string
+  min_topup: number
+  max_topup: number
+}
+
+export interface ShopUser {
+  id: number
+  telegram_id: number
+  telegram_username: string | null
+  display_name: string | null
+  phone: string | null
+  customer_id: number | null
+  is_blocked: boolean
+  balance: number
+  created_at: string
+  last_seen_at: string | null
+}
+
+export type ShopWalletEntryType = 'topup' | 'purchase' | 'refund' | 'adjust'
+
+export interface ShopWalletEntry {
+  id: number
+  shop_user_id: number
+  type: ShopWalletEntryType
+  amount: number // signed
+  note: string | null
+  topup_id: number | null
+  order_id: number | null
+  created_at: string
+}
+
+export type ShopTopupStatus = 'pending' | 'approved' | 'rejected'
+
+export interface ShopTopup {
+  id: number
+  shop_user_id: number
+  claimed_amount: number
+  approved_amount: number | null
+  receipt_file_id: string | null
+  status: ShopTopupStatus
+  reject_reason: string | null
+  created_at: string
+  reviewed_at: string | null
+  telegram_id: number | null
+  display_name: string | null
+}
+
+export type ShopOrderStatus = 'provisioning' | 'delivered' | 'failed' | 'refunded'
+
+export interface ShopOrder {
+  id: number
+  shop_user_id: number
+  data_limit_gb: number
+  duration_days: number
+  price: number
+  status: ShopOrderStatus
+  account_id: number | null
+  marzban_username: string | null
+  error: string | null
+  created_at: string
+  delivered_at: string | null
+  telegram_id: number | null
+  display_name: string | null
+}

@@ -1,0 +1,69 @@
+"""Customer-facing shop bot.
+
+Separate process and separate Telegram token from bot/, which is the
+operator's own single-chat admin bot. Two reasons, both deliberate:
+
+  * bot/ is gated to one chat id because every command it has moves money or
+    changes a live panel. This bot must accept anyone, so the two cannot share
+    a process without the gate becoming conditional — and a conditional gate
+    is one bad `if` away from being no gate.
+  * This one holds only SHOP_BOT_API_KEY, which reaches nothing but
+    /api/shop/bot/*. bot/ holds the Marzban admin credentials. Keeping the
+    public-facing process away from those bounds what a compromise costs.
+"""
+
+import logging
+import os
+import sys
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Windows consoles default to a legacy codepage, which raises
+# UnicodeEncodeError the moment a log line contains Persian text. Same guard
+# as bot/bot.py.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
+from telegram.ext import Application, CommandHandler, MessageHandler, filters  # noqa: E402
+
+from handlers.shop import handle_photo, handle_text, help_command, start  # noqa: E402
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+
+async def on_error(update, context) -> None:
+    """Last line of defence. Without it, an unexpected exception in a handler
+    leaves the customer with NO reply at all — which reads as "the bot is
+    broken" and, mid-purchase, as "did my money disappear?". The real error
+    goes to the log; the customer gets a sentence."""
+    logger.exception("Unhandled error while processing an update", exc_info=context.error)
+    try:
+        if update is not None and getattr(update, "effective_message", None) is not None:
+            import texts
+            await update.effective_message.reply_text(texts.GENERIC_ERROR)
+    except Exception:
+        logger.exception("Could not even send the fallback error message")
+
+
+def main() -> None:
+    token = os.environ["SHOP_BOT_TOKEN"]
+    app = Application.builder().token(token).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    # TEXT & ~COMMAND: an unrecognised /command should fall through to
+    # Telegram's own "unknown command" rather than being parsed as a volume.
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_error_handler(on_error)
+
+    logger.info("Shop bot starting")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()

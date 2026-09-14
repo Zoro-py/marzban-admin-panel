@@ -13,7 +13,7 @@ from app.backup_job import run_backup
 from app.config import settings
 from app.db import init_db
 from app.payg_monthly_job import maybe_run_monthly_payg_settlement
-from app.routers import accounts, auth, backup, customers, groups, ledger, payg_monthly, reports, settings as settings_router, sync
+from app.routers import accounts, auth, backup, customers, groups, ledger, payg_monthly, reports, settings as settings_router, shop, sync
 from app.sync_job import run_sync
 
 logging.basicConfig(
@@ -35,6 +35,27 @@ async def _scheduled_backup() -> None:
         await run_backup()
     except Exception:
         logger.exception("Scheduled backup failed")
+
+
+async def _scheduled_shop_order_sweep() -> None:
+    """Refunds self-serve orders that took a customer's money and never
+    finished provisioning — which is what a process kill between the wallet
+    debit and Marzban's reply leaves behind. Runs on a schedule rather than
+    only at startup because a container that restarts cleanly is not the only
+    way an order gets stranded (see shop_service.purchase's ordering note)."""
+    from app.db import get_session
+    from app.shop_service import sweep_stuck_orders
+    try:
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            refunded = sweep_stuck_orders(session)
+            if refunded:
+                logger.warning("Refunded %d stuck shop order(s)", len(refunded))
+        finally:
+            session_gen.close()
+    except Exception:
+        logger.exception("Shop stuck-order sweep failed")
 
 
 async def _scheduled_payg_monthly_settlement() -> None:
@@ -68,6 +89,13 @@ async def lifespan(app: FastAPI):
     )
     scheduler.add_job(
         _scheduled_backup, "cron", hour=settings.backup_hour, minute=settings.backup_minute, id="db_backup"
+    )
+    # Every 5 minutes: well inside STUCK_ORDER_TIMEOUT_MINUTES, so a stranded
+    # order is refunded within about fifteen minutes of the customer paying
+    # for it rather than sitting until someone notices.
+    scheduler.add_job(
+        _scheduled_shop_order_sweep, "interval", minutes=5, id="shop_order_sweep",
+        max_instances=1, coalesce=True,
     )
     # Runs daily (not just "on the last day") on purpose — see
     # payg_monthly_job's _target_settlement_period for why that's what makes
@@ -122,6 +150,8 @@ app.include_router(sync.router)
 app.include_router(backup.router)
 app.include_router(payg_monthly.router)
 app.include_router(settings_router.router)
+app.include_router(shop.router)
+app.include_router(shop.bot_router)
 
 
 @app.get("/api/health")

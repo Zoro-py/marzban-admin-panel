@@ -78,6 +78,24 @@ class Settings(BaseSettings):
     # untouched either way — this never rewrites a host Marzban chose.
     marzban_subscription_base_url: str = ""
 
+    # Shared secret the customer-facing SHOP bot presents on /api/shop/bot/*.
+    #
+    # Deliberately NOT the Marzban admin credentials the operator's own bot
+    # uses. That bot is single-operator and gated to one chat id; the shop bot
+    # takes messages from the public, so it is the piece most likely to be
+    # compromised — and if it held admin credentials, compromising it would
+    # hand over settlements, backups and the whole ledger. With this, the
+    # worst an attacker gains is the shop endpoints.
+    #
+    # Blank = every /api/shop/bot/* request is refused. Fail closed: a shop
+    # bot that cannot authenticate must not fall back to working.
+    shop_bot_api_key: str = ""
+
+    # Telegram token + chat id for the customer-facing shop bot. The backend
+    # needs the token to deliver a purchased account's QR directly to the
+    # buyer, without routing it back through the bot process.
+    shop_bot_token: str = ""
+
 
 def _load_or_create_jwt_secret() -> str:
     secret_file = Path(__file__).resolve().parent.parent / ".jwt_secret"

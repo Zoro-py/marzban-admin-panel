@@ -22,6 +22,12 @@ import type {
   OnlineHistory,
   OnlineHistoryRange,
   ReportSummary,
+  ShopOrder,
+  ShopSettings,
+  ShopTopup,
+  ShopTopupStatus,
+  ShopUser,
+  ShopWalletEntry,
   SyncStatus,
   SystemStatus,
 } from './types'
@@ -234,4 +240,25 @@ export const settingsApi = {
   get: async () => (await api.get<{ default_rate_per_gb: number | null }>('/api/settings')).data,
   update: async (body: { default_rate_per_gb: number | null }) =>
     (await api.patch<{ default_rate_per_gb: number | null }>('/api/settings', body)).data,
+}
+
+// ---- self-serve shop ----
+export const shopApi = {
+  settings: async () => (await api.get<ShopSettings>('/api/shop/settings')).data,
+  updateSettings: async (body: Partial<Omit<ShopSettings, 'id'>>) =>
+    (await api.patch<ShopSettings>('/api/shop/settings', body)).data,
+  users: async () => (await api.get<ShopUser[]>('/api/shop/users')).data,
+  updateUser: async (id: number, body: { is_blocked?: boolean; customer_id?: number | null }) =>
+    (await api.patch<ShopUser>(`/api/shop/users/${id}`, body)).data,
+  walletEntries: async (id: number) =>
+    (await api.get<ShopWalletEntry[]>(`/api/shop/users/${id}/wallet`)).data,
+  adjustWallet: async (id: number, body: { amount: number; note?: string }) =>
+    (await api.post<ShopUser>(`/api/shop/users/${id}/wallet`, body)).data,
+  topups: async (status?: ShopTopupStatus) =>
+    (await api.get<ShopTopup[]>('/api/shop/topups', { params: status ? { status } : undefined })).data,
+  approveTopup: async (id: number, amount?: number) =>
+    (await api.post<ShopTopup>(`/api/shop/topups/${id}/approve`, amount ? { amount } : {})).data,
+  rejectTopup: async (id: number, reason?: string) =>
+    (await api.post<ShopTopup>(`/api/shop/topups/${id}/reject`, reason ? { reason } : {})).data,
+  orders: async () => (await api.get<ShopOrder[]>('/api/shop/orders')).data,
 }

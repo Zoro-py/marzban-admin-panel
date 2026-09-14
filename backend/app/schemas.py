@@ -3,7 +3,15 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from app.models import AccountRole, BillingMode, LedgerSource, LedgerType
+from app.models import (
+    AccountRole,
+    BillingMode,
+    LedgerSource,
+    LedgerType,
+    ShopOrderStatus,
+    ShopTopupStatus,
+    ShopWalletEntryType,
+)
 from app.bulk_accounts import MAX_BULK_COUNT, MAX_NAME_INDEX
 
 # ---- Customer ----------------------------------------------------------
@@ -422,3 +430,183 @@ class BulkAccountCreateResult(BaseModel):
     # Set when the batch stopped early because Marzban became unreachable
     # mid-run. Everything before it was still really created.
     aborted_reason: Optional[str] = None
+
+
+# ---- Self-serve shop ----------------------------------------------------
+#
+# Every monetary field here is WHOLE TOMAN as an int, matching the shop
+# models. Do not widen any of them to float to "match the rest of the API" —
+# the reseller ledger's floats and the wallet's ints are different quantities
+# (see the shop section header in models.py), and a float wallet balance
+# drifts away from the sum of the entries the customer can see.
+
+
+class ShopSettingsRead(BaseModel):
+    id: int
+    is_open: bool
+    price_per_gb: int
+    min_gb: float
+    max_gb: float
+    plan_duration_days: int
+    card_number: Optional[str]
+    card_holder: Optional[str]
+    username_prefix: str
+    min_topup: int
+    max_topup: int
+
+
+class ShopSettingsUpdate(BaseModel):
+    # Every field optional, and the router applies only the ones actually
+    # sent (`exclude_unset`) — a PATCH that omits price_per_gb must not reset
+    # the price to a default.
+    is_open: Optional[bool] = None
+    price_per_gb: Optional[int] = Field(default=None, ge=0)
+    min_gb: Optional[float] = Field(default=None, gt=0)
+    max_gb: Optional[float] = Field(default=None, gt=0, le=10240)
+    plan_duration_days: Optional[int] = Field(default=None, ge=1, le=3650)
+    card_number: Optional[str] = Field(default=None, max_length=64)
+    card_holder: Optional[str] = Field(default=None, max_length=100)
+    username_prefix: Optional[str] = Field(default=None, min_length=2, max_length=12, pattern=r"^[a-zA-Z0-9_]+$")
+    min_topup: Optional[int] = Field(default=None, ge=0)
+    max_topup: Optional[int] = Field(default=None, ge=1)
+
+
+class ShopUserRead(BaseModel):
+    id: int
+    telegram_id: int
+    telegram_username: Optional[str]
+    display_name: Optional[str]
+    phone: Optional[str]
+    customer_id: Optional[int]
+    is_blocked: bool
+    balance: int
+    created_at: datetime
+    last_seen_at: Optional[datetime]
+
+
+class ShopUserUpdate(BaseModel):
+    is_blocked: Optional[bool] = None
+    customer_id: Optional[int] = None
+    display_name: Optional[str] = Field(default=None, max_length=100)
+    phone: Optional[str] = Field(default=None, max_length=32)
+
+
+class ShopWalletEntryRead(BaseModel):
+    id: int
+    shop_user_id: int
+    type: ShopWalletEntryType
+    amount: int  # signed
+    note: Optional[str]
+    topup_id: Optional[int]
+    order_id: Optional[int]
+    created_at: datetime
+
+
+class ShopWalletAdjustRequest(BaseModel):
+    # Signed, and no ge/le bound beyond sanity: a manual correction sometimes
+    # legitimately has to be large (refunding a mistaken 5,000,000 T credit).
+    # The router rejects exactly zero, which is the only value that is always
+    # a mistake.
+    amount: int = Field(ge=-1_000_000_000, le=1_000_000_000)
+    note: Optional[str] = Field(default=None, max_length=200)
+
+
+class ShopTopupRead(BaseModel):
+    id: int
+    shop_user_id: int
+    claimed_amount: int
+    approved_amount: Optional[int]
+    receipt_file_id: Optional[str]
+    status: ShopTopupStatus
+    reject_reason: Optional[str]
+    created_at: datetime
+    reviewed_at: Optional[datetime]
+    # Denormalised for display so the dashboard's pending list doesn't need a
+    # second request per row to say who it's from.
+    telegram_id: Optional[int] = None
+    display_name: Optional[str] = None
+
+
+class ShopTopupDecision(BaseModel):
+    # None on approve = credit exactly what the customer claimed. Set it to
+    # credit a different figure when the receipt disagrees with the claim.
+    amount: Optional[int] = Field(default=None, gt=0)
+    reason: Optional[str] = Field(default=None, max_length=200)
+
+
+class ShopOrderRead(BaseModel):
+    id: int
+    shop_user_id: int
+    data_limit_gb: float
+    duration_days: int
+    price: int
+    status: ShopOrderStatus
+    account_id: Optional[int]
+    marzban_username: Optional[str]
+    error: Optional[str]
+    created_at: datetime
+    delivered_at: Optional[datetime]
+    telegram_id: Optional[int] = None
+    display_name: Optional[str] = None
+
+
+# ---- shop bot (scoped key, not the dashboard JWT) ----
+
+
+class ShopBotSessionRequest(BaseModel):
+    telegram_id: int
+    telegram_username: Optional[str] = Field(default=None, max_length=64)
+    display_name: Optional[str] = Field(default=None, max_length=100)
+
+
+class ShopBotSession(BaseModel):
+    shop_user_id: int
+    is_blocked: bool
+    balance: int
+    is_open: bool
+    price_per_gb: int
+    min_gb: float
+    max_gb: float
+    plan_duration_days: int
+    card_number: Optional[str]
+    card_holder: Optional[str]
+    min_topup: int
+    max_topup: int
+
+
+class ShopBotPurchaseRequest(BaseModel):
+    telegram_id: int
+    # Bounded here as well as in shop_service.validate_purchase_request: this
+    # stops an absurd value (1e9 GB) reaching the pricing multiplication at
+    # all, while the service-level check enforces the operator's own,
+    # narrower min/max that can change at runtime.
+    data_limit_gb: float = Field(gt=0, le=10240)
+
+
+class ShopPurchaseResult(BaseModel):
+    order_id: int
+    marzban_username: Optional[str]
+    data_limit_gb: float
+    duration_days: int
+    price: int
+    subscription_url: Optional[str]
+    balance: int
+    status: ShopOrderStatus
+
+
+class ShopBotTopupRequest(BaseModel):
+    telegram_id: int
+    claimed_amount: int = Field(gt=0, le=1_000_000_000)
+    receipt_file_id: Optional[str] = Field(default=None, max_length=256)
+
+
+class ShopBotAccountRow(BaseModel):
+    order_id: int
+    marzban_username: str
+    data_limit_gb: float
+    used_traffic: int
+    data_limit: Optional[int]
+    expire: Optional[int]
+    status: Optional[str]
+    subscription_url: Optional[str]
+    created_at: datetime
