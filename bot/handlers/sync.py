@@ -10,7 +10,7 @@ async def sync_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text("Syncing with Marzban…")
     try:
         result = await backend.post("/api/sync/run")
-    except ValueError as exc:
+    except Exception as exc:  # noqa: BLE001 — a timeout must not leave the operator waiting in silence
         await update.message.reply_text(f"Sync failed: {exc}")
         return
     await update.message.reply_text(

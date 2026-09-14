@@ -250,7 +250,14 @@ function PendingTopups({ query }: { query: ReturnType<typeof useQuery<ShopTopup[
                   variant="outline"
                   className="gap-1.5"
                   disabled={busy}
-                  onClick={() => reject.mutate({ id: topup.id, reason: reasons[topup.id] || undefined })}
+                  onClick={() => {
+                    // The customer is told immediately and cannot appeal in the
+                    // bot, so a mis-tap here is the one decision they feel as
+                    // "they took my money and said no".
+                    const who = topup.display_name ?? `id ${topup.telegram_id}`
+                    if (!window.confirm(`Reject ${toman(topup.claimed_amount)} from ${who}? They are told straight away.`)) return
+                    reject.mutate({ id: topup.id, reason: reasons[topup.id] || undefined })
+                  }}
                 >
                   <X className="h-3.5 w-3.5" /> Reject
                 </Button>
@@ -460,6 +467,17 @@ function ShopSettingsForm() {
     }
   }, [settingsQuery.data])
 
+  // An emptied number input reads back as 0, and saving that would set the
+  // price of a plan to nothing — the shop would hand out service for free
+  // until someone noticed. Blocked at the button rather than relying on the
+  // backend's 422 after the fact.
+  const positive = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0
+  const nonNegative = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0
+  const settingsInvalid =
+    ![draft.price_per_gb, draft.plan_duration_days, draft.min_gb, draft.max_gb, draft.max_topup].every(positive) ||
+    // A minimum top-up of zero is a real choice: it means "no minimum".
+    !nonNegative(draft.min_topup)
+
   const save = useMutation({
     mutationFn: () =>
       shopApi.updateSettings({
@@ -633,7 +651,12 @@ function ShopSettingsForm() {
         </div>
 
         <div>
-          <Button onClick={() => save.mutate()} disabled={save.isPending}>
+          {settingsInvalid && (
+            <p className="text-xs text-destructive">
+              Price, duration, volume range and top-up range must all be greater than zero.
+            </p>
+          )}
+          <Button onClick={() => save.mutate()} disabled={save.isPending || settingsInvalid}>
             {save.isPending ? 'Saving…' : 'Save'}
           </Button>
         </div>

@@ -49,6 +49,9 @@ export function DashboardPage() {
   }
 
   const fin = financeQuery.data
+  // Without this the five money cards sat on '…' forever and read as "still
+  // loading" rather than "this number is missing".
+  const financeFailed = financeQuery.isError
   const attentionCount =
     data.expired_accounts.length +
     data.exhausted_accounts.length +
@@ -77,22 +80,22 @@ export function DashboardPage() {
         <Link to="/finance" className="contents">
           <StatCard
             label="Outstanding (owed to you)"
-            value={fin ? formatToman(fin.total_outstanding) : '…'}
+            value={fin ? formatToman(fin.total_outstanding) : financeFailed ? '—' : '…'}
             tone={fin && fin.total_outstanding > 0 ? 'destructive' : 'success'}
           />
         </Link>
         <Link to="/finance" className="contents">
           <StatCard
             label="Credit owed back"
-            value={fin ? formatToman(fin.total_credit_balance) : '…'}
+            value={fin ? formatToman(fin.total_credit_balance) : financeFailed ? '—' : '…'}
             tone={fin && fin.total_credit_balance > 0 ? 'credit' : 'default'}
           />
         </Link>
         <Link to="/finance" className="contents">
-          <StatCard label="Collected this month" value={fin ? formatToman(fin.revenue_this_month) : '…'} tone="success" />
+          <StatCard label="Collected this month" value={fin ? formatToman(fin.revenue_this_month) : financeFailed ? '—' : '…'} tone="success" />
         </Link>
         <Link to="/finance" className="contents">
-          <StatCard label="Charged this month" value={fin ? formatToman(fin.charged_this_month) : '…'} />
+          <StatCard label="Charged this month" value={fin ? formatToman(fin.charged_this_month) : financeFailed ? '—' : '…'} />
         </Link>
       </div>
 

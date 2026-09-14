@@ -2,7 +2,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from api_client import backend
-from handlers.common import AmbiguousMatch, admin_only, format_gb, format_toman, resolve_customer
+from handlers.common import AmbiguousMatch, admin_only, format_gb, format_toman, md, resolve_customer
 
 
 async def _reply_ambiguous(update: Update, matches: list[dict]) -> None:
@@ -33,8 +33,8 @@ async def customer_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     accounts = await backend.get(f"/api/customers/{customer['id']}/accounts")
 
     lines = [
-        f"*{customer['name']}*  (#{customer['id']})",
-        f"Contact: {customer.get('contact') or '—'}",
+        f"*{md(customer['name'])}*  (#{customer['id']})",
+        f"Contact: {md(customer.get('contact') or '—')}",
         f"Balance: {format_toman(balance['balance'])} ({'owed' if balance['balance'] > 0 else 'credit' if balance['balance'] < 0 else 'settled'})",
         "",
         f"*Accounts ({len(accounts)})*",
@@ -73,6 +73,13 @@ async def _ledger_command(update: Update, context: ContextTypes.DEFAULT_TYPE, le
 
     query = " ".join(context.args[:amount_idx])
     amount = float(context.args[amount_idx].replace(",", ""))
+    if not amount > 0:
+        # `type` says charge or credit; a negative or zero amount here is a
+        # typo, and the backend refuses it anyway.
+        await update.message.reply_text(
+            f"The amount has to be greater than zero — got {context.args[amount_idx]}."
+        )
+        return
     note = " ".join(context.args[amount_idx + 1:]) if len(context.args) > amount_idx + 1 else None
 
     try:
@@ -85,12 +92,16 @@ async def _ledger_command(update: Update, context: ContextTypes.DEFAULT_TYPE, le
         await update.message.reply_text(f"No customer matches '{query}'.")
         return
 
-    entry = await backend.post(
-        "/api/ledger",
-        json={"type": ledger_type, "amount": amount, "customer_id": customer["id"], "note": note},
-    )
+    try:
+        entry = await backend.post(
+            "/api/ledger",
+            json={"type": ledger_type, "amount": amount, "customer_id": customer["id"], "note": note},
+        )
+    except Exception as exc:  # noqa: BLE001 — the operator has to know whether the money was recorded
+        await update.message.reply_text(f"Nothing was recorded — {exc}")
+        return
     label = "Debt" if ledger_type == "charge" else "Credit"
-    await update.message.reply_text(f"{label} recorded for *{customer['name']}*: {format_toman(entry['amount'])}", parse_mode="Markdown")
+    await update.message.reply_text(f"{label} recorded for *{md(customer['name'])}*: {format_toman(entry['amount'])}", parse_mode="Markdown")
 
 
 @admin_only

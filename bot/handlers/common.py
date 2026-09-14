@@ -73,5 +73,19 @@ async def resolve_account(username: str) -> dict | None:
     return None
 
 
+def md(value: Any) -> str:
+    """Escapes the characters legacy Markdown treats as formatting.
+
+    Customer and group names are typed by the operator and routinely contain
+    underscores. Telegram rejects the whole message when they are unescaped,
+    so a /charge would record the money and then fail to confirm it — the one
+    outcome most likely to make an operator charge twice.
+    """
+    text = str(value)
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
 def reply_kwargs() -> dict[str, Any]:
     return {"parse_mode": "Markdown"}

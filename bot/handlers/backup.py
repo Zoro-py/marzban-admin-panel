@@ -10,7 +10,7 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("Backing up and sending the file to this chat…")
     try:
         result = await backend.post("/api/backup/run")
-    except ValueError as exc:
+    except Exception as exc:  # noqa: BLE001 — same reasoning as /sync: never answer with silence
         await update.message.reply_text(f"Backup failed: {exc}")
         return
     await update.message.reply_text(f"Backup sent: {result['filename']}")
