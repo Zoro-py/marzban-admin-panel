@@ -1,0 +1,1111 @@
+commit 40d886c5d6da8872b4dd3dd9484b6741c9b13bee
+Author: Mohammad Hossein <m.h.heidari1384@gmail.com>
+Date:   Sun Jul 26 02:20:31 2026 +0330
+
+    Rebuild the money model around one owner per ledger entry, so every balance in the UI reconciles by construction
+    
+    Reported: recording a member's payment against their own account turned the
+    whole group into a 270,000 creditor, while every member row underneath it
+    still showed money owed. Also, an account that had already paid still printed
+    "243,916 not invoiced yet" under "13,916 owed" -- a breakdown that contradicts
+    itself, because in isolation it omits the payment that cancels most of it.
+    
+    Both came from the same structural flaw, not from display logic. A ledger
+    entry carried customer_id, group_id AND account_id at once, and each screen
+    summed whichever column it cared about. The group summed group_id; the member
+    row summed account_id; the customer summed customer_id. So a member's payment
+    counted in the group's pool AND in that member's own balance, while the
+    matching charge sat in a different bucket -- the two never cancelled, and no
+    two levels ever had to agree.
+    
+    Replaced the ad-hoc per-scope sums with an explicit model, documented at the
+    top of services.py and enforced by services.MoneyBook:
+    
+      ONE OWNER PER ENTRY, resolved in order:
+        account_id set -> that account's money
+        else group_id  -> group money not tied to a member
+        else customer  -> customer money not tied to an account
+      The other columns still record who was invoiced and still drive the history
+      views, but are never summed into a balance.
+    
+      ROLL-UPS ARE SUMS OF THE LEVEL BELOW, never an independent re-query:
+        account  = its own entries (+ its uninvoiced usage, for net)
+        group    = sum of members + group-only entries
+        customer = sum of owned accounts + sum of represented groups + own entries
+    
+    A group's figure can now no longer disagree with the member rows printed under
+    it, because it is literally computed as their sum. Every page (accounts,
+    groups, group detail, customers, customer detail, dashboard, finance, ledger
+    balance) reads from one MoneyBook snapshot per request, so two numbers on one
+    screen cannot come from reads taken a query apart.
+    
+    UI follows the same rule: one netted "Owes now" everywhere, never a pair of
+    competing figures. The group page's "Pending" + "Settled balance" cards --
+    which together claimed a credit while the members owed -- are now "Owes now"
+    (the members' sum) plus "Not invoiced yet". The Accounts table drops the
+    contradictory secondary line in favour of a tooltip carrying the full
+    arithmetic, which always adds up. Recording a payment on a customer who owns
+    exactly one account now attributes it to that account, so the money lands
+    where the operator is looking instead of at a level above it.
+    
+    Wrote a ten-invariant reconciliation suite (roll-up identities at each level,
+    group-never-flips-to-credit, no leak from a group onto its representative's
+    own account, every entry counted exactly once globally, API responses match
+    the book, settling never changes what anyone owes, plus 300 randomised
+    entries across all three scopes). It caught a further real bug: "payment
+    received now too" silently did nothing when the cycle had no new usage,
+    because the credit was nested inside the charge branch -- while the dialog's
+    preview promised a settled balance. Marking paid now clears whatever is
+    genuinely outstanding, including group-level debt with no member to attribute
+    it to.
+    
+    All eleven verification suites pass, backend imports clean, frontend tsc -b
+    and production build clean.
+    
+    Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+diff --git a/backend/app/routers/accounts.py b/backend/app/routers/accounts.py
+index e90e262..5ddd977 100644
+--- a/backend/app/routers/accounts.py
++++ b/backend/app/routers/accounts.py
+@@ -21,9 +21,9 @@ from app.schemas import (
+     AccountSettleRequest,
+ )
+ from app.services import (
++    account_posted_balance,
+     billable_bytes,
+     bytes_from_gb,
+-    compute_balance,
+     effective_billing_mode,
+     effective_rate,
+     enrich_accounts,
+@@ -291,13 +291,12 @@ def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRe
+     rate = effective_rate(session, account)
+     amount = round(billable_gb * rate, 2)
+ 
+-    # Read BEFORE adding the charge below: compute_balance issues a SELECT,
+-    # which autoflushes pending adds, so reading afterwards would already
+-    # include the charge and make the intent of this number ambiguous.
++    # Read BEFORE adding the charge below: this issues a SELECT, which
++    # autoflushes pending adds, so reading afterwards would already include
++    # the charge and make the intent of this number ambiguous.
+     prior_balance = 0.0
+-    if body.mark_paid and account.customer_id is not None:
+-        prior_charge, prior_credit = compute_balance(session, customer_id=account.customer_id)
+-        prior_balance = prior_charge - prior_credit
++    if body.mark_paid:
++        prior_balance = account_posted_balance(session, account.id)
+ 
+     now = utcnow()
+     cycle_note = (
+@@ -316,26 +315,31 @@ def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRe
+                 source=LedgerSource.web,
+             )
+         )
+-        if body.mark_paid:
+-            # Credit what's actually still OUTSTANDING after this charge, not
+-            # the charge amount blindly: an account already carrying a credit
+-            # (they prepaid, or paid before the usage was invoiced) would
+-            # otherwise be handed that credit a second time — settling a
+-            # 243,916 charge on someone 230,000 in credit would leave them
+-            # 230,000 in credit instead of settled. max(0, ...) because an
+-            # account still in credit after the charge has nothing left to pay.
+-            credit_amount = round(max(0.0, prior_balance + amount), 2)
+-            if credit_amount > 0:
+-                session.add(
+-                    LedgerEntry(
+-                        type=LedgerType.credit,
+-                        amount=credit_amount,
+-                        customer_id=account.customer_id,
+-                        account_id=account.id,
+-                        note=f"Payment received at settlement ({now.date().isoformat()})",
+-                        source=LedgerSource.web,
+-                    )
++    if body.mark_paid:
++        # Credit whatever is still OUTSTANDING once this charge lands — which
++        # is NOT the charge amount:
++        #  - an account already carrying a credit (they prepaid, or paid
++        #    before the usage was invoiced) would otherwise be handed that
++        #    credit a second time: settling a 243,916 charge on someone
++        #    230,000 in credit would leave them 230,000 in credit, not settled;
++        #  - an account carrying unpaid debt from an earlier cycle must still
++        #    be cleared even when this cycle adds nothing to charge, or
++        #    "payment received" would silently do nothing while the dialog's
++        #    preview promised a settled balance.
++        # max(0, ...) because an account still in credit afterwards has
++        # nothing left to pay.
++        credit_amount = round(max(0.0, prior_balance + amount), 2)
++        if credit_amount > 0:
++            session.add(
++                LedgerEntry(
++                    type=LedgerType.credit,
++                    amount=credit_amount,
++                    customer_id=account.customer_id,
++                    account_id=account.id,
++                    note=f"Payment received at settlement ({now.date().isoformat()})",
++                    source=LedgerSource.web,
+                 )
++            )
+ 
+     if mode == BillingMode.payg:
+         account.usage_baseline = account.used_traffic
+diff --git a/backend/app/routers/customers.py b/backend/app/routers/customers.py
+index 3e62e66..535db2d 100644
+--- a/backend/app/routers/customers.py
++++ b/backend/app/routers/customers.py
+@@ -1,14 +1,13 @@
+ from collections import defaultdict
+ 
+ from fastapi import APIRouter, Depends, HTTPException
+-from sqlalchemy import func
+ from sqlmodel import Session, select
+ 
+ from app.auth import require_auth
+ from app.db import get_session
+ from app.models import Account, Customer, Group
+ from app.schemas import AccountRow, CustomerCreate, CustomerRead, CustomerUpdate, CustomerWithBalance
+-from app.services import compute_balance, enrich_accounts
++from app.services import MoneyBook, enrich_accounts
+ 
+ router = APIRouter(prefix="/api/customers", tags=["customers"], dependencies=[Depends(require_auth)])
+ 
+@@ -20,41 +19,39 @@ def _represented_groups(session: Session) -> dict[int, list[Group]]:
+     return by_rep
+ 
+ 
+-def _account_count(session: Session, customer_id: int, represented_groups: list[Group]) -> int:
+-    """Direct accounts (customer_id == this customer) PLUS every account
+-    belonging to a group this customer represents — a representative
+-    customer's whole reason for existing is to bill that group, so counting
+-    only direct ownership made a customer who clearly manages a full group
+-    show up as having "0 accounts", which reads as broken rather than as the
+-    deliberate "billed via the group, not directly" distinction it actually
+-    is (still shown separately, correctly, on the customer detail page)."""
+-    direct = session.exec(select(func.count()).select_from(Account).where(Account.customer_id == customer_id)).one()
+-    if not represented_groups:
+-        return direct
+-    group_ids = [g.id for g in represented_groups]
+-    via_groups = session.exec(
+-        select(func.count()).select_from(Account).where(Account.group_id.in_(group_ids))
+-    ).one()
+-    return direct + via_groups
++def _account_count(book: MoneyBook, customer: Customer, represented_groups: list[Group]) -> int:
++    """Accounts this customer pays for: the ones they own directly, plus every
++    member of a group they represent — a representative customer's whole
++    reason for existing is to bill that group, so counting only direct
++    ownership made a customer who clearly manages a full group show up as
++    having "0 accounts", which reads as broken rather than as the deliberate
++    "billed via the group, not directly" distinction it actually is (still
++    shown separately, correctly, on the customer detail page). Same split the
++    balance roll-up uses, so the count and the money always agree."""
++    direct = len(book.customer_accounts(customer))
++    return direct + sum(len(book.group_members(g)) for g in represented_groups)
++
++
++def _with_balance(book: MoneyBook, c: Customer, groups_for_c: list[Group]) -> CustomerWithBalance:
++    return CustomerWithBalance(
++        **c.model_dump(),
++        # Roll-up of the accounts they own plus the groups they represent —
++        # see services.MoneyBook. Reading this customer's own ledger rows
++        # instead would both miss group money and double-count it, since a
++        # group settle writes the representative's customer_id too.
++        balance=book.customer_posted(c),
++        net_owed=book.customer_net(c),
++        account_count=_account_count(book, c, groups_for_c),
++        represented_group_names=[g.name for g in groups_for_c],
++    )
+ 
+ 
+ @router.get("", response_model=list[CustomerWithBalance])
+ def list_customers(session: Session = Depends(get_session)):
++    book = MoneyBook(session)
+     customers = session.exec(select(Customer)).all()
+     rep_groups = _represented_groups(session)
+-    result = []
+-    for c in customers:
+-        charge, credit = compute_balance(session, customer_id=c.id)
+-        groups_for_c = rep_groups.get(c.id, [])
+-        result.append(
+-            CustomerWithBalance(
+-                **c.model_dump(),
+-                balance=charge - credit,
+-                account_count=_account_count(session, c.id, groups_for_c),
+-                represented_group_names=[g.name for g in groups_for_c],
+-            )
+-        )
+-    return result
++    return [_with_balance(book, c, rep_groups.get(c.id, [])) for c in customers]
+ 
+ 
+ @router.post("", response_model=CustomerRead)
+@@ -71,15 +68,8 @@ def get_customer(customer_id: int, session: Session = Depends(get_session)):
+     customer = session.get(Customer, customer_id)
+     if not customer:
+         raise HTTPException(404, "Customer not found")
+-    charge, credit = compute_balance(session, customer_id=customer_id)
+     rep_groups = _represented_groups(session)
+-    groups_for_c = rep_groups.get(customer_id, [])
+-    return CustomerWithBalance(
+-        **customer.model_dump(),
+-        balance=charge - credit,
+-        account_count=_account_count(session, customer_id, groups_for_c),
+-        represented_group_names=[g.name for g in groups_for_c],
+-    )
++    return _with_balance(MoneyBook(session), customer, rep_groups.get(customer_id, []))
+ 
+ 
+ @router.patch("/{customer_id}", response_model=CustomerRead)
+diff --git a/backend/app/routers/groups.py b/backend/app/routers/groups.py
+index 3fa4296..8618a51 100644
+--- a/backend/app/routers/groups.py
++++ b/backend/app/routers/groups.py
+@@ -1,4 +1,5 @@
+ from datetime import timedelta
++from typing import Optional
+ 
+ from fastapi import APIRouter, Depends, HTTPException
+ from sqlmodel import Session, select
+@@ -7,7 +8,14 @@ from app.auth import require_auth
+ from app.db import get_session
+ from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
+ from app.schemas import AccountRow, GroupCreate, GroupRead, GroupSettleRequest, GroupUpdate, GroupWithBalance
+-from app.services import billable_bytes, compute_balance, effective_rate, enrich_accounts
++from app.services import (
++    MoneyBook,
++    account_posted_balance,
++    billable_bytes,
++    effective_rate,
++    enrich_accounts,
++    group_only_posted_balance,
++)
+ 
+ router = APIRouter(prefix="/api/groups", tags=["groups"], dependencies=[Depends(require_auth)])
+ 
+@@ -38,9 +46,9 @@ def _invoice_lines(session: Session, accounts: list[Account], group: Group) -> l
+     return lines
+ 
+ 
+-def _with_balance(session: Session, g: Group) -> GroupWithBalance:
+-    charge, credit = compute_balance(session, group_id=g.id)
+-    accounts = session.exec(select(Account).where(Account.group_id == g.id)).all()
++def _with_balance(session: Session, g: Group, book: Optional[MoneyBook] = None) -> GroupWithBalance:
++    book = book or MoneyBook(session)
++    accounts = book.group_members(g)
+     lines = _invoice_lines(session, accounts, g)
+ 
+     # last_settled_at/created_at round-trip through SQLite as naive even though
+@@ -52,7 +60,14 @@ def _with_balance(session: Session, g: Group) -> GroupWithBalance:
+ 
+     return GroupWithBalance(
+         **g.model_dump(),
+-        balance=charge - credit,
++        # Every figure below is a roll-up of this group's members (see
++        # MoneyBook), so the header can never disagree with the member rows
++        # printed underneath it — which it did when the group re-queried its
++        # own total independently: a member's payment landed in the group's
++        # pool while the matching charge sat elsewhere, and the group showed
++        # itself as a creditor while every member still owed money.
++        balance=book.group_posted(g),
++        net_owed=book.group_net(g),
+         account_count=len(accounts),
+         # Real cumulative total (lifetime_used_traffic), NOT Marzban's own
+         # used_traffic counter — that counter resets whenever Marzban applies a
+@@ -62,7 +77,7 @@ def _with_balance(session: Session, g: Group) -> GroupWithBalance:
+         # must always be >= usage-since-our-last-settle by definition.
+         total_used_traffic=sum(a.lifetime_used_traffic for a in accounts),
+         current_cycle_used_bytes=sum(round(line["billable_gb"] * 1024**3) for line in lines),
+-        pending_amount=round(sum(line["amount"] for line in lines), 2),
++        pending_amount=book.group_pending(g),
+         next_due_at=next_due_at,
+         is_due=next_due_at <= now,
+     )
+@@ -70,8 +85,9 @@ def _with_balance(session: Session, g: Group) -> GroupWithBalance:
+ 
+ @router.get("", response_model=list[GroupWithBalance])
+ def list_groups(session: Session = Depends(get_session)):
++    book = MoneyBook(session)
+     groups = session.exec(select(Group)).all()
+-    return [_with_balance(session, g) for g in groups]
++    return [_with_balance(session, g, book) for g in groups]
+ 
+ 
+ @router.post("", response_model=GroupRead)
+@@ -171,34 +187,39 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
+         if group.billing_mode == BillingMode.prepay
+         else f"Usage settlement for cycle ending {now.date().isoformat()}"
+     )
+-    # Read every member's prior balance BEFORE adding any entry below:
+-    # compute_balance issues a SELECT, which autoflushes pending adds, so
+-    # reading inside the loop would start folding in charges just posted.
++    # Read every prior balance BEFORE adding any entry below: these issue
++    # SELECTs, which autoflush pending adds, so reading inside the loop would
++    # start folding in charges just posted.
+     prior_balances: dict[int, float] = {}
++    prior_group_only = 0.0
+     if body.mark_paid:
+         for line in lines:
+-            m_charge, m_credit = compute_balance(session, account_id=line["account_id"])
+-            prior_balances[line["account_id"]] = m_charge - m_credit
++            prior_balances[line["account_id"]] = account_posted_balance(session, line["account_id"])
++        prior_group_only = group_only_posted_balance(session, group.id)
+ 
++    paid_note = f"Payment received at settlement ({now.date().isoformat()})"
+     for line in lines:
+-        if line["amount"] <= 0:
+-            continue
+-        session.add(
+-            LedgerEntry(
+-                type=LedgerType.charge,
+-                amount=line["amount"],
+-                customer_id=group.representative_customer_id,
+-                group_id=group.id,
+-                account_id=line["account_id"],
+-                note=cycle_note,
+-                source=LedgerSource.web,
++        if line["amount"] > 0:
++            session.add(
++                LedgerEntry(
++                    type=LedgerType.charge,
++                    amount=line["amount"],
++                    customer_id=group.representative_customer_id,
++                    group_id=group.id,
++                    account_id=line["account_id"],
++                    note=cycle_note,
++                    source=LedgerSource.web,
++                )
+             )
+-        )
+         if body.mark_paid:
+-            # Per member, credit only what that member still OWES after this
+-            # charge — a member who already paid individually (their credit is
+-            # attributed to their own account_id) must not be handed that
+-            # credit again. See settle_account for the same reasoning.
++            # Per member, credit whatever that member still OWES once this
++            # charge lands — which is NOT the same as the charge itself:
++            #  - a member who already paid individually must not be credited
++            #    twice (their credit is attributed to their own account_id),
++            #  - a member carrying unpaid debt from an earlier cycle must
++            #    still be cleared even when this cycle adds nothing, or
++            #    "payment received" would silently do nothing while the
++            #    dialog's preview promised a settled balance.
+             credit_amount = round(max(0.0, prior_balances.get(line["account_id"], 0.0) + line["amount"]), 2)
+             if credit_amount > 0:
+                 session.add(
+@@ -208,11 +229,26 @@ def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(),
+                         customer_id=group.representative_customer_id,
+                         group_id=group.id,
+                         account_id=line["account_id"],
+-                        note=f"Payment received at settlement ({now.date().isoformat()})",
++                        note=paid_note,
+                         source=LedgerSource.web,
+                     )
+                 )
+ 
++    # Group-level debt with no member to attribute it to (a setup fee, an
++    # adjustment) is part of what the representative owes, so paying in full
++    # has to clear it too.
++    if body.mark_paid and prior_group_only > 0:
++        session.add(
++            LedgerEntry(
++                type=LedgerType.credit,
++                amount=round(prior_group_only, 2),
++                customer_id=group.representative_customer_id,
++                group_id=group.id,
++                note=paid_note,
++                source=LedgerSource.web,
++            )
++        )
++
+     for a in accounts:
+         if group.billing_mode == BillingMode.payg:
+             a.usage_baseline = a.used_traffic
+diff --git a/backend/app/routers/ledger.py b/backend/app/routers/ledger.py
+index d32237a..f023a04 100644
+--- a/backend/app/routers/ledger.py
++++ b/backend/app/routers/ledger.py
+@@ -7,7 +7,7 @@ from app.auth import require_auth
+ from app.db import get_session
+ from app.models import Account, Customer, Group, LedgerEntry
+ from app.schemas import BalanceRead, LedgerCreate, LedgerRead
+-from app.services import compute_balance
++from app.services import MoneyBook
+ 
+ router = APIRouter(prefix="/api/ledger", tags=["ledger"], dependencies=[Depends(require_auth)])
+ 
+@@ -59,11 +59,27 @@ def get_balance(
+     if (customer_id is None) == (group_id is None):
+         raise HTTPException(400, "Provide exactly one of customer_id or group_id")
+ 
+-    charge, credit = compute_balance(session, customer_id=customer_id, group_id=group_id)
++    # Roll-ups, not a raw scan of rows carrying this id — see
++    # services.MoneyBook for why those two are not the same thing.
++    book = MoneyBook(session)
++    if customer_id is not None:
++        customer = session.get(Customer, customer_id)
++        if not customer:
++            raise HTTPException(404, "customer_id not found")
++        balance = book.customer_posted(customer)
++    else:
++        group = session.get(Group, group_id)
++        if not group:
++            raise HTTPException(404, "group_id not found")
++        balance = book.group_posted(group)
++
++    # total_charge/total_credit are reported as the netted balance split into
++    # its sign, rather than gross sums: a roll-up has no single meaningful
++    # gross figure once it spans several accounts and groups.
+     return BalanceRead(
+         entity_type="customer" if customer_id is not None else "group",
+         entity_id=customer_id if customer_id is not None else group_id,
+-        total_charge=charge,
+-        total_credit=credit,
+-        balance=charge - credit,
++        total_charge=max(0.0, balance),
++        total_credit=max(0.0, -balance),
++        balance=balance,
+     )
+diff --git a/backend/app/routers/reports.py b/backend/app/routers/reports.py
+index ad9efe8..38d4b15 100644
+--- a/backend/app/routers/reports.py
++++ b/backend/app/routers/reports.py
+@@ -8,14 +8,7 @@ from sqlmodel import Session, select
+ from app.auth import require_auth
+ from app.db import get_session
+ from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerType, OnlineSnapshot, utcnow
+-from app.services import (
+-    account_scoped_balance,
+-    billable_bytes,
+-    compute_balance,
+-    effective_billing_mode,
+-    effective_rate,
+-    rate_is_configured,
+-)
++from app.services import MoneyBook, effective_billing_mode, effective_rate, rate_is_configured
+ 
+ router = APIRouter(prefix="/api/reports", tags=["reports"], dependencies=[Depends(require_auth)])
+ 
+@@ -31,11 +24,13 @@ def summary(
+     expiry_days_threshold: int = 3,
+     session: Session = Depends(get_session),
+ ):
++    book = MoneyBook(session)
+     customers = session.exec(select(Customer)).all()
++    # "In debt" means what they owe NOW (invoiced or not), same definition as
++    # every other screen — see services.MoneyBook.
+     overdue_customers = []
+     for c in customers:
+-        charge, credit = compute_balance(session, customer_id=c.id)
+-        balance = charge - credit
++        balance = book.customer_net(c)
+         if balance > 0:
+             overdue_customers.append({"customer_id": c.id, "name": c.name, "balance": balance})
+     overdue_customers.sort(key=lambda x: -x["balance"])
+@@ -126,23 +121,15 @@ def summary(
+     #   - balance: ALREADY charged, not yet paid, for EITHER billing mode.
+     # is_due (cycle elapsed) is a secondary signal per entry, not a gate.
+     now_dt = utcnow().replace(tzinfo=None)
+-    accounts_by_group: dict[int, list[Account]] = defaultdict(list)
+-    for a in accounts:
+-        if a.group_id is not None:
+-            accounts_by_group[a.group_id].append(a)
+ 
+     pending_settlement = []
+     for g in groups.values():
+-        pending = 0.0
+-        for a in accounts_by_group.get(g.id, []):
+-            # group's mode wins for a grouped account — see billable_bytes:
+-            # payg bills usage, prepay bills the package (data_limit) itself.
+-            billable_gb = billable_bytes(a, g.billing_mode) / (1024**3)
+-            pending += billable_gb * effective_rate(session, a, g)
+-        charge, credit = compute_balance(session, group_id=g.id)
+-        balance = round(charge - credit, 2)
+-        pending = round(pending, 2)
+-        if pending <= 0 and balance <= 0:
++        # Roll-ups from the shared MoneyBook, so a group's line here matches
++        # its own page and the member rows on it exactly.
++        pending = book.group_pending(g)
++        balance = book.group_posted(g)
++        net = book.group_net(g)
++        if pending <= 0 and net <= 0:
+             continue
+         cycle_start = g.last_settled_at or g.created_at
+         next_due_at = cycle_start + timedelta(days=g.billing_cycle_days)
+@@ -159,22 +146,21 @@ def summary(
+                 # posted debt and not-yet-invoiced usage are the same debt at
+                 # two stages, so a payment already made has to count against
+                 # usage not yet billed.
+-                "net_owed": round(balance + pending, 2),
++                "net_owed": net,
+                 "is_due": is_due,
+                 "days_overdue": round((now_dt - next_due_at).total_seconds() / 86400, 1) if is_due else None,
+             }
+         )
+ 
+-    # Standalone (non-grouped) accounts. `balance` comes from the same
+-    # account_scoped_balance() the Accounts table uses, so clicking through
+-    # from here can't contradict what the dashboard just said.
++    # Standalone (non-grouped) accounts, straight off the same MoneyBook the
++    # Accounts table reads, so clicking through from here can't contradict
++    # what the dashboard just said.
+     for a in accounts:
+         if a.group_id is not None:
+             continue
+-        billable_gb = billable_bytes(a, a.billing_mode) / (1024**3)
+-        pending = round(billable_gb * effective_rate(session, a, None), 2)
+-        balance = round(account_scoped_balance(session, a), 2)
+-        net = round(balance + pending, 2)
++        pending = book.account_pending(a)
++        balance = round(book.account_posted(a), 2)
++        net = book.account_net(a)
+         # Nothing pending AND nothing owed -> not a queue item. A negative net
+         # (they're in credit) isn't either: that's not something to chase.
+         if pending <= 0 and net <= 0:
+@@ -217,12 +203,16 @@ def finance(session: Session = Depends(get_session)):
+     outstanding/owed-back across everyone, this month's revenue vs. billed,
+     a day-by-day revenue trend for the last 30 days, recent transactions, and
+     every configured rate in one place."""
++    book = MoneyBook(session)
+     customers = session.exec(select(Customer)).all()
++    # Summed over CUSTOMERS specifically — that level's roll-up already
++    # includes the accounts they own and the groups they represent, each
++    # exactly once (see services.MoneyBook), so nothing is counted twice and
++    # nothing owned by an unassigned account is silently dropped.
+     total_outstanding = 0.0
+     total_credit_balance = 0.0
+     for c in customers:
+-        charge, credit = compute_balance(session, customer_id=c.id)
+-        balance = charge - credit
++        balance = book.customer_net(c)
+         if balance > 0:
+             total_outstanding += balance
+         else:
+diff --git a/backend/app/schemas.py b/backend/app/schemas.py
+index c84d131..0845ae5 100644
+--- a/backend/app/schemas.py
++++ b/backend/app/schemas.py
+@@ -29,7 +29,12 @@ class CustomerRead(BaseModel):
+ 
+ 
+ class CustomerWithBalance(CustomerRead):
+-    balance: float  # positive = customer owes us (بدهی), negative = we owe them (طلب)
++    # Roll-up of the accounts they own plus the groups they represent (see
++    # services.MoneyBook). POSTED only; prefer net_owed for display.
++    balance: float
++    # balance + everything not yet invoiced across those same accounts and
++    # groups — what this customer owes right now.
++    net_owed: float  # positive = customer owes us (بدهی), negative = we owe them (طلب)
+     account_count: int
+     # Names of groups this customer is the billing representative for —
+     # computed from Group rows (never from the manual is_group_rep flag, which
+@@ -77,7 +82,13 @@ class GroupRead(BaseModel):
+ 
+ 
+ class GroupWithBalance(GroupRead):
++    # Roll-up of this group's members plus any group-level entry not tied to
++    # one member — see services.MoneyBook. POSTED only; prefer net_owed.
+     balance: float
++    # balance + pending_amount: what the group owes right now, and exactly the
++    # sum of the members' own net_owed. Guaranteed to reconcile with the rows
++    # shown underneath it because it is literally computed as their sum.
++    net_owed: float
+     account_count: int
+     # Marzban's own used_traffic counter, summed — NOT what should drive
+     # billing (see current_cycle_used_bytes for that): Marzban can reset this
+diff --git a/backend/app/services.py b/backend/app/services.py
+index b4afa88..2556c06 100644
+--- a/backend/app/services.py
++++ b/backend/app/services.py
+@@ -1,75 +1,164 @@
++from collections import defaultdict
+ from typing import Optional
+ 
+-from sqlalchemy import and_, or_
+ from sqlmodel import Session, select
+ 
+ from app.models import Account, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerType, utcnow
+ 
+-
+-def compute_balance(
+-    session: Session,
+-    *,
+-    customer_id: Optional[int] = None,
+-    group_id: Optional[int] = None,
+-    account_id: Optional[int] = None,
+-) -> tuple[float, float]:
+-    """Returns (total_charge, total_credit) for a customer, a group, or one
+-    specific account within a group (see payer_balance in enrich_accounts:
+-    a grouped member's own balance is scoped to entries attributed to THAT
+-    account_id, not every entry sharing the group_id — a payment recorded
+-    for one member must net against that member's own charges, not the
+-    whole group's shared pool)."""
+-    if sum(x is not None for x in (customer_id, group_id, account_id)) != 1:
+-        raise ValueError("compute_balance needs exactly one of customer_id/group_id/account_id")
+-
+-    if customer_id is not None:
+-        stmt = select(LedgerEntry).where(LedgerEntry.customer_id == customer_id)
+-    elif group_id is not None:
+-        stmt = select(LedgerEntry).where(LedgerEntry.group_id == group_id)
+-    else:
+-        stmt = select(LedgerEntry).where(LedgerEntry.account_id == account_id)
+-    entries = session.exec(stmt).all()
+-
+-    total_charge = sum(e.amount for e in entries if e.type == LedgerType.charge)
+-    total_credit = sum(e.amount for e in entries if e.type == LedgerType.credit)
+-    return total_charge, total_credit
+-
+-
+-def account_scoped_balance(session: Session, account: Account) -> float:
+-    """Posted balance for ONE account, without bleeding in money that belongs
+-    to something else.
+-
+-    - Grouped member: only entries attributed to this account_id. Its
+-      siblings' charges and payments are theirs, not this one's.
+-    - Standalone: entries attributed to this account, PLUS its customer's
+-      entries that aren't attributed anywhere else (no account_id, no
+-      group_id) — a payment recorded on the customer page is meant for their
+-      account. Deliberately NOT the customer's whole balance: a customer who
+-      also represents a group carries that group's debt (group settle posts
+-      with customer_id set too), which would otherwise show up on their
+-      personal account as if they owed it twice.
++# ══════════════════════════════════════════════════════════════ the money model
++#
++# ONE OWNER PER ENTRY. Every LedgerEntry is owned by exactly one scope,
++# resolved in this order:
++#
++#     account_id set     -> that account's own money
++#     else group_id set  -> group-level money not tied to any one member
++#     else customer_id   -> customer-level money not tied to any account
++#
++# The other FK columns are still written and still drive the ledger/history
++# views, but they are NEVER summed into a balance. An entry counted at two
++# levels at once is precisely how one member's payment could flip their whole
++# group into being a creditor: the payment landed in the group's pooled total
++# while the matching charge sat somewhere else, so the two never cancelled.
++#
++# ROLL-UPS ARE SUMS OF THE LEVEL BELOW — never an independent re-query that
++# could overlap, miss, or drift:
++#
++#     account   = its own entries            (+ its uninvoiced usage, for net)
++#     group     = Σ members + group-only entries
++#     customer  = Σ directly-owned accounts + Σ represented groups
++#                 + customer-only entries
++#
++# Because each level is defined as the sum of the level below it, a group's
++# figure can never disagree with the member rows printed underneath it. That
++# consistency is the whole point — it is a structural guarantee, not something
++# each screen has to remember to reproduce.
++#
++# Two figures exist at every level and are always shown NETTED, never side by
++# side (see AccountRow.net_owed):
++#     posted  — already invoiced (real ledger entries)
++#     pending — accrued but not yet invoiced
++#     net     = posted + pending  ("owes now")
++# Settling moves an amount from pending to posted, leaving net unchanged,
++# which is correct: formalising a bill doesn't change what someone owes.
++
++
++def _signed(entry: LedgerEntry) -> float:
++    """Charges are positive (they owe us), credits negative (we owe them)."""
++    return entry.amount if entry.type == LedgerType.charge else -entry.amount
++
++
++class MoneyBook:
++    """Answers "what does X owe right now" for accounts, groups and customers
++    off a single consistent snapshot.
++
++    Built once per request and passed around, so every figure on a page comes
++    from the same read — two numbers on the same screen cannot disagree
++    because one of them was computed a query later than the other.
+     """
+-    if account.group_id is not None:
+-        charge, credit = compute_balance(session, account_id=account.id)
+-        return charge - credit
+-    if account.customer_id is None:
+-        return 0.0
+ 
++    def __init__(self, session: Session):
++        self.session = session
++        self._accounts = session.exec(select(Account)).all()
++        self._groups = {g.id: g for g in session.exec(select(Group)).all()}
++
++        # Each entry bucketed exactly once, by its single owning scope.
++        self._posted_by_account: dict[int, float] = defaultdict(float)
++        self._posted_group_only: dict[int, float] = defaultdict(float)
++        self._posted_customer_only: dict[int, float] = defaultdict(float)
++        for e in session.exec(select(LedgerEntry)).all():
++            amount = _signed(e)
++            if e.account_id is not None:
++                self._posted_by_account[e.account_id] += amount
++            elif e.group_id is not None:
++                self._posted_group_only[e.group_id] += amount
++            elif e.customer_id is not None:
++                self._posted_customer_only[e.customer_id] += amount
++            # An entry with no owner at all belongs to nobody and is left out
++            # of every balance, rather than being quietly attached to whatever
++            # scope happened to be asking.
++
++        self._members: dict[int, list[Account]] = defaultdict(list)
++        self._owned_directly: dict[int, list[Account]] = defaultdict(list)
++        for a in self._accounts:
++            if a.group_id is not None:
++                self._members[a.group_id].append(a)
++            elif a.customer_id is not None:
++                # Grouped accounts roll up through their GROUP (which rolls up
++                # to its representative), never also through their own
++                # customer — that would be the same double count again.
++                self._owned_directly[a.customer_id].append(a)
++
++        self._pending_cache: dict[int, float] = {}
++
++    # ------------------------------------------------------------- accounts
++    def account_posted(self, account: Account) -> float:
++        return self._posted_by_account.get(account.id, 0.0)
++
++    def account_pending(self, account: Account) -> float:
++        """Accrued but not yet invoiced, at this account's effective rate."""
++        if account.id not in self._pending_cache:
++            group = self._groups.get(account.group_id) if account.group_id else None
++            mode = effective_billing_mode(self.session, account, group)
++            billable_gb = billable_bytes(account, mode) / GB
++            self._pending_cache[account.id] = round(billable_gb * effective_rate(self.session, account, group), 2)
++        return self._pending_cache[account.id]
++
++    def account_net(self, account: Account) -> float:
++        return round(self.account_posted(account) + self.account_pending(account), 2)
++
++    # --------------------------------------------------------------- groups
++    def group_members(self, group: Group) -> list[Account]:
++        return self._members.get(group.id, [])
++
++    def group_posted(self, group: Group) -> float:
++        members = sum(self.account_posted(a) for a in self.group_members(group))
++        return round(members + self._posted_group_only.get(group.id, 0.0), 2)
++
++    def group_pending(self, group: Group) -> float:
++        return round(sum(self.account_pending(a) for a in self.group_members(group)), 2)
++
++    def group_net(self, group: Group) -> float:
++        return round(self.group_posted(group) + self.group_pending(group), 2)
++
++    # ------------------------------------------------------------ customers
++    def customer_accounts(self, customer: Customer) -> list[Account]:
++        """Accounts this customer pays for directly (not via a group)."""
++        return self._owned_directly.get(customer.id, [])
++
++    def represented_groups(self, customer: Customer) -> list[Group]:
++        return [g for g in self._groups.values() if g.representative_customer_id == customer.id]
++
++    def customer_posted(self, customer: Customer) -> float:
++        total = sum(self.account_posted(a) for a in self.customer_accounts(customer))
++        total += sum(self.group_posted(g) for g in self.represented_groups(customer))
++        total += self._posted_customer_only.get(customer.id, 0.0)
++        return round(total, 2)
++
++    def customer_pending(self, customer: Customer) -> float:
++        total = sum(self.account_pending(a) for a in self.customer_accounts(customer))
++        total += sum(self.group_pending(g) for g in self.represented_groups(customer))
++        return round(total, 2)
++
++    def customer_net(self, customer: Customer) -> float:
++        return round(self.customer_posted(customer) + self.customer_pending(customer), 2)
++
++
++def account_posted_balance(session: Session, account_id: int) -> float:
++    """One account's posted balance, read directly — for the settle endpoints,
++    which need this mid-transaction and shouldn't pay for a whole MoneyBook."""
++    entries = session.exec(select(LedgerEntry).where(LedgerEntry.account_id == account_id)).all()
++    return sum(_signed(e) for e in entries)
++
++
++def group_only_posted_balance(session: Session, group_id: int) -> float:
++    """The part of a group's posted balance that belongs to the group itself
++    rather than to any one member (a setup fee, an adjustment). Settling a
++    group and marking it paid has to clear this too, or "paid in full" would
++    leave the group still owing money it had no member to attribute it to."""
+     entries = session.exec(
+-        select(LedgerEntry).where(
+-            or_(
+-                LedgerEntry.account_id == account.id,
+-                and_(
+-                    LedgerEntry.customer_id == account.customer_id,
+-                    LedgerEntry.account_id.is_(None),
+-                    LedgerEntry.group_id.is_(None),
+-                ),
+-            )
+-        )
++        select(LedgerEntry).where(LedgerEntry.group_id == group_id, LedgerEntry.account_id.is_(None))
+     ).all()
+-    charge = sum(e.amount for e in entries if e.type == LedgerType.charge)
+-    credit = sum(e.amount for e in entries if e.type == LedgerType.credit)
+-    return charge - credit
++    return sum(_signed(e) for e in entries)
+ 
+ 
+ GB = 1024**3
+@@ -168,14 +257,19 @@ MIN_USAGE_SAMPLE_DAYS = 3.0
+ FULL_CONFIDENCE_DAYS = 30.0
+ 
+ 
+-def enrich_accounts(session: Session, accounts: list[Account]) -> list:
++def enrich_accounts(session: Session, accounts: list[Account], book: Optional[MoneyBook] = None) -> list:
+     """Builds the AccountRow shape (balance, effective rate, monthly-average
+     usage, etc.) shared by every endpoint that lists accounts — accounts.py's
+     own list/detail routes, and customers.py/groups.py's account sub-lists —
+     so all of them agree on the same resolved numbers instead of each screen
+-    computing (or failing to compute) its own version."""
++    computing (or failing to compute) its own version.
++
++    Pass an existing `book` when the caller already built one (a group page
++    also needs the group's own totals), so the rows and the header total come
++    from the same snapshot."""
+     from app.schemas import AccountRead, AccountRow  # local import: schemas imports nothing from here, avoids a cycle
+ 
++    book = book or MoneyBook(session)
+     customers = {c.id: c for c in session.exec(select(Customer)).all()}
+     groups = {g.id: g for g in session.exec(select(Group)).all()}
+ 
+@@ -207,16 +301,11 @@ def enrich_accounts(session: Session, accounts: list[Account]) -> list:
+         group = groups.get(a.group_id) if a.group_id else None
+ 
+         eff_mode = effective_billing_mode(session, a, group)
+-        # Unbilled preview for THIS account specifically — same shape as
+-        # groups.py's _invoice_lines. Computed for every account regardless
+-        # of billing_mode: this is only an ESTIMATE, never posted to the
+-        # ledger by itself — a prepay account still only owes real money once
+-        # the operator explicitly charges it (invoice, adjust, reset,
+-        # settle), same as before. See services.billable_bytes: payg bills
+-        # what was USED, prepay bills the PACKAGE SIZE itself.
+-        billable_gb = billable_bytes(a, eff_mode) / (1024**3)
+-        pending = round(billable_gb * effective_rate(session, a, group), 2)
+-        balance = round(account_scoped_balance(session, a), 2)
++        # All three come from the one MoneyBook snapshot — see its docstring
++        # for why posted/pending/net are defined the way they are, and why
++        # every screen must read them from here rather than re-deriving.
++        pending = book.account_pending(a)
++        balance = round(book.account_posted(a), 2)
+ 
+         rows.append(
+             AccountRow(
+diff --git a/frontend/src/lib/types.ts b/frontend/src/lib/types.ts
+index 83a6362..df6b27e 100644
+--- a/frontend/src/lib/types.ts
++++ b/frontend/src/lib/types.ts
+@@ -12,7 +12,11 @@ export interface Customer {
+ }
+ 
+ export interface CustomerWithBalance extends Customer {
++  // POSTED only — roll-up of the accounts they own plus the groups they
++  // represent. Prefer net_owed for display.
+   balance: number
++  // What they owe right now, including usage not yet invoiced.
++  net_owed: number
+   account_count: number
+   // Groups this customer is the billing representative for (computed
+   // server-side from Group rows, not the manual is_group_rep flag).
+@@ -31,7 +35,13 @@ export interface Group {
+ }
+ 
+ export interface GroupWithBalance extends Group {
++  // POSTED only — roll-up of this group's members plus any group-level entry
++  // not tied to one member. Prefer net_owed for display.
+   balance: number
++  // balance + pending_amount: what the group owes right now, and exactly the
++  // sum of its members' own net_owed — guaranteed to reconcile with the
++  // member rows shown underneath it.
++  net_owed: number
+   account_count: number
+   // Marzban's own used_traffic counter, summed — NOT what drives billing.
+   total_used_traffic: number
+diff --git a/frontend/src/pages/AccountsPage.tsx b/frontend/src/pages/AccountsPage.tsx
+index 24fb7f7..ccdbc0e 100644
+--- a/frontend/src/pages/AccountsPage.tsx
++++ b/frontend/src/pages/AccountsPage.tsx
+@@ -6,6 +6,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
+ import { Badge } from '@/components/ui/badge'
+ import { Input } from '@/components/ui/input'
+ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
++import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+ import { SortableHeader, nextSort, type SortState } from '@/components/ui/sortable-header'
+ import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
+ import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
+@@ -311,28 +312,41 @@ function AccountTableRow({
+       </TableCell>
+       <TableCell className="text-right">
+         {/* ONE number: what they owe right now (posted debt + not-yet-invoiced
+-            usage, netted). Showing those two parts as separate competing
+-            figures made an account that had just been paid off still read as
+-            owing the full unbilled amount. "settled" rather than a bare dash
+-            for zero — a dash reads as "no data". */}
++            usage, netted). "settled" rather than a bare dash for zero — a dash
++            reads as "no data". The uninvoiced part is NOT printed alongside it:
++            on an account that has already paid, "243,916 not invoiced yet"
++            under "13,916 owed" reads as a contradiction, because in isolation
++            it omits the payment that cancels most of it. The full arithmetic
++            lives in the tooltip, where it always reconciles. */}
+         <span className="flex flex-col items-end gap-0.5">
+-          <Money amount={a.net_owed} zero="settled" className="text-xs" />
+-          {a.pending_amount > 0 && (
+-            <span className="flex items-center gap-2">
+-              <span className="text-[11px] text-muted-foreground">
+-                {formatToman(a.pending_amount)} not invoiced yet
++          <Tooltip>
++            <TooltipTrigger asChild>
++              <span className="cursor-help">
++                <Money amount={a.net_owed} zero="settled" className="text-xs" />
+               </span>
+-              {/* Only standalone accounts settle individually — a grouped
+-                  account's pending is settled via its group's own button. */}
+-              {a.group_id === null && (
+-                <SettleAccountButton
+-                  accountId={a.id}
+-                  username={a.marzban_username}
+-                  amount={a.pending_amount}
+-                  currentBalance={a.payer_balance}
+-                />
+-              )}
+-            </span>
++            </TooltipTrigger>
++            <TooltipContent>
++              <span className="flex flex-col gap-0.5 text-xs tabular-nums">
++                <span>{formatToman(a.pending_amount)} usage not invoiced yet</span>
++                <span>
++                  {a.payer_balance >= 0 ? '+ ' : '− '}
++                  {formatToman(Math.abs(a.payer_balance))} {a.payer_balance >= 0 ? 'invoiced, unpaid' : 'already paid'}
++                </span>
++                <span className="border-t border-border/50 pt-0.5 font-medium">
++                  = {formatToman(a.net_owed)} owed
++                </span>
++              </span>
++            </TooltipContent>
++          </Tooltip>
++          {/* Only standalone accounts settle individually — a grouped
++              account's pending is settled via its group's own button. */}
++          {a.pending_amount > 0 && a.group_id === null && (
++            <SettleAccountButton
++              accountId={a.id}
++              username={a.marzban_username}
++              amount={a.pending_amount}
++              currentBalance={a.payer_balance}
++            />
+           )}
+         </span>
+       </TableCell>
+diff --git a/frontend/src/pages/CustomerDetailPage.tsx b/frontend/src/pages/CustomerDetailPage.tsx
+index fa11e17..4c2e382 100644
+--- a/frontend/src/pages/CustomerDetailPage.tsx
++++ b/frontend/src/pages/CustomerDetailPage.tsx
+@@ -40,10 +40,19 @@ export function CustomerDetailPage() {
+         </div>
+         <div className="flex items-center gap-3">
+           <div className="text-right">
+-            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Balance</p>
+-            <Money amount={customer.balance} zero="settled" className="text-sm" />
++            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Owes now</p>
++            <Money amount={customer.net_owed} zero="settled" className="text-sm" />
+           </div>
+-          <LedgerActionDialog customerId={customerId} currentBalance={customer.balance} />
++          {/* When this customer pays for exactly one account, attribute the
++              entry to it — otherwise the money sits at customer level while
++              the account row still reads as owing. With several accounts
++              there's no honest way to guess the split, so it stays
++              customer-level and only the header figure moves. */}
++          <LedgerActionDialog
++            customerId={customerId}
++            accountId={accountsQuery.data?.length === 1 ? accountsQuery.data[0].id : undefined}
++            currentBalance={customer.net_owed}
++          />
+           <NewAccountDialog defaultCustomerId={customerId} />
+         </div>
+       </div>
+diff --git a/frontend/src/pages/CustomersPage.tsx b/frontend/src/pages/CustomersPage.tsx
+index f870b4c..298d659 100644
+--- a/frontend/src/pages/CustomersPage.tsx
++++ b/frontend/src/pages/CustomersPage.tsx
+@@ -46,7 +46,7 @@ export function CustomersPage() {
+               <TableHead>Contact</TableHead>
+               <TableHead>Represents</TableHead>
+               <TableHead className="text-right">Accounts</TableHead>
+-              <TableHead className="text-right">Balance</TableHead>
++              <TableHead className="text-right">Owes now</TableHead>
+             </TableRow>
+           </TableHeader>
+           <TableBody>
+@@ -83,7 +83,7 @@ export function CustomersPage() {
+                 </TableCell>
+                 <TableCell className="text-right tabular-nums">{c.account_count}</TableCell>
+                 <TableCell className="text-right">
+-                  <Money amount={c.balance} zero="settled" className="text-xs" />
++                  <Money amount={c.net_owed} zero="settled" className="text-xs" />
+                 </TableCell>
+               </TableRow>
+             ))}
+diff --git a/frontend/src/pages/GroupDetailPage.tsx b/frontend/src/pages/GroupDetailPage.tsx
+index 21021a4..30c891d 100644
+--- a/frontend/src/pages/GroupDetailPage.tsx
++++ b/frontend/src/pages/GroupDetailPage.tsx
+@@ -93,7 +93,7 @@ export function GroupDetailPage() {
+         </div>
+         <div className="flex items-center gap-2">
+           <GroupSettingsDialog group={group} />
+-          <LedgerActionDialog groupId={groupId} currentBalance={group.balance} />
++          <LedgerActionDialog groupId={groupId} currentBalance={group.net_owed} />
+           <NewAccountDialog defaultGroupId={groupId} />
+           {group.billing_mode === 'payg' && <ResetGroupCycleDialog groupId={groupId} />}
+           <SettleGroupDialog groupId={groupId} currentBalance={group.balance} />
+@@ -105,17 +105,24 @@ export function GroupDetailPage() {
+           label="Usage this cycle"
+           value={`${(group.current_cycle_used_bytes / 1024 ** 3).toFixed(2)} GB`}
+         />
++        {/* ONE money figure, and it is exactly the sum of the Owes now column
++            below (guaranteed server-side — see MoneyBook). Showing "pending"
++            and "settled balance" as two separate cards is what let this page
++            claim the group was 270,000 in credit while every member row under
++            it still owed money. */}
+         <StatCard
+-          label="Pending (not yet charged)"
+-          value={formatToman(group.pending_amount)}
+-          tone={group.pending_amount > 0 ? 'warning' : 'default'}
+-        />
+-        <StatCard
+-          label="Settled balance"
++          label="Owes now"
+           value={
+-            group.balance === 0 ? 'settled' : `${formatToman(Math.abs(group.balance))}${group.balance < 0 ? ' cr' : ''}`
++            group.net_owed === 0
++              ? 'settled'
++              : `${formatToman(Math.abs(group.net_owed))}${group.net_owed < 0 ? ' cr' : ''}`
+           }
+-          tone={group.balance > 0 ? 'destructive' : group.balance < 0 ? 'credit' : 'success'}
++          tone={group.net_owed > 0 ? 'destructive' : group.net_owed < 0 ? 'credit' : 'success'}
++        />
++        <StatCard
++          label="Not invoiced yet"
++          value={formatToman(group.pending_amount)}
++          tone={group.pending_amount > 0 ? 'warning' : 'default'}
+         />
+         <StatCard label="Members" value={group.account_count} />
+       </div>
+diff --git a/frontend/src/pages/GroupsPage.tsx b/frontend/src/pages/GroupsPage.tsx
+index 49a11bf..acf9874 100644
+--- a/frontend/src/pages/GroupsPage.tsx
++++ b/frontend/src/pages/GroupsPage.tsx
+@@ -34,8 +34,8 @@ export function GroupsPage() {
+               <TableHead className="text-right">Members</TableHead>
+               <TableHead>Usage this cycle</TableHead>
+               <TableHead className="text-right">Rate</TableHead>
+-              <TableHead className="text-right">Pending</TableHead>
+-              <TableHead className="text-right">Balance</TableHead>
++              <TableHead className="text-right">Not invoiced</TableHead>
++              <TableHead className="text-right">Owes now</TableHead>
+             </TableRow>
+           </TableHeader>
+           <TableBody>
+@@ -93,7 +93,7 @@ export function GroupsPage() {
+                   <Money amount={g.pending_amount} kind="pending" className="text-xs" />
+                 </TableCell>
+                 <TableCell className="text-right">
+-                  <Money amount={g.balance} zero="settled" className="text-xs" />
++                  <Money amount={g.net_owed} zero="settled" className="text-xs" />
+                 </TableCell>
+               </TableRow>
+             ))}

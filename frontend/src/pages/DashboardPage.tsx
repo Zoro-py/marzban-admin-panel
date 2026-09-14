@@ -13,6 +13,7 @@ import {
   UserX,
   Wallet,
 } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { reportsApi } from '@/lib/api'
 import { StatCard } from '@/components/StatCard'
 import { Money } from '@/components/Money'
@@ -29,12 +30,22 @@ export function DashboardPage() {
     document.title = 'Shiraze | Dashboard'
   }, [])
 
-  const { data, isLoading } = useQuery({ queryKey: ['reports', 'summary'], queryFn: reportsApi.summary })
+  const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['reports', 'summary'], queryFn: reportsApi.summary })
   const financeQuery = useQuery({ queryKey: ['reports', 'finance'], queryFn: reportsApi.finance })
   const openAccount = useOpenAccountInspector()
 
-  if (isLoading || !data) {
+  if (isLoading) {
     return <p className="text-xs text-muted-foreground">Loading…</p>
+  }
+  if (isError || !data) {
+    // Without this the failed query left "Loading…" on screen forever: the
+    // operator's first screen looked like a slow network, not a broken one.
+    return (
+      <div className="space-y-2 text-xs">
+        <p className="text-muted-foreground">Couldn't load the dashboard.</p>
+        <Button size="sm" variant="outline" onClick={() => refetch()}>Try again</Button>
+      </div>
+    )
   }
 
   const fin = financeQuery.data

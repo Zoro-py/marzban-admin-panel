@@ -356,7 +356,14 @@ function ShopUsers() {
               <TableCell>
                 <Checkbox
                   checked={user.is_blocked}
-                  onCheckedChange={(checked) => block.mutate({ id: user.id, blocked: Boolean(checked) })}
+                  onCheckedChange={(checked) => {
+                    // One stray tap in the wrong row otherwise cuts a paying
+                    // customer off the shop with no undo and no notice.
+                    const who = user.display_name ?? String(user.telegram_id)
+                    const verb = checked ? 'Block' : 'Unblock'
+                    if (!window.confirm(`${verb} ${who}?`)) return
+                    block.mutate({ id: user.id, blocked: Boolean(checked) })
+                  }}
                   aria-label={`Block ${user.display_name ?? user.telegram_id}`}
                 />
               </TableCell>
@@ -441,9 +448,16 @@ function ShopSettingsForm() {
   const [draft, setDraft] = React.useState<Partial<ShopSettings>>({})
 
   // Seeded from the server exactly once per load, then owned locally — so a
-  // background refetch can't overwrite half-typed input mid-edit.
+  // background refetch can't overwrite half-typed input mid-edit. The effect
+  // alone did not do that: approving a payment invalidates the whole ['shop']
+  // key, the settings refetch re-ran this, and a half-typed card number was
+  // replaced by the server's copy with no warning.
+  const seeded = React.useRef(false)
   React.useEffect(() => {
-    if (settingsQuery.data) setDraft(settingsQuery.data)
+    if (settingsQuery.data && !seeded.current) {
+      setDraft(settingsQuery.data)
+      seeded.current = true
+    }
   }, [settingsQuery.data])
 
   const save = useMutation({

@@ -1,0 +1,233 @@
+
+  src\main.tsx:5:import { Toaster } from 'sonner'
+  src\main.tsx:6:import './index.css'
+  src\main.tsx:7:import App from './App.tsx'
+  src\main.tsx:8:import { AuthProvider } from './lib/auth.tsx'
+  src\main.tsx:9:import { ThemeProvider } from './lib/theme.tsx'
+> src\main.tsx:10:import { TooltipProvider } from './components/ui/tooltip.tsx'
+  src\main.tsx:11:
+  src\main.tsx:12:const queryClient = new QueryClient({
+  src\main.tsx:13:  defaultOptions: {
+  src\main.tsx:14:    queries: {
+  src\main.tsx:15:      retry: 1,
+  src\main.tsx:20:
+  src\main.tsx:21:createRoot(document.getElementById('root')!).render(
+  src\main.tsx:22:  <StrictMode>
+  src\main.tsx:23:    <QueryClientProvider client={queryClient}>
+  src\main.tsx:24:      <ThemeProvider>
+> src\main.tsx:25:        <TooltipProvider delayDuration={200}>
+  src\main.tsx:26:          <AuthProvider>
+  src\main.tsx:27:            <BrowserRouter>
+  src\main.tsx:28:              <App />
+  src\main.tsx:29:              <Toaster richColors position="top-right" />
+  src\main.tsx:30:            </BrowserRouter>
+  src\main.tsx:31:          </AuthProvider>
+> src\main.tsx:32:        </TooltipProvider>
+  src\main.tsx:33:      </ThemeProvider>
+  src\main.tsx:34:    </QueryClientProvider>
+  src\main.tsx:35:  </StrictMode>,
+  src\main.tsx:36:)
+  src\components\dashboard\OnlineTrendChart.tsx:120:                  <text x={WIDTH - PAD_RIGHT} y={HEIGHT - 5} textAnchor="end" className="fill-muted-foreground text-[9px]">
+  src\components\dashboard\OnlineTrendChart.tsx:121:                    {rangeLabel(points[points.length - 1].recorded_at, range)}
+  src\components\dashboard\OnlineTrendChart.tsx:122:                  </text>
+  src\components\dashboard\OnlineTrendChart.tsx:123:                </>
+  src\components\dashboard\OnlineTrendChart.tsx:124:              )}
+> src\components\dashboard\OnlineTrendChart.tsx:125:              {/* full-width hit strip so hovering anywhere near a point shows its tooltip */}
+  src\components\dashboard\OnlineTrendChart.tsx:126:              <rect
+  src\components\dashboard\OnlineTrendChart.tsx:127:                x={PAD_LEFT}
+  src\components\dashboard\OnlineTrendChart.tsx:128:                y={PAD_TOP}
+  src\components\dashboard\OnlineTrendChart.tsx:129:                width={plotW}
+  src\components\dashboard\OnlineTrendChart.tsx:130:                height={plotH}
+  src\components\finance\RevenueChart.tsx:15:const PAD_BOTTOM = 22
+  src\components\finance\RevenueChart.tsx:16:
+  src\components\finance\RevenueChart.tsx:17:/* Categorical slots 1+2 of the validated reference palette, stepped per
+  src\components\finance\RevenueChart.tsx:18: * surface (light/dark validated separately — CVD ΔE 73.6/69.8, both pass).
+  src\components\finance\RevenueChart.tsx:19: * Light-mode aqua is < 3:1 vs the surface, so the relief rule applies: the
+> src\components\finance\RevenueChart.tsx:20: * legend, the per-day tooltip, and the transactions table below the chart
+  src\components\finance\RevenueChart.tsx:21: * all carry the values without relying on the fill color. */
+  src\components\finance\RevenueChart.tsx:22:const SERIES = {
+  src\components\finance\RevenueChart.tsx:23:  light: { collected: '#2a78d6', charged: '#1baf7a' },
+  src\components\finance\RevenueChart.tsx:24:  dark: { collected: '#3987e5', charged: '#199e70' },
+  src\components\finance\RevenueChart.tsx:25:}
+  src\components\layout\AppShell.tsx:17:import { toast } from 'sonner'
+  src\components\layout\AppShell.tsx:18:import { useAuth } from '@/lib/auth'
+  src\components\layout\AppShell.tsx:19:import { useTheme } from '@/lib/theme'
+  src\components\layout\AppShell.tsx:20:import { syncApi, apiErrorMessage } from '@/lib/api'
+  src\components\layout\AppShell.tsx:21:import { Button } from '@/components/ui/button'
+> src\components\layout\AppShell.tsx:22:import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+  src\components\layout\AppShell.tsx:23:import { SettingsDialog } from '@/components/SettingsDialog'
+  src\components\layout\AppShell.tsx:24:import { CommandPalette } from '@/components/CommandPalette'
+  src\components\layout\AppShell.tsx:25:import { AccountInspector } from '@/components/accounts/AccountInspector'
+  src\components\layout\AppShell.tsx:26:import { cn, formatAgo } from '@/lib/utils'
+  src\components\layout\AppShell.tsx:27:
+  src\components\layout\AppShell.tsx:157:              </span>
+  src\components\layout\AppShell.tsx:158:            </span>
+  src\components\layout\AppShell.tsx:159:          </button>
+  src\components\layout\AppShell.tsx:160:          <SettingsDialog />
+  src\components\layout\AppShell.tsx:161:          <div className="flex items-center justify-between px-1">
+> src\components\layout\AppShell.tsx:162:            <Tooltip>
+> src\components\layout\AppShell.tsx:163:              <TooltipTrigger asChild>
+  src\components\layout\AppShell.tsx:164:                <Button
+  src\components\layout\AppShell.tsx:165:                  size="icon-sm"
+  src\components\layout\AppShell.tsx:166:                  variant="ghost"
+  src\components\layout\AppShell.tsx:167:                  onClick={() => setTheme(resolved === 'dark' ? 'light' : 'dark')}
+  src\components\layout\AppShell.tsx:168:                  aria-label="Toggle theme"
+  src\components\layout\AppShell.tsx:169:                >
+  src\components\layout\AppShell.tsx:170:                  {resolved === 'dark' ? <Sun /> : <Moon />}
+  src\components\layout\AppShell.tsx:171:                </Button>
+> src\components\layout\AppShell.tsx:172:              </TooltipTrigger>
+> src\components\layout\AppShell.tsx:173:              <TooltipContent>Switch to {resolved === 'dark' ? 'light' : 'dark'} theme</TooltipContent>
+> src\components\layout\AppShell.tsx:174:            </Tooltip>
+  src\components\layout\AppShell.tsx:175:            <Button size="sm" variant="ghost" className="gap-1.5 text-xs" onClick={logout}>
+  src\components\layout\AppShell.tsx:176:              <LogOut className="h-3.5 w-3.5" />
+  src\components\layout\AppShell.tsx:177:              Log out
+  src\components\layout\AppShell.tsx:178:            </Button>
+  src\components\layout\AppShell.tsx:179:          </div>
+  src\components\ui\tooltip.tsx:1:import * as React from 'react'
+> src\components\ui\tooltip.tsx:2:import * as TooltipPrimitive from '@radix-ui/react-tooltip'
+  src\components\ui\tooltip.tsx:3:import { cn } from '@/lib/utils'
+  src\components\ui\tooltip.tsx:4:
+> src\components\ui\tooltip.tsx:5:const TooltipProvider = TooltipPrimitive.Provider
+> src\components\ui\tooltip.tsx:6:const Tooltip = TooltipPrimitive.Root
+> src\components\ui\tooltip.tsx:7:const TooltipTrigger = TooltipPrimitive.Trigger
+  src\components\ui\tooltip.tsx:8:
+> src\components\ui\tooltip.tsx:9:const TooltipContent = React.forwardRef<
+> src\components\ui\tooltip.tsx:10:  React.ElementRef<typeof TooltipPrimitive.Content>,
+> src\components\ui\tooltip.tsx:11:  React.ComponentPropsWithoutRef<typeof TooltipPrimitive.Content>
+  src\components\ui\tooltip.tsx:12:>(({ className, sideOffset = 6, ...props }, ref) => (
+> src\components\ui\tooltip.tsx:13:  <TooltipPrimitive.Portal>
+> src\components\ui\tooltip.tsx:14:    <TooltipPrimitive.Content
+  src\components\ui\tooltip.tsx:15:      ref={ref}
+  src\components\ui\tooltip.tsx:16:      sideOffset={sideOffset}
+  src\components\ui\tooltip.tsx:17:      className={cn(
+  src\components\ui\tooltip.tsx:18:        'z-50 max-w-xs rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-md data-[state=delayed-open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=delayed-open]:fade-in-0',
+  src\components\ui\tooltip.tsx:19:        className,
+  src\components\ui\tooltip.tsx:20:      )}
+  src\components\ui\tooltip.tsx:21:      {...props}
+  src\components\ui\tooltip.tsx:22:    />
+> src\components\ui\tooltip.tsx:23:  </TooltipPrimitive.Portal>
+  src\components\ui\tooltip.tsx:24:))
+> src\components\ui\tooltip.tsx:25:TooltipContent.displayName = TooltipPrimitive.Content.displayName
+  src\components\ui\tooltip.tsx:26:
+> src\components\ui\tooltip.tsx:27:export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider }
+  src\pages\AccountsPage.tsx:4:import { accountsApi, groupsApi } from '@/lib/api'
+  src\pages\AccountsPage.tsx:5:import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+  src\pages\AccountsPage.tsx:6:import { Badge } from '@/components/ui/badge'
+  src\pages\AccountsPage.tsx:7:import { Input } from '@/components/ui/input'
+  src\pages\AccountsPage.tsx:8:import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+> src\pages\AccountsPage.tsx:9:import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+  src\pages\AccountsPage.tsx:10:import { SortableHeader, nextSort, type SortState } from '@/components/ui/sortable-header'
+  src\pages\AccountsPage.tsx:11:import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
+  src\pages\AccountsPage.tsx:12:import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
+  src\pages\AccountsPage.tsx:13:import { AccountsBoard } from '@/components/accounts/AccountsBoard'
+  src\pages\AccountsPage.tsx:14:import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
+  src\pages\AccountsPage.tsx:327:            usage, netted). "settled" rather than a bare dash for zero — a dash
+  src\pages\AccountsPage.tsx:328:            reads as "no data". The uninvoiced part is NOT printed alongside it:
+  src\pages\AccountsPage.tsx:329:            on an account that has already paid, "243,916 not invoiced yet"
+  src\pages\AccountsPage.tsx:330:            under "13,916 owed" reads as a contradiction, because in isolation
+  src\pages\AccountsPage.tsx:331:            it omits the payment that cancels most of it. The full arithmetic
+> src\pages\AccountsPage.tsx:332:            lives in the tooltip, where it always reconciles. */}
+  src\pages\AccountsPage.tsx:333:        <span className="flex flex-col items-end gap-0.5">
+> src\pages\AccountsPage.tsx:334:          <Tooltip>
+> src\pages\AccountsPage.tsx:335:            <TooltipTrigger asChild>
+  src\pages\AccountsPage.tsx:336:              <span className="cursor-help">
+  src\pages\AccountsPage.tsx:337:                <Money amount={a.net_owed} zero="settled" className="text-xs" />
+  src\pages\AccountsPage.tsx:338:              </span>
+> src\pages\AccountsPage.tsx:339:            </TooltipTrigger>
+> src\pages\AccountsPage.tsx:340:            <TooltipContent>
+  src\pages\AccountsPage.tsx:341:              <span className="flex flex-col gap-0.5 text-xs tabular-nums">
+  src\pages\AccountsPage.tsx:342:                <span>{formatToman(a.pending_amount)} usage not invoiced yet</span>
+  src\pages\AccountsPage.tsx:343:                <span>
+  src\pages\AccountsPage.tsx:344:                  {a.payer_balance >= 0 ? '+ ' : '− '}
+  src\pages\AccountsPage.tsx:345:                  {formatToman(Math.abs(a.payer_balance))} {a.payer_balance >= 0 ? 'invoiced, unpaid' : 'already paid'}
+  src\pages\AccountsPage.tsx:346:                </span>
+  src\pages\AccountsPage.tsx:347:                <span className="border-t border-border/50 pt-0.5 font-medium">
+  src\pages\AccountsPage.tsx:348:                  = {formatToman(a.net_owed)} owed
+  src\pages\AccountsPage.tsx:349:                </span>
+  src\pages\AccountsPage.tsx:350:              </span>
+> src\pages\AccountsPage.tsx:351:            </TooltipContent>
+> src\pages\AccountsPage.tsx:352:          </Tooltip>
+  src\pages\AccountsPage.tsx:353:          {/* Only standalone accounts settle individually — a grouped
+  src\pages\AccountsPage.tsx:354:              account's pending is settled via its group's own button. */}
+  src\pages\AccountsPage.tsx:355:          {a.pending_amount > 0 && a.group_id === null && (
+  src\pages\AccountsPage.tsx:356:            <SettleAccountButton
+  src\pages\AccountsPage.tsx:357:              accountId={a.id}
+  src\pages\GroupDetailPage.tsx:6:import { groupsApi, ledgerApi, apiErrorMessage } from '@/lib/api'
+  src\pages\GroupDetailPage.tsx:7:import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+  src\pages\GroupDetailPage.tsx:8:import { Badge } from '@/components/ui/badge'
+  src\pages\GroupDetailPage.tsx:9:import { Button } from '@/components/ui/button'
+  src\pages\GroupDetailPage.tsx:10:import { Checkbox } from '@/components/ui/checkbox'
+> src\pages\GroupDetailPage.tsx:11:import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+  src\pages\GroupDetailPage.tsx:12:import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
+  src\pages\GroupDetailPage.tsx:13:import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
+  src\pages\GroupDetailPage.tsx:14:import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
+  src\pages\GroupDetailPage.tsx:15:import { SettleGroupDialog } from '@/components/groups/SettleGroupDialog'
+  src\pages\GroupDetailPage.tsx:16:import { ResetGroupCycleDialog } from '@/components/groups/ResetGroupCycleDialog'
+  src\pages\GroupDetailPage.tsx:224:              <TableHead>Account</TableHead>
+  src\pages\GroupDetailPage.tsx:225:              <TableHead className="hidden sm:table-cell">Usage (Marzban)</TableHead>
+  src\pages\GroupDetailPage.tsx:226:              <TableHead className="hidden md:table-cell">
+  src\pages\GroupDetailPage.tsx:227:                <span className="flex items-center gap-1">
+  src\pages\GroupDetailPage.tsx:228:                  Billable this cycle
+> src\pages\GroupDetailPage.tsx:229:                  <Tooltip>
+> src\pages\GroupDetailPage.tsx:230:                    <TooltipTrigger asChild>
+  src\pages\GroupDetailPage.tsx:231:                      <Info className="h-3 w-3 cursor-help" />
+> src\pages\GroupDetailPage.tsx:232:                    </TooltipTrigger>
+> src\pages\GroupDetailPage.tsx:233:                    <TooltipContent className="max-w-xs">
+  src\pages\GroupDetailPage.tsx:234:                      Usage since the group's last settle, at this account's effective rate — this feeds the Pending
+  src\pages\GroupDetailPage.tsx:235:                      figure above. Can differ from "Usage" if Marzban has reset this account's quota since.
+> src\pages\GroupDetailPage.tsx:236:                    </TooltipContent>
+> src\pages\GroupDetailPage.tsx:237:                  </Tooltip>
+  src\pages\GroupDetailPage.tsx:238:                </span>
+  src\pages\GroupDetailPage.tsx:239:              </TableHead>
+  src\pages\GroupDetailPage.tsx:240:              <TableHead>
+  src\pages\GroupDetailPage.tsx:241:                <span className="flex items-center gap-1">
+  src\pages\GroupDetailPage.tsx:242:                  Owes now
+> src\pages\GroupDetailPage.tsx:243:                  <Tooltip>
+> src\pages\GroupDetailPage.tsx:244:                    <TooltipTrigger asChild>
+  src\pages\GroupDetailPage.tsx:245:                      <Info className="h-3 w-3 cursor-help" />
+> src\pages\GroupDetailPage.tsx:246:                    </TooltipTrigger>
+> src\pages\GroupDetailPage.tsx:247:                    <TooltipContent className="max-w-xs">
+  src\pages\GroupDetailPage.tsx:248:                      What this member owes right now — their own posted charges and payments, plus their share of
+  src\pages\GroupDetailPage.tsx:249:                      the usage above that hasn't been invoiced yet. Settling the whole group charges everyone
+  src\pages\GroupDetailPage.tsx:250:                      together; recording a payment on one account only affects that account.
+> src\pages\GroupDetailPage.tsx:251:                    </TooltipContent>
+> src\pages\GroupDetailPage.tsx:252:                  </Tooltip>
+  src\pages\GroupDetailPage.tsx:253:                </span>
+  src\pages\GroupDetailPage.tsx:254:              </TableHead>
+  src\pages\GroupDetailPage.tsx:255:              <TableHead className="hidden lg:table-cell">Expires</TableHead>
+  src\pages\GroupDetailPage.tsx:256:            </TableRow>
+  src\pages\GroupDetailPage.tsx:257:          </TableHeader>
+  src\pages\GroupsPage.tsx:2:import { useQuery } from '@tanstack/react-query'
+  src\pages\GroupsPage.tsx:3:import { Clock } from 'lucide-react'
+  src\pages\GroupsPage.tsx:4:import { groupsApi } from '@/lib/api'
+  src\pages\GroupsPage.tsx:5:import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+  src\pages\GroupsPage.tsx:6:import { Badge } from '@/components/ui/badge'
+> src\pages\GroupsPage.tsx:7:import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+  src\pages\GroupsPage.tsx:8:import { NewGroupDialog } from '@/components/groups/NewGroupDialog'
+  src\pages\GroupsPage.tsx:9:import { Money } from '@/components/Money'
+  src\pages\GroupsPage.tsx:10:import { formatBytes, formatToman } from '@/lib/utils'
+  src\pages\GroupsPage.tsx:11:
+  src\pages\GroupsPage.tsx:12:export function GroupsPage() {
+  src\pages\GroupsPage.tsx:60:              <TableRow key={g.id} className="cursor-pointer" onClick={() => navigate(`/groups/${g.id}`)}>
+  src\pages\GroupsPage.tsx:61:                <TableCell>
+  src\pages\GroupsPage.tsx:62:                  <span className="flex items-center gap-1.5 font-medium">
+  src\pages\GroupsPage.tsx:63:                    {g.name}
+  src\pages\GroupsPage.tsx:64:                    {g.is_due && g.billing_mode === 'payg' && (
+> src\pages\GroupsPage.tsx:65:                      <Tooltip>
+> src\pages\GroupsPage.tsx:66:                        <TooltipTrigger asChild>
+  src\pages\GroupsPage.tsx:67:                          <span>
+  src\pages\GroupsPage.tsx:68:                            <Badge variant="warning" className="gap-1">
+  src\pages\GroupsPage.tsx:69:                              <Clock className="h-3 w-3" /> due
+  src\pages\GroupsPage.tsx:70:                            </Badge>
+  src\pages\GroupsPage.tsx:71:                          </span>
+> src\pages\GroupsPage.tsx:72:                        </TooltipTrigger>
+> src\pages\GroupsPage.tsx:73:                        <TooltipContent>
+  src\pages\GroupsPage.tsx:74:                          Its {g.billing_cycle_days}-day cycle has elapsed — settle it to charge this cycle's usage.
+> src\pages\GroupsPage.tsx:75:                        </TooltipContent>
+> src\pages\GroupsPage.tsx:76:                      </Tooltip>
+  src\pages\GroupsPage.tsx:77:                    )}
+  src\pages\GroupsPage.tsx:78:                  </span>
+  src\pages\GroupsPage.tsx:79:                </TableCell>
+  src\pages\GroupsPage.tsx:80:                <TableCell className="hidden sm:table-cell">
+  src\pages\GroupsPage.tsx:81:                  <Badge variant={g.billing_mode === 'payg' ? 'warning' : 'secondary'}>
+

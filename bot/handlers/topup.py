@@ -95,6 +95,11 @@ async def topup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except (ValueError, AttributeError):
         await query.edit_message_caption(caption="This button is malformed — use /topups instead.")
         return
+    if action not in ("ok", "no"):
+        # Anything else used to fall through to the reject branch, which turns
+        # a garbled button into a decision nobody made.
+        await query.message.reply_text(f"Unrecognised button ({action}) — use /topups instead.")
+        return
 
     outcome = await _decide(topup_id, approve=(action == "ok"))
 

@@ -254,12 +254,16 @@ async def _maybe_settle_payg_cap_hit(session: Session, account: Account, now: da
     amount = round(billable_gb * rate, 2)
 
     charge_note = f"، {amount:g} تومان بابت مصرف این دوره شارژ شد" if amount > 0 else "، چیزی برای شارژ جدید نبود (احتمالاً قبلاً تسویه شده)"
+
+    # The reset comes FIRST. Announcing it beforehand meant that a panel
+    # failure here left the operator with a message saying the account was
+    # unblocked and reset when it was neither.
+    marzban_user = await marzban_client.reset_user(account.marzban_username)
+
     await _notify_admin(
         f"🚫 اکانت «{account.marzban_username}» به سقف حجمش ({account.data_limit / GB:g} گیگ) رسید و بلاک شده بود"
         f"{charge_note} — مصرفش تو Marzban صفر شد تا دوباره وصل بشه."
     )
-
-    marzban_user = await marzban_client.reset_user(account.marzban_username)
 
     if amount > 0:
         session.add(LedgerEntry(

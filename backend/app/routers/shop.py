@@ -34,7 +34,7 @@ import logging
 import secrets
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from sqlmodel import Session, select
 
 from app.auth import require_auth
@@ -224,7 +224,7 @@ def update_shop_user(user_id: int, body: ShopUserUpdate, session: Session = Depe
 
 
 @router.get("/users/{user_id}/wallet", response_model=list[ShopWalletEntryRead])
-def list_wallet_entries(user_id: int, limit: int = 100, session: Session = Depends(get_session)):
+def list_wallet_entries(user_id: int, limit: int = Query(100, ge=1, le=500), session: Session = Depends(get_session)):
     if not session.get(ShopUser, user_id):
         raise HTTPException(404, "Shop user not found")
     return session.exec(

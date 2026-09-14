@@ -188,7 +188,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         session = await _session(update)
     except ShopApiError:
         logger.exception("Could not open a shop session for %s", update.effective_user.id)
-        await update.message.reply_text(texts.generic_error(None))
+        # With the menu: a first-time visitor has never seen a keyboard, so a
+        # bare error leaves them with an empty screen and nothing to tap.
+        await update.message.reply_text(texts.generic_error(None), reply_markup=main_menu(None))
         return
     await _reply(
         update,
@@ -475,7 +477,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     order_id = context.user_data.get(_ORDER_ID)
     volume = context.user_data.get(_PENDING_VOLUME)
 
-    if context.user_data.get(_STATE) != _STATE_AWAITING_RECEIPT or not amount:
+    # `is None`, not falsy: an amount of zero is still a live conversation.
+    if context.user_data.get(_STATE) != _STATE_AWAITING_RECEIPT or amount is None:
         recovered = await _recover_pending_order(update)
         if recovered is None:
             # Genuinely nothing waiting. Says what it needs rather than

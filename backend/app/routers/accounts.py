@@ -2,7 +2,7 @@ import logging
 import time
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -607,7 +607,7 @@ async def adjust_account(account_id: int, body: AccountAdjustRequest, session: S
 
 
 @router.get("/{account_id}/events", response_model=list[AccountEventRead])
-def get_account_events(account_id: int, limit: int = 50, session: Session = Depends(get_session)):
+def get_account_events(account_id: int, limit: int = Query(50, ge=1, le=500), session: Session = Depends(get_session)):
     """The audit trail (adjust/reset/billing/ownership changes) that was being
     written since day one but never exposed — the account inspector's History
     section reads it, merged client-side with this account's ledger entries."""

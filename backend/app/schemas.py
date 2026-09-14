@@ -143,7 +143,9 @@ class AccountCreateRequest(BaseModel):
     rate_per_gb: Optional[float] = Field(default=None, ge=0.0)
 
     expire: Optional[int] = Field(default=None, ge=0, le=2147483647)  # unix timestamp, None = never expires
-    data_limit: Optional[int] = None  # bytes, None = unlimited
+    # 10 PB, i.e. "no sane package is this big": an unbounded byte count here
+    # reaches Marzban and every later usage calculation unchecked.
+    data_limit: Optional[int] = Field(default=None, ge=0, le=10 * 1024 ** 5)  # bytes, None/0 = unlimited
     data_limit_reset_strategy: str = "no_reset"
     status: str = "active"
     note: Optional[str] = None
@@ -169,11 +171,14 @@ class AccountAdjustRequest(BaseModel):
     """One flexible endpoint for the 'کم/زیاد کردن زمان' live action.
     Deltas are relative (use a negative number to reduce); `set_*` fields win if provided."""
 
-    extend_days: Optional[int] = None
-    extend_gb: Optional[float] = None
-    set_expire: Optional[int] = None
-    set_data_limit_gb: Optional[float] = None
-    note: Optional[str] = None
+    # Bounded on both sides: these are typed by hand in a dialog, and a slip
+    # of the keyboard otherwise writes an expiry in the year 40000 or a
+    # package no panel can represent.
+    extend_days: Optional[int] = Field(default=None, ge=-3650, le=3650)
+    extend_gb: Optional[float] = Field(default=None, ge=-10240, le=10240, allow_inf_nan=False)
+    set_expire: Optional[int] = Field(default=None, ge=0, le=2147483647)
+    set_data_limit_gb: Optional[float] = Field(default=None, ge=0, le=10240, allow_inf_nan=False)
+    note: Optional[str] = Field(default=None, max_length=500)
 
 
 class AccountSettleRequest(BaseModel):
@@ -198,8 +203,8 @@ class AccountResetRequest(BaseModel):
     for payg accounts — GET /api/accounts/{id}/invoice — but never posts it
     without the operator confirming/editing it first)."""
 
-    charge_amount: Optional[float] = None
-    note: Optional[str] = None
+    charge_amount: Optional[float] = Field(default=None, ge=0, le=1_000_000_000, allow_inf_nan=False)
+    note: Optional[str] = Field(default=None, max_length=500)
 
 
 class AccountRead(BaseModel):
