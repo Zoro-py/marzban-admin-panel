@@ -120,6 +120,10 @@ function PendingTopups({ query }: { query: ReturnType<typeof useQuery<ShopTopup[
   })
 
   if (query.isLoading) return <Skeleton className="h-40 w-full" />
+  // An error must never render as "No payments waiting": the operator would
+  // read that as nothing to approve while customers who have already paid
+  // sit in the queue.
+  if (query.isError) return <LoadFailed what="pending payments" onRetry={() => query.refetch()} />
   if (!query.data?.length) {
     return (
       <EmptyState
@@ -272,6 +276,7 @@ function ShopUsers() {
   })
 
   if (usersQuery.isLoading) return <Skeleton className="h-40 w-full" />
+  if (usersQuery.isError) return <LoadFailed what="shop customers" onRetry={() => usersQuery.refetch()} />
   if (!usersQuery.data?.length) {
     return <EmptyState title="No shop customers yet" description="Anyone who opens the shop bot appears here." />
   }
@@ -291,7 +296,8 @@ function ShopUsers() {
         {usersQuery.data.map((user: ShopUser) => {
           const raw = adjusting[user.id] ?? ''
           const amount = raw.trim() === '' ? null : Number(raw)
-          const valid = amount !== null && Number.isFinite(amount) && amount !== 0
+          // Whole Toman, never zero: wallet amounts are integers end to end.
+          const valid = amount !== null && Number.isInteger(amount) && amount !== 0
           return (
             <TableRow key={user.id}>
               <TableCell>
@@ -319,7 +325,21 @@ function ShopUsers() {
                     size="sm"
                     variant="outline"
                     disabled={!valid || adjust.isPending}
-                    onClick={() => valid && adjust.mutate({ id: user.id, amount: amount! })}
+                    onClick={() => {
+                      if (!valid) return
+                      // Moves a customer's money in one click, so it says the
+                      // result out loud first — a mistyped minus sign is
+                      // otherwise discovered by the customer, not the operator.
+                      const next = user.balance + amount!
+                      const verb = amount! > 0 ? 'Add' : 'Remove'
+                      if (!window.confirm(
+                        `${verb} ${toman(Math.abs(amount!))} ${amount! > 0 ? 'to' : 'from'} ` +
+                        `${user.display_name ?? user.telegram_id}'s wallet?
+` +
+                        `Balance: ${toman(user.balance)} → ${toman(next)}`,
+                      )) return
+                      adjust.mutate({ id: user.id, amount: amount! })
+                    }}
                   >
                     Apply
                   </Button>
@@ -343,6 +363,7 @@ function ShopUsers() {
 function ShopOrders() {
   const ordersQuery = useQuery({ queryKey: ['shop', 'orders'], queryFn: shopApi.orders })
   if (ordersQuery.isLoading) return <Skeleton className="h-40 w-full" />
+  if (ordersQuery.isError) return <LoadFailed what="orders" onRetry={() => ordersQuery.refetch()} />
   if (!ordersQuery.data?.length) {
     return <EmptyState title="No orders yet" description="Self-serve purchases appear here as they happen." />
   }
@@ -367,7 +388,18 @@ function ShopOrders() {
             <TableCell className="text-right text-xs tabular-nums">
               {order.data_limit_gb}GB · {order.duration_days}d
             </TableCell>
-            <TableCell className="text-right text-xs tabular-nums">{toman(order.price)}</TableCell>
+            {/* "Paid" only when money actually changed hands for this order:
+                an awaiting order has paid nothing, a failed one was refunded,
+                and a trial was free by design. */}
+            <TableCell className="text-right text-xs tabular-nums">
+              {order.price === 0 ? (
+                <span className="text-muted-foreground">trial</span>
+              ) : order.status === 'delivered' || order.status === 'provisioning' ? (
+                toman(order.price)
+              ) : (
+                <span className="text-muted-foreground" title={`Price ${toman(order.price)} — not paid`}>—</span>
+              )}
+            </TableCell>
             <TableCell>
               {/* Chosen but not paid: holds no money and needs nothing from
                   you until a receipt for it arrives. Muted on purpose — it is
@@ -433,6 +465,13 @@ function ShopSettingsForm() {
   })
 
   if (settingsQuery.isLoading) return <Skeleton className="h-64 w-full" />
+  // Never render the form without the real settings behind it. The draft is
+  // seeded from the server; if that load failed the draft is empty, and Save
+  // would send price 0 and card null — wiping the live shop's price and card
+  // number with one click on a form that merely failed to load.
+  if (settingsQuery.isError || !settingsQuery.data) {
+    return <LoadFailed what="shop settings" onRetry={() => settingsQuery.refetch()} />
+  }
 
   const set = <K extends keyof ShopSettings>(key: K, value: ShopSettings[K]) =>
     setDraft((d) => ({ ...d, [key]: value }))
@@ -578,6 +617,18 @@ function ShopSettingsForm() {
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+function LoadFailed({ what, onRetry }: { what: string; onRetry: () => void }) {
+  return (
+    <div className="flex items-center gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-3 text-sm">
+      <AlertTriangle className="h-4 w-4 shrink-0 text-destructive" />
+      <span className="flex-1">Couldn't load {what}. This is a loading error — not an empty list.</span>
+      <Button size="sm" variant="outline" onClick={onRetry}>
+        Retry
+      </Button>
+    </div>
   )
 }
 
