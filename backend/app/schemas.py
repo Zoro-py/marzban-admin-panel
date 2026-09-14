@@ -56,7 +56,7 @@ class CustomerWithBalance(CustomerRead):
 
 
 class GroupCreate(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=100, pattern=r"\S")
     representative_customer_id: int
     billing_cycle_days: int = 30
     rate_per_gb: Optional[float] = Field(default=None, ge=0.0)

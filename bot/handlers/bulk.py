@@ -22,6 +22,11 @@ from telegram.ext import ContextTypes
 from api_client import backend
 from handlers.common import admin_only
 
+# Mirrors backend/app/bulk_accounts.py's MAX_BULK_COUNT. Duplicated because
+# the bot is a separate process with no import path into the backend; if that
+# limit changes, this line has to change with it.
+MAX_BULK_COUNT = 50
+
 USAGE = (
     "Usage: /bulk <name> <count> [30gb] [30d] [from=7]\n\n"
     "Examples:\n"
@@ -72,6 +77,10 @@ def parse_bulk_args(args: list[str]) -> dict:
         count = int(args[1])
     except ValueError:
         raise ValueError(f"'{args[1]}' is not a number. {USAGE}")
+    if not 1 <= count <= MAX_BULK_COUNT:
+        # Checked here as well as in the schema: the backend's 422 reaches the
+        # operator as a raw validation blob, which reads like a broken bot.
+        raise ValueError(f"Count must be between 1 and {MAX_BULK_COUNT} — got {count}.")
 
     body: dict = {"base_name": base_name, "count": count}
 

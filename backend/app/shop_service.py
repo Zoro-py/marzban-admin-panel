@@ -65,11 +65,9 @@ _purchase_locks: dict[int, asyncio.Lock] = {}
 
 
 def _lock_for(shop_user_id: int) -> asyncio.Lock:
-    lock = _purchase_locks.get(shop_user_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _purchase_locks[shop_user_id] = lock
-    return lock
+    # setdefault, so two callers can never walk away holding different locks
+    # for the same customer — which would make the lock decorative.
+    return _purchase_locks.setdefault(shop_user_id, asyncio.Lock())
 
 
 class ShopError(Exception):
@@ -729,6 +727,12 @@ async def pay_awaiting_order(session: Session, order: ShopOrder) -> ShopOrder:
 
     settings = get_shop_settings(session)
     async with _lock_for(order.shop_user_id):
+        # Re-read inside the lock. Acquiring it is an await, so two taps could
+        # both pass the check above and queue up here; without this the second
+        # one debited the wallet for an order the first had already paid.
+        session.refresh(order)
+        if order.status != ShopOrderStatus.awaiting_payment:
+            raise ShopError(f"Order #{order.id} is already {order.status.value}.")
         balance = wallet_balance(session, order.shop_user_id)
         if balance < order.price:
             raise ShopError(
