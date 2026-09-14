@@ -1087,11 +1087,8 @@ _extend_locks: dict[int, asyncio.Lock] = {}
 
 
 def _extend_lock_for(account_id: int) -> asyncio.Lock:
-    lock = _extend_locks.get(account_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _extend_locks[account_id] = lock
-    return lock
+    # setdefault, for the same reason as _lock_for above.
+    return _extend_locks.setdefault(account_id, asyncio.Lock())
 
 
 def renewable_account(session: Session, shop_user_id: int) -> Optional[Account]:
