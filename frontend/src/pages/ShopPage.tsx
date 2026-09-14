@@ -141,13 +141,21 @@ function PendingTopups({ query }: { query: ReturnType<typeof useQuery<ShopTopup[
         the file. Approve from there, or here once you've looked at it.
       </p>
       {query.data.map((topup) => {
-        const busy =
-          (approve.isPending && approve.variables?.id === topup.id) ||
-          (reject.isPending && reject.variables?.id === topup.id)
+        // Every approve/reject button waits while ANY decision is in flight.
+        // approve and reject are single mutations shared by all rows, so a
+        // per-row check (variables.id === topup.id) broke as soon as a second
+        // row was clicked: the new call replaced `variables`, row A's button
+        // re-enabled mid-request, and a second click earned the operator an
+        // "already approved" error on a payment they had approved once. The
+        // backend still credits only once — this is about not lying on screen.
+        const busy = approve.isPending || reject.isPending
         const overrideRaw = overrides[topup.id] ?? ''
         const overrideAmount = overrideRaw.trim() === '' ? undefined : Number(overrideRaw)
+        // Whole Toman only — the backend field is an int (wallet amounts are
+        // integers end to end), so a decimal would come back as a 422 after
+        // the click instead of being caught here.
         const overrideInvalid =
-          overrideAmount !== undefined && (!Number.isFinite(overrideAmount) || overrideAmount <= 0)
+          overrideAmount !== undefined && (!Number.isInteger(overrideAmount) || overrideAmount <= 0)
 
         return (
           <Card key={topup.id}>
@@ -210,8 +218,8 @@ function PendingTopups({ query }: { query: ReturnType<typeof useQuery<ShopTopup[
 
               {overrideInvalid && (
                 <p className="flex items-center gap-1.5 text-xs text-destructive">
-                  <AlertTriangle className="h-3.5 w-3.5" /> Enter a positive amount, or leave it blank to
-                  credit what they claimed.
+                  <AlertTriangle className="h-3.5 w-3.5" /> Enter a positive whole amount in Toman, or leave it
+                  blank to credit what they claimed.
                 </p>
               )}
 
