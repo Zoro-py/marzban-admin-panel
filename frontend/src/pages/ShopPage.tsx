@@ -361,6 +361,12 @@ function ShopOrders() {
             </TableCell>
             <TableCell className="text-right text-xs tabular-nums">{toman(order.price)}</TableCell>
             <TableCell>
+              {/* Chosen but not paid: holds no money and needs nothing from
+                  you until a receipt for it arrives. Muted on purpose — it is
+                  a customer's intention, not a problem. */}
+              {order.status === 'awaiting_payment' && (
+                <Badge variant="outline" className="text-muted-foreground">awaiting payment</Badge>
+              )}
               {order.status === 'delivered' && <Badge className="bg-success/15 text-success">delivered</Badge>}
               {order.status === 'provisioning' && <Badge variant="outline">provisioning</Badge>}
               {order.status === 'failed' && (

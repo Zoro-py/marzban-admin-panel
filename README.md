@@ -147,10 +147,12 @@ created and both front-ends say plainly that no messages are coming.
 
 ## The self-serve shop (optional)
 
-A second Telegram bot, this one for your customers rather than for you. They
-top up a wallet by card transfer, you approve the receipt, and they buy
-one-month plans out of that balance — the account is created in Marzban and
-its QR arrives in their chat within seconds, with nothing for you to do.
+A second Telegram bot, this one for your customers rather than for you. A
+customer picks a volume, is shown one exact amount and your card, transfers
+it, and sends a photo of the receipt. When you approve it, their service is
+created and delivered in the same moment — QR, link, and a short guide to
+which app to install. Nothing for them to come back for, nothing for you to
+do beyond the approval.
 
 ```bash
 cd shopbot
@@ -167,6 +169,44 @@ venv/Scripts/python bot.py
 Then open the dashboard's **Shop** page, set a price per GB and your card
 number, and tick *Shop is open*. It refuses to open without both — customers
 would otherwise see a buy button that can't complete and no card to pay.
+
+While you're there, set these too — each one exists because its absence cost
+real sales in review:
+
+- **Shop name** and **support handle** (your Telegram @). A nameless bot with
+  no reachable person looks exactly like every other card-to-card shop, and
+  every "something's wrong" message a customer might need to send needs
+  somewhere to go. The handle is appended to every screen where a customer
+  could get stuck.
+- **Promised approval time** (minutes). Customers are told this the moment
+  they send a receipt. Set what you can keep on a bad day. If a payment waits
+  past it, the customer is automatically told it is late and their receipt is
+  safe, and you get an alert — a missed promise is announced, never left to
+  look like the shop disappeared.
+- **Free trial** (off by default). One per Telegram account, for people who
+  have never had a service from you: a small real account, instantly, with no
+  payment. It is the only way a card-to-card shop can prove it works before
+  asking a stranger for money, and it costs you a gigabyte.
+
+**How it behaves for the customer:**
+
+- **Choose first, pay second.** Picking a volume creates an order that takes
+  no money. The payment request then carries one figure — no arithmetic — and
+  the approval of that payment delivers the plan. A customer who already has
+  credit in their wallet confirms with one tap and has their service in
+  seconds, no card and no waiting.
+- **Renewing extends the service they already have.** Buying again adds the
+  new volume and days onto their existing account — same link, nothing to
+  re-import, unused data and days kept. Buying after the trial upgrades the
+  trial account in place, so the link they tested with is the one they keep.
+- **Before it runs out, they hear about it:** three days before expiry, at 80%
+  of the data, and two hours before a trial ends. Once each.
+- **Every receipt gets a code** (like `A7K2`). Typing it back into the bot
+  returns that payment's status, at any hour. You see the same code in your
+  Telegram alert and on the Shop page.
+- **Paying without losing the thread.** Iranian banking apps refuse to open
+  over a VPN, so customers turn it off to pay and Telegram drops. A receipt
+  that arrives after that is matched to their waiting order automatically.
 
 **How the money works, and why it is kept apart from everything else:**
 
@@ -190,7 +230,15 @@ would otherwise see a buy button that can't complete and no card to pay.
 - **You approve every payment.** Nothing credits a wallet except your explicit
   approval, from the buttons pushed to your Telegram with the receipt, from
   `/topups` in your own bot, or from the dashboard's Shop page. Approving the
-  same receipt twice credits it once.
+  same receipt twice credits it once. Each alert says whether approving it
+  also **delivers a plan** — approve less than the plan's price and the money
+  is banked, the plan is NOT delivered, and the customer is told exactly how
+  much more to send and where. An overpayment stays in their wallet and they
+  are told so.
+- **No refund without evidence.** A failed or timed-out call to Marzban is not
+  proof that nothing happened — a lost response can hide a completed create or
+  renewal. Before refunding, the backend asks the panel; if the account (or
+  the extension) is already there, the customer gets it and pays for it.
 
 **Two bots, two tokens, two privilege levels — on purpose.** Your bot
 (`bot/`) is locked to your chat id and holds the Marzban admin credentials.

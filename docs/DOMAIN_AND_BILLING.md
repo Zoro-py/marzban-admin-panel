@@ -270,9 +270,61 @@ The debit happens **before** provisioning deliberately. Provisioning first and
 charging after loses real inventory on any crash in between — a live account
 nobody paid for, indistinguishable from a legitimate one. This ordering's
 worst case is an order stuck in `provisioning` with the money held, which
-`sweep_stuck_orders` (every 5 minutes, threshold 10 minutes) turns back into a
-refund. A customer briefly out of pocket and then refunded is recoverable; a
-free account is not.
+`sweep_stuck_orders` (every 5 minutes, threshold 10 minutes) resolves.
+
+**Nothing is refunded without asking the panel first.** A failed or
+timed-out Marzban call is not evidence that nothing happened: a read timeout
+loses the *response*, not necessarily the work. Refunding on that signal alone
+was measured to produce a full refund plus a live, unbilled account. So both
+the provisioning path and the sweeper check the panel before refunding:
+
+- for a **create**, "does the user exist with the `note` we stamped on it"
+  (`_find_our_marzban_user`) — the note stops an operator's hand-made user of
+  the same name from being adopted;
+- for a **renewal**, "have the account's limit and expiry already reached the
+  targets recorded on the order before the call" (`_extension_landed`).
+
+Found → deliver and keep the charge. Not found, or the lookup itself failed →
+refund. That is the safe direction to be wrong in: a refunded customer whose
+service does exist is recoverable by the operator; a charge for nothing is not.
+`_record_delivered` / `_record_extended` also refuse to write `delivered` over
+an order the sweeper already settled in its own session — they re-charge
+instead, allowing a negative wallet (visible, one adjustment to fix) rather
+than a free account (invisible).
+
+### 7.3b Order first; renewal in place; the trial
+
+- **Order first.** Choosing a volume creates a `ShopOrder` in
+  `awaiting_payment`, which takes no money. A card payment sent for it carries
+  `ShopTopup.order_id`; `approve_topup` credits the wallet, commits, and THEN
+  pays and provisions that order — so one operator approval both banks the
+  money and delivers the plan. Approval is exactly-once because only the call
+  that moves the top-up out of `pending` reaches the delivery step. Approving
+  less than the price banks it and delivers nothing; the customer is told the
+  remainder and the card. The previous shape (fund a wallet, wait, come back,
+  buy) lost the customers who believed the receipt was the purchase.
+- **Renewal in place.** A paid order for a customer who already has a live
+  account EXTENDS that account (`_extend_order`) instead of creating another:
+  same Marzban user, same subscription link. Volume and days are **stacked**
+  onto what remains, never reset — remaining data and days were already paid
+  for. The target `data_limit`/`expire` are committed on the order before
+  `modify_user` is called; they are the evidence §7.3 checks. A per-account
+  lock serialises read-modify-write so two renewals cannot overwrite each
+  other (same single-process caveat as the purchase lock). An account gone
+  from the panel, or disabled by the operator, is not extended; a new one is
+  created.
+- **The trial** is a `ShopOrder` with `price = 0`: once per `ShopUser`, only
+  for someone with no delivered order, off unless the operator enables it.
+  `trial_taken_at` is committed **before** provisioning, so a retry loop cannot
+  mint accounts — a failed trial costs the customer their trial, which is the
+  safe direction for the one path that gives something away. Its expiry is set
+  from `trial_hours` exactly; a paid purchase afterwards upgrades the trial
+  account in place.
+- **Warnings and promises** (`main._scheduled_shop_renewal_warnings`, every 15
+  minutes): expiry 3 days ahead, 80% data, trial 2 hours ahead — once each per
+  account (the newest order speaks for it), recorded only when actually sent.
+  A receipt that waits past `approval_eta_minutes` is announced to the
+  customer as late, once, and the operator is alerted.
 
 Re-reading the balance **inside** the lock, rather than trusting a figure read
 earlier in the request, is what stops a stale number authorising a purchase
