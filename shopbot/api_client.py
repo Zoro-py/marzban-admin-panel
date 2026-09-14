@@ -20,6 +20,13 @@ import httpx
 
 
 class ShopApiError(Exception):
+    """Carries the HTTP status too: 409 means "already in progress", which
+    needs a different answer from a plain failure."""
+
+    def __init__(self, message: str, status: int = 0):
+        super().__init__(message)
+        self.status = status
+
     """Carries a message the backend intended for the END USER (a 400 from a
     ShopError — insufficient balance, shop closed, volume out of range).
     Handlers show `str(exc)` to the customer directly, so nothing internal
@@ -48,13 +55,13 @@ class ShopBackendClient:
     async def get(self, path: str, params: Optional[dict] = None) -> Any:
         resp = await self._request("GET", path, params=params)
         if resp.status_code >= 400:
-            raise ShopApiError(self._detail(resp))
+            raise ShopApiError(self._detail(resp), resp.status_code)
         return resp.json()
 
     async def post(self, path: str, json: Optional[dict] = None, timeout: float = 20) -> Any:
         resp = await self._request("POST", path, json=json, timeout=timeout)
         if resp.status_code >= 400:
-            raise ShopApiError(self._detail(resp))
+            raise ShopApiError(self._detail(resp), resp.status_code)
         return resp.json()
 
 

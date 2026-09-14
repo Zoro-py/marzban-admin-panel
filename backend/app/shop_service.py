@@ -85,6 +85,12 @@ def _lock_for(shop_user_id: int) -> asyncio.Lock:
     return _purchase_locks.setdefault(shop_user_id, asyncio.Lock())
 
 
+class ShopConflict(Exception):
+    """Refused because something is already in progress, not because the
+    request was wrong. Separate so the bot can answer "your first receipt is
+    still being checked" instead of its generic failure line."""
+
+
 class ShopError(Exception):
     """Something the END USER should be told, in their own words — an
     insufficient balance, a closed shop, an out-of-range volume. Distinct from
@@ -643,7 +649,7 @@ def create_topup(
             # Two receipts for one plan means two credits for one payment if
             # the operator approves both — and the second is usually the same
             # photo sent again by someone who thinks the first didn't arrive.
-            raise ShopError("A payment for this plan is already waiting to be checked.")
+            raise ShopConflict("A payment for this plan is already waiting to be checked.")
 
     topup = ShopTopup(
         shop_user_id=shop_user.id,

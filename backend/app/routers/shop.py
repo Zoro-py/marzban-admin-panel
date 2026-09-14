@@ -81,6 +81,7 @@ from app.schemas import (
     ShopWalletEntryRead,
 )
 from app.shop_service import (
+    ShopConflict,
     ShopError,
     approve_topup,
     create_awaiting_order,
@@ -771,6 +772,8 @@ async def bot_create_topup(
     try:
         topup = create_topup(session, user, body.claimed_amount, body.receipt_file_id,
                              order_id=body.order_id)
+    except ShopConflict as exc:
+        raise HTTPException(409, str(exc))
     except ShopError as exc:
         raise HTTPException(400, str(exc))
 

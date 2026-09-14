@@ -561,7 +561,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE,
             "receipt_file_id": file_id or update.message.photo[-1].file_id,
             "order_id": order_id,
         }, timeout=60)
-    except ShopApiError:
+    except ShopApiError as exc:
+        if getattr(exc, "status", 0) == 409:
+            # Their first receipt is still in the queue. Telling them to send
+            # it again would produce exactly the duplicate this refused.
+            await _reply(update, texts.RECEIPT_ALREADY_WAITING, session)
+            return
         logger.exception("Could not record a receipt for %s", update.effective_user.id)
         # Specific, not the generic error: the customer's question here is
         # "did I just lose my money?", and the true answer is no — nothing was
