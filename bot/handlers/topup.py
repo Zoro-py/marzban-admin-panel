@@ -72,7 +72,15 @@ async def _decide(topup_id: int, approve: bool) -> str:
 
     if approve:
         amount = result.get("approved_amount") or result.get("claimed_amount") or 0
-        return f"✅ #{topup_id} approved — {format_toman(amount)} credited."
+        # An order-bound payment does more than credit a wallet: approving it
+        # also pays and delivers the plan it was sent for — or, if the amount
+        # fell short, leaves that plan waiting and tells the customer what is
+        # missing. Say which kind this was, so the operator knows what they did.
+        if result.get("order_id"):
+            return (f"✅ #{topup_id} approved — {format_toman(amount)} credited. "
+                    f"It was for order #{result['order_id']}: delivered if the amount covered the "
+                    f"price, otherwise the customer has been told what is still missing.")
+        return f"✅ #{topup_id} approved — {format_toman(amount)} credited to their wallet."
     return f"❌ #{topup_id} rejected. The customer has been told."
 
 

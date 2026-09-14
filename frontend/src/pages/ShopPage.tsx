@@ -83,7 +83,15 @@ export function ShopPage() {
 
 function ShopStateBadge({ settings, loading }: { settings?: ShopSettings; loading: boolean }) {
   if (loading) return <Skeleton className="h-6 w-24" />
-  if (!settings) return null
+  // Not silently blank: whether the shop is open is the first thing the
+  // operator looks for on this page.
+  if (!settings) {
+    return (
+      <Badge variant="outline" className="gap-1 text-destructive">
+        <Store className="h-3 w-3" /> Status unknown
+      </Badge>
+    )
+  }
   return settings.is_open ? (
     <Badge className="gap-1 bg-success/15 text-success">
       <Store className="h-3 w-3" /> Open · {toman(settings.price_per_gb)}/GB
@@ -201,7 +209,7 @@ function PendingTopups({ query }: { query: ReturnType<typeof useQuery<ShopTopup[
                     id={`amt-${topup.id}`}
                     type="number"
                     className="h-8 w-40"
-                    placeholder={String(topup.claimed_amount)}
+                    placeholder={`${topup.claimed_amount} Toman`}
                     value={overrideRaw}
                     onChange={(e) => setOverrides((o) => ({ ...o, [topup.id]: e.target.value }))}
                   />
