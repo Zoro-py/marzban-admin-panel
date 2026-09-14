@@ -64,7 +64,7 @@ async def _scheduled_shop_renewal_warnings() -> None:
     was a VPN that had stopped connecting — the worst possible moment to ask
     them to buy again, and the point at which most of them didn't."""
     from app.db import get_session
-    from app.shop_service import warn_customers_before_service_ends
+    from app.shop_service import notify_overdue_payments, warn_customers_before_service_ends
     try:
         session_gen = get_session()
         session = next(session_gen)
@@ -72,6 +72,12 @@ async def _scheduled_shop_renewal_warnings() -> None:
             sent = await warn_customers_before_service_ends(session)
             if sent:
                 logger.info("Sent %d shop renewal warning(s)", sent)
+            # Same pass, same cadence: both are "tell the customer before they
+            # have to wonder". A payment past its promised approval time is
+            # announced as late rather than left to look abandoned.
+            late = await notify_overdue_payments(session)
+            if late:
+                logger.info("Told %d customer(s) their payment is running late", late)
         finally:
             session_gen.close()
     except Exception:

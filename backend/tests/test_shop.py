@@ -82,6 +82,11 @@ class FakeMarzban:
         self.create_lands = create_lands
         self.created: list[str] = []
         self.panel: dict[str, dict] = {}
+        # Renewal in place: modify_user can fail, and like create it can fail
+        # AFTER the panel already applied it.
+        self.modify_fail_with: Exception | None = None
+        self.modify_lands = False
+        self.modified: list[str] = []
 
     def _record(self, payload: dict) -> dict:
         username = payload["username"]
@@ -108,6 +113,18 @@ class FakeMarzban:
 
     async def get_user(self, username: str):
         return self.panel.get(username)
+
+    async def modify_user(self, username: str, payload: dict) -> dict:
+        def apply():
+            user = self.panel[username]
+            user.update({k: v for k, v in payload.items() if k in ("data_limit", "expire", "status")})
+            self.modified.append(username)
+            return dict(user)
+        if self.modify_fail_with is not None:
+            if self.modify_lands:
+                apply()
+            raise self.modify_fail_with
+        return apply()
 
 
 _failures: list[str] = []
@@ -140,6 +157,7 @@ def _reset(fake: FakeMarzban | None = None, *, open_shop: bool = True) -> TestCl
     if fake is not None:
         marzban_module.marzban_client.create_user = fake.create_user
         marzban_module.marzban_client.get_user = fake.get_user
+        marzban_module.marzban_client.modify_user = fake.modify_user
     app.dependency_overrides[require_auth] = lambda: "test-admin"
     return TestClient(app)
 
@@ -177,6 +195,8 @@ def test_auth_boundary() -> None:
         ("post", "/api/shop/bot/orders", {"json": {"telegram_id": 1, "data_limit_gb": 10}}),
         ("post", "/api/shop/bot/orders/1/pay", {}),
         ("post", "/api/shop/bot/trial", {"json": {"telegram_id": 1}}),
+        ("get", "/api/shop/bot/orders/pending", {"params": {"telegram_id": 1}}),
+        ("get", "/api/shop/bot/topups/status", {"params": {"telegram_id": 1, "code": "ABCD"}}),
     ]:
         if getattr(client, method)(path, **kwargs).status_code != 401:
             unguarded.append(path)
@@ -535,6 +555,13 @@ def main() -> int:
         test_trial,
         test_quote_refuses_unbuyable_plans,
         test_renewal_warnings,
+        test_renewal_extends_in_place,
+        test_trial_is_upgraded_in_place,
+        test_extension_that_landed_is_not_refunded,
+        test_extension_that_did_not_land_is_refunded,
+        test_existing_customer_gets_no_trial,
+        test_overdue_payment_is_announced_once,
+        test_receipt_recovery_and_status_by_code,
     ):
         test()
     print()
@@ -801,6 +828,182 @@ def test_renewal_warnings() -> None:
             check("the nudge is the trial one", "تست" in sent[-1][1], True)
     finally:
         notify_module.send_to_shop_user = original
+
+
+GB_BYTES = 1024 ** 3
+
+
+def _buy_from_wallet(client, gb: float) -> int:
+    oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                      json={"telegram_id": 555, "data_limit_gb": gb}).json()["order_id"]
+    client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS)
+    return oid
+
+
+def test_renewal_extends_in_place() -> None:
+    print("\n[21] a second purchase EXTENDS the existing account: same link, stacked volume and days")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 200_000)
+
+    first = _buy_from_wallet(client, 10)
+    username = fake.created[0]
+    expire_after_first = fake.panel[username]["expire"]
+    second = _buy_from_wallet(client, 20)
+
+    check("no second account was created", fake.created, [username])
+    check("the existing account was modified once", fake.modified, [username])
+    check("volume stacked: 10 + 20 GB", fake.panel[username]["data_limit"], 30 * GB_BYTES)
+    added = fake.panel[username]["expire"] - expire_after_first
+    check("days stacked onto the remaining time, not reset",
+          30 * 86400 - 120 <= added <= 30 * 86400 + 120, True)
+    with Session(engine) as session:
+        o1 = session.get(ShopOrder, first)
+        o2 = session.get(ShopOrder, second)
+        check("renewal delivered", o2.status, ShopOrderStatus.delivered)
+        check("renewal points at the same account", o2.account_id, o1.account_id)
+        check("renewal records what it extended", o2.extends_account_id, o1.account_id)
+        check("charged for both plans exactly once", wallet_balance(session, uid), 200_000 - 30_000 - 60_000)
+        check("one local account row, not two", len(session.exec(select(Account)).all()), 1)
+
+
+def test_trial_is_upgraded_in_place() -> None:
+    print("\n[22] buying after the trial keeps the trial link working ('so you are not cut off' is true)")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    client.patch("/api/shop/settings", json={"trial_enabled": True, "trial_gb": 1, "trial_hours": 24})
+    client.post("/api/shop/bot/trial", headers=BOT_HEADERS, json={"telegram_id": 555})
+    trial_user = fake.created[0]
+    _credit(uid, 100_000)
+    _buy_from_wallet(client, 10)
+    check("still the trial's account", fake.created, [trial_user])
+    check("trial 1 GB + paid 10 GB", fake.panel[trial_user]["data_limit"], 11 * GB_BYTES)
+
+
+def test_extension_that_landed_is_not_refunded() -> None:
+    print("\n[23] a renewal whose modify timed out but LANDED is delivered, not refunded")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 200_000)
+    _buy_from_wallet(client, 10)
+    username = fake.created[0]
+
+    fake.modify_fail_with = MarzbanUnavailable("ReadTimeout")
+    fake.modify_lands = True
+    second = _buy_from_wallet(client, 20)
+    with Session(engine) as session:
+        check("delivered", session.get(ShopOrder, second).status, ShopOrderStatus.delivered)
+        check("charged, not refunded", wallet_balance(session, uid), 200_000 - 30_000 - 60_000)
+        refunds = session.exec(select(ShopWalletEntry).where(
+            ShopWalletEntry.type == ShopWalletEntryType.refund)).all()
+        check("no refund entry", len(refunds), 0)
+    check("volume really on the panel", fake.panel[username]["data_limit"], 30 * GB_BYTES)
+
+
+def test_extension_that_did_not_land_is_refunded() -> None:
+    print("\n[24] a renewal that never reached the panel is refunded, and the panel is untouched")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 200_000)
+    _buy_from_wallet(client, 10)
+    username = fake.created[0]
+
+    fake.modify_fail_with = MarzbanUnavailable("connection refused")
+    fake.modify_lands = False
+    second = _buy_from_wallet(client, 20)
+    with Session(engine) as session:
+        check("marked failed", session.get(ShopOrder, second).status, ShopOrderStatus.failed)
+        check("money back: only the first plan charged", wallet_balance(session, uid), 200_000 - 30_000)
+    check("panel still shows only the first plan", fake.panel[username]["data_limit"], 10 * GB_BYTES)
+
+
+def test_existing_customer_gets_no_trial() -> None:
+    print("\n[25] someone who already has a service is not offered a free trial")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    client.patch("/api/shop/settings", json={"trial_enabled": True})
+    _credit(uid, 100_000)
+    _buy_from_wallet(client, 10)
+    sess = client.post("/api/shop/bot/session", headers=BOT_HEADERS, json={"telegram_id": 555}).json()
+    check("not offered", sess["trial_available"], False)
+    r = client.post("/api/shop/bot/trial", headers=BOT_HEADERS, json={"telegram_id": 555})
+    check("refused if asked anyway", r.status_code, 400)
+
+
+def test_overdue_payment_is_announced_once() -> None:
+    print("\n[26] a payment past its promised time is announced as late, once")
+    from datetime import timedelta
+    from app import notify as notify_module
+    from app.shop_service import notify_overdue_payments
+
+    sent = []
+
+    async def capture(chat_id, text):
+        sent.append((chat_id, text))
+
+    async def admin_capture(text):
+        sent.append(("admin", text))
+
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+    tid = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                      json={"telegram_id": 555, "claimed_amount": 50_000, "receipt_file_id": "r"}).json()["id"]
+    original, original_admin = notify_module.send_to_shop_user, notify_module.notify_admin
+    notify_module.send_to_shop_user = capture
+    notify_module.notify_admin = admin_capture
+    try:
+        with Session(engine) as session:
+            check("not late yet", asyncio.run(notify_overdue_payments(session)), 0)
+            topup = session.get(ShopTopup, tid)
+            topup.created_at = utcnow() - timedelta(minutes=45)
+            session.add(topup)
+            session.commit()
+            check("late: announced", asyncio.run(notify_overdue_payments(session)), 1)
+            check("never twice", asyncio.run(notify_overdue_payments(session)), 0)
+        check("the customer was told", any(who == 555 for who, _ in sent), True)
+        check("the operator was told too", any(who == "admin" for who, _ in sent), True)
+    finally:
+        notify_module.send_to_shop_user, notify_module.notify_admin = original, original_admin
+
+
+def test_receipt_recovery_and_status_by_code() -> None:
+    print("\n[27] a lost conversation can still find its order; a code returns its payment's status")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+    _make_user(client, telegram_id=777)
+
+    none_yet = client.get("/api/shop/bot/orders/pending", headers=BOT_HEADERS, params={"telegram_id": 555})
+    check("nothing pending -> null", none_yet.json(), None)
+
+    oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                      json={"telegram_id": 555, "data_limit_gb": 10}).json()["order_id"]
+    pending = client.get("/api/shop/bot/orders/pending", headers=BOT_HEADERS,
+                         params={"telegram_id": 555}).json()
+    check("the waiting order is found", pending["order_id"], oid)
+    check("with the amount still to pay", pending["shortfall"], 30_000)
+
+    topup = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "claimed_amount": 30_000, "order_id": oid}).json()
+    code = topup["reference_code"]
+    status = client.get("/api/shop/bot/topups/status", headers=BOT_HEADERS,
+                        params={"telegram_id": 555, "code": code.lower()}).json()
+    check("status by code (case-insensitive)", status["status"], "pending")
+
+    foreign = client.get("/api/shop/bot/topups/status", headers=BOT_HEADERS,
+                         params={"telegram_id": 777, "code": code})
+    check("another customer cannot read it", foreign.status_code, 404)
+
+    client.post(f"/api/shop/topups/{topup['id']}/approve", json={})
+    after = client.get("/api/shop/bot/topups/status", headers=BOT_HEADERS,
+                       params={"telegram_id": 555, "code": code}).json()
+    check("after approval: delivered", after["order_status"], "delivered")
 
 
 if __name__ == "__main__":

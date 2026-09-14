@@ -85,6 +85,9 @@ from app.shop_service import (
     create_awaiting_order,
     deliver_order_to_customer,
     grant_trial,
+    find_topup_by_code,
+    is_existing_customer,
+    latest_awaiting_order,
     pay_awaiting_order,
     create_topup,
     get_or_create_shop_user,
@@ -315,7 +318,8 @@ async def approve_topup_endpoint(
                 await send_to_shop_user(
                     user.telegram_id,
                     shop_texts.topup_approved_short(
-                        topup.approved_amount, balance, shortfall, shop_settings.support_handle,
+                        topup.approved_amount, balance, shortfall,
+                        shop_settings.card_number, shop_settings.card_holder, shop_settings.support_handle,
                     ),
                 )
             else:
@@ -348,12 +352,16 @@ async def reject_topup_endpoint(
 
     user = session.get(ShopUser, topup.shop_user_id)
     if user is not None:
-        reason = f"\nدلیل: {topup.reject_reason}" if topup.reject_reason else ""
+        # Through shop_texts so a rejection is never reason-less: from where the
+        # customer sits, a bare "no" after sending money to a personal card is
+        # indistinguishable from theft.
         try:
             await send_to_shop_user(
                 user.telegram_id,
-                f"❌ پرداخت شما تأیید نشد.{reason}\n"
-                f"اگر فکر می‌کنید اشتباهی رخ داده، رسید را دوباره بفرستید.",
+                shop_texts.topup_rejected(
+                    topup.reference_code, topup.reject_reason,
+                    get_shop_settings(session).support_handle,
+                ),
             )
         except Exception:
             logger.exception("Top-up #%s rejected but the customer could not be notified", topup.id)
@@ -411,7 +419,8 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
         support_handle=settings.support_handle,
         approval_eta_minutes=settings.approval_eta_minutes,
         trial_enabled=settings.trial_enabled,
-        trial_available=settings.trial_enabled and user.trial_taken_at is None and not user.is_blocked,
+        trial_available=(settings.trial_enabled and user.trial_taken_at is None and not user.is_blocked
+                         and not is_existing_customer(session, user.id)),
         trial_gb=settings.trial_gb,
         trial_hours=settings.trial_hours,
     )
@@ -637,6 +646,69 @@ async def bot_grant_trial(body: ShopBotSessionRequest, session: Session = Depend
         subscription_url=resolve_subscription_url(account.subscription_url) if account else None,
         status=order.status,
     )
+
+
+@bot_router.get("/orders/pending", response_model=Optional[ShopOrderIntent])
+def bot_pending_order(telegram_id: int, session: Session = Depends(get_session)):
+    """The plan a receipt belongs to when the bot has lost the thread.
+
+    Returns null when there is nothing waiting. See
+    shop_service.latest_awaiting_order for why this is needed at all — mostly,
+    a customer who turned their VPN off to open a banking app.
+    """
+    user = session.exec(select(ShopUser).where(ShopUser.telegram_id == telegram_id)).first()
+    if user is None:
+        return None
+    order = latest_awaiting_order(session, user.id)
+    if order is None:
+        return None
+    balance = wallet_balance(session, user.id)
+    settings = get_shop_settings(session)
+    return ShopOrderIntent(
+        order_id=order.id,
+        data_limit_gb=order.data_limit_gb,
+        duration_days=order.duration_days,
+        price=order.price,
+        balance=balance,
+        shortfall=max(0, order.price - balance),
+        payable_from_wallet=balance >= order.price,
+        card_number=settings.card_number,
+        card_holder=settings.card_holder,
+        approval_eta_minutes=settings.approval_eta_minutes,
+    )
+
+
+@bot_router.get("/topups/status")
+def bot_topup_status(telegram_id: int, code: str, session: Session = Depends(get_session)):
+    """What happened to the payment with this code — answered by the bot
+    itself, instead of by a person the customer has to message and wait for.
+
+    The reference code was given so the customer would hold something. This
+    is what makes holding it useful: typing it back into the chat returns the
+    answer immediately, at any hour.
+    """
+    user = session.exec(select(ShopUser).where(ShopUser.telegram_id == telegram_id)).first()
+    if user is None:
+        raise HTTPException(404, "Unknown shop user")
+    topup = find_topup_by_code(session, user.id, code.strip().upper())
+    if topup is None:
+        raise HTTPException(404, "No payment with that code for this customer")
+    order_status = None
+    data_limit_gb = None
+    if topup.order_id is not None:
+        order = session.get(ShopOrder, topup.order_id)
+        if order is not None:
+            order_status = order.status.value
+            data_limit_gb = order.data_limit_gb
+    return {
+        "reference_code": topup.reference_code,
+        "status": topup.status.value,
+        "claimed_amount": topup.claimed_amount,
+        "approved_amount": topup.approved_amount,
+        "reject_reason": topup.reject_reason,
+        "order_status": order_status,
+        "data_limit_gb": data_limit_gb,
+    }
 
 
 @bot_router.post("/topups", response_model=ShopTopupRead)

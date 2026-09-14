@@ -37,9 +37,11 @@ _PERSIAN_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 
 
 def fa(value) -> str:
-    """Persian digits with separators — for anything the customer only reads."""
+    """Persian digits with separators — for anything the customer only reads.
+    Decimals use the Persian separator «٫», not «.», which in a Persian line
+    reads as a stray full stop."""
     if isinstance(value, float) and value != int(value):
-        text = f"{value:,.2f}".rstrip("0").rstrip(".")
+        text = f"{value:,.2f}".rstrip("0").rstrip(".").replace(".", "٫")
     else:
         text = f"{int(value):,}"
     return text.translate(_PERSIAN_DIGITS)
@@ -190,17 +192,77 @@ def topup_out_of_range(min_topup: int, max_topup: int) -> str:
     return f"مبلغ شارژ باید بین {money(min_topup)} و {money(max_topup)} باشد. یک مبلغ دیگر بفرستید."
 
 
+def plain_digits(card_number: str) -> str:
+    """Digits only. Iranian banking apps reject a pasted card number that
+    contains dashes or spaces, so what the customer taps to copy must be bare
+    even if the operator typed it grouped."""
+    return "".join(ch for ch in card_number if ch.isdigit()) or card_number
+
+
 def topup_instructions(amount: int, card_number: str, card_holder: Optional[str], eta_minutes: int) -> str:
+    """The payment request.
+
+    The amount is shown in Persian digits for reading, and AGAIN as a bare
+    Latin number in a tap-to-copy span for the bank app — which settles the
+    "Persian looks right / Latin pastes right" tension by giving each its own
+    line instead of picking one.
+
+    The last line exists because of how paying actually goes in Iran: banking
+    apps refuse to open over a VPN, so the customer turns the VPN off, and
+    Telegram drops with it. Without being told their order survives that, a
+    newcomer reasonably assumes it doesn't.
+    """
     holder = f"\nبه نام: {card_holder}" if card_holder else ""
     return (
-        f"مبلغ {money_to_type(amount)} را به این کارت واریز کنید:\n\n"
-        f"`{card_number}`{holder}\n\n"
-        f"بعد عکس رسید را همینجا بفرستید.\n"
-        f"معمولاً تا {fa(eta_minutes)} دقیقه بررسی می‌شود."
+        f"مبلغ {money(amount)} را به این کارت واریز کنید:\n\n"
+        f"`{plain_digits(card_number)}`{holder}\n"
+        f"مبلغ برای کپی: `{amount}`\n\n"
+        "بعد عکس رسید را همینجا بفرستید.\n"
+        f"معمولاً تا {fa(eta_minutes)} دقیقه بررسی می‌شود.\n\n"
+        "اگر برنامه‌ی بانک با VPN باز نمی‌شود، برای پرداخت خاموشش کنید — "
+        "سفارشتان محفوظ است؛ بعد فقط عکس رسید را اینجا بفرستید."
     )
 
 
 NO_CARD = "هنوز شماره کارت ثبت نکرده‌ام. یک لحظه پیام بدهید تا درستش کنم."
+
+
+def receipt_failed(handle: Optional[str]) -> str:
+    """The receipt upload itself failed. Says plainly that nothing was
+    recorded — and that nothing was lost by us — so resending is obviously
+    safe rather than feeling like paying twice."""
+    return (
+        "رسیدتان ثبت نشد — لطفاً همان عکس را دوباره بفرستید.\n"
+        "از طرف ما پولی جابه‌جا نشده که از دست برود." + support(handle)
+    )
+
+
+CODE_NOT_FOUND = "پرداختی با این کد پیدا نکردم. کد را همان‌طور که در پیام رسید آمده بفرستید."
+
+
+def payment_status(status: str, reference: str, order_status: Optional[str],
+                   data_limit_gb: Optional[float], reject_reason: Optional[str],
+                   handle: Optional[str]) -> str:
+    """The answer to "what happened to my payment?", given by the bot itself
+    the moment the customer types their code — at any hour, without waiting
+    for a person."""
+    if status == "pending":
+        return (
+            f"⏳ پرداخت {reference} هنوز در صف بررسی است.\n"
+            "به محض بررسی همینجا خبر می‌دهم." + support(handle)
+        )
+    if status == "rejected":
+        why = f"\nعلت: {reject_reason}" if reject_reason else ""
+        return f"❌ پرداخت {reference} تأیید نشد.{why}" + support(handle)
+    if order_status == "delivered":
+        what = f"سرویس {gb(data_limit_gb)}" if data_limit_gb else "سرویس‌تان"
+        return f"✅ پرداخت {reference} تأیید شد و {what} تحویل شد — در «{MENU_ACCOUNTS}» است."
+    if order_status == "awaiting_payment":
+        return (
+            f"✅ پرداخت {reference} تأیید شد، ولی برای سرویسی که انتخاب کرده بودید کافی نبود.\n"
+            f"باقی را از «{MENU_BUY}» با همان حجم کامل کنید." + support(handle)
+        )
+    return f"✅ پرداخت {reference} تأیید شد و به کیف پولتان اضافه شد."
 
 
 # ── wallet & accounts ─────────────────────────────────────────────────────

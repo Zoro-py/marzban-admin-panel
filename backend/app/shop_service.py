@@ -37,7 +37,7 @@ from app.models import (
     ShopWalletEntryType,
     utcnow,
 )
-from app.services import bytes_from_gb
+from app.services import bytes_from_gb, sync_marzban_fields
 
 logger = logging.getLogger(__name__)
 
@@ -381,7 +381,8 @@ async def _provision_order(
     *,
     duration_hours: Optional[int] = None,
 ) -> None:
-    """Creates the Marzban user for an already-paid order.
+    """Creates — or, for a returning customer, EXTENDS — the Marzban user
+    for an already-paid order. See the renewal-in-place section below.
 
     Never raises. By this point the customer's money is already gone, so an
     exception propagating up to the bot would leave them charged with no
@@ -394,6 +395,14 @@ async def _provision_order(
     when it is handed over) or round up to a full day the operator did not
     intend to give away. Paid plans never pass it — they are sold in days.
     """
+    # A returning customer's plan is added to the account they already have,
+    # so the link in their VPN app keeps working. Trials never extend — they
+    # are only for people without an account (see is_existing_customer).
+    if order.price > 0 and duration_hours is None:
+        existing = renewable_account(session, order.shop_user_id)
+        if existing is not None and await _extend_order(session, order, existing):
+            return
+
     from app.config import settings as app_settings
 
     seconds = duration_hours * 3600 if duration_hours is not None else order.duration_days * SECONDS_IN_DAY
@@ -528,6 +537,10 @@ async def sweep_stuck_orders(session: Session) -> list[ShopOrder]:
     settings = get_shop_settings(session)
     resolved: list[ShopOrder] = []
     for order in stuck:
+        if order.extends_account_id is not None:
+            await _sweep_extension(session, order)
+            resolved.append(order)
+            continue
         username = f"{settings.username_prefix}{order.id}"
         created = await _find_our_marzban_user(username, order.id)
         if created is not None:
@@ -759,6 +772,25 @@ async def deliver_order_to_customer(session: Session, order: ShopOrder) -> bool:
     settings = get_shop_settings(session)
     is_trial = order.price == 0
 
+    if order.extends_account_id is not None and account is not None:
+        # Renewed in place: the customer already holds this link, so the
+        # message is about what changed — and that they need to do nothing.
+        remaining_gb = None
+        days_left = None
+        if account.data_limit is not None:
+            remaining_gb = max(0, account.data_limit - account.used_traffic) / (1024 ** 3)
+        if account.expire:
+            days_left = max(0, int((account.expire - utcnow().timestamp()) // 86400))
+        try:
+            await send_to_shop_user(
+                user.telegram_id,
+                shop_texts.renewed_in_place(order.data_limit_gb, remaining_gb, days_left, settings.support_handle),
+            )
+            return True
+        except Exception:
+            logger.exception("Order #%s: renewal notice could not be sent", order.id)
+            return False
+
     if not url:
         logger.error("Order #%s delivered but has no subscription link to send", order.id)
         try:
@@ -826,6 +858,10 @@ async def grant_trial(session: Session, shop_user: ShopUser) -> ShopOrder:
         raise ShopError("This account can't take a trial. Contact support.")
     if shop_user.trial_taken_at is not None:
         raise ShopError("You've already used your free trial.")
+    if is_existing_customer(session, shop_user.id):
+        # A trial exists to let a stranger see the service work. Someone who
+        # already has one gains nothing from it but free data.
+        raise ShopError("The free trial is for new customers.")
 
     # Written BEFORE provisioning, and committed. If Marzban then fails, the
     # customer has burned their trial and gets an error — which is the safe
@@ -942,7 +978,15 @@ async def warn_customers_before_service_ends(session: Session) -> int:
             ShopOrder.account_id.is_not(None),
         )
     ).all()
-    for order in orders:
+    # One account can carry several orders now that renewals extend in place.
+    # Only the newest speaks for it — otherwise every older order on the same
+    # account would fire its own warning about the same service.
+    latest_by_account: dict[int, ShopOrder] = {}
+    for candidate in orders:
+        held = latest_by_account.get(candidate.account_id)
+        if held is None or candidate.id > held.id:
+            latest_by_account[candidate.account_id] = candidate
+    for order in latest_by_account.values():
         account = session.get(Account, order.account_id)
         user = session.get(ShopUser, order.shop_user_id)
         if account is None or user is None or user.is_blocked:
@@ -988,3 +1032,315 @@ async def warn_customers_before_service_ends(session: Session) -> int:
         session.commit()
         sent += 1
     return sent
+
+
+# ── renewal IN PLACE ──────────────────────────────────────────────────────
+#
+# A customer who already has a working account gets their new plan ADDED to
+# that account: same Marzban user, same subscription link. Their VPN app
+# refreshes the subscription on its own and nothing needs re-importing.
+#
+# The alternative this replaced — a brand-new account per purchase — was
+# found independently by two review passes to be the flow's largest remaining
+# leak: the trial's "buy so you don't get cut off" was false because the trial
+# link died regardless, and every later month meant importing a new link and
+# living with a dead duplicate in the app.
+#
+# Money rules are the same as for a new account and exist for the same
+# reasons: the plan is paid for before Marzban is called, a failed call is
+# NOT evidence that nothing changed, and nothing is refunded without first
+# asking the panel. What differs is the evidence: for a create it is "does
+# the user exist with our note", for an extension it is "has the account's
+# limit and expiry already reached the targets we recorded".
+
+# Serialises read-modify-write on ONE account. Two purchases landing together
+# would both read the same current limit and both write base+plan, silently
+# dropping one plan's gigabytes. Same single-process caveat as _purchase_locks.
+_extend_locks: dict[int, asyncio.Lock] = {}
+
+
+def _extend_lock_for(account_id: int) -> asyncio.Lock:
+    lock = _extend_locks.get(account_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _extend_locks[account_id] = lock
+    return lock
+
+
+def renewable_account(session: Session, shop_user_id: int) -> Optional[Account]:
+    """The account a new purchase should extend, or None to create one.
+
+    The customer's most recently delivered account that still exists and that
+    the operator has not disabled. Trials count — upgrading the trial in place
+    is the whole point: the link they tested with is the link they keep.
+    """
+    orders = session.exec(
+        select(ShopOrder)
+        .where(
+            ShopOrder.shop_user_id == shop_user_id,
+            ShopOrder.status == ShopOrderStatus.delivered,
+            ShopOrder.account_id.is_not(None),
+        )
+        .order_by(ShopOrder.id.desc())
+    ).all()
+    for candidate in orders:
+        account = session.get(Account, candidate.account_id)
+        if account is None:
+            continue
+        if account.status in ("disabled", "deleted_from_marzban"):
+            continue
+        return account
+    return None
+
+
+def is_existing_customer(session: Session, shop_user_id: int) -> bool:
+    """Has this person ever had a service from us? Used to keep the free
+    trial for strangers: an existing customer taking a 'trial' would just be
+    free data on top of what they already pay for."""
+    return session.exec(
+        select(ShopOrder).where(
+            ShopOrder.shop_user_id == shop_user_id,
+            ShopOrder.status == ShopOrderStatus.delivered,
+        )
+    ).first() is not None
+
+
+async def _extension_landed(username: str, target_limit: int, target_expire: int) -> Optional[dict]:
+    """The panel's user if the extension is already applied, else None.
+
+    'Applied' means the limit and expiry have REACHED the targets, not that
+    they changed at all — an unrelated edit must not be mistaken for our
+    modify having landed. A lookup that itself fails returns None and sends
+    the caller to the refund path: a refunded customer whose extension did
+    land is recoverable by the operator; charging for one that didn't is not.
+    """
+    try:
+        user = await marzban_client.get_user(username)
+    except Exception:
+        logger.exception("Could not check whether the extension of %s landed", username)
+        return None
+    if user is None:
+        return None
+    if (user.get("data_limit") or 0) >= target_limit and (user.get("expire") or 0) >= target_expire - 60:
+        return user
+    return None
+
+
+def _record_extended(session: Session, order: ShopOrder, account: Account, marzban_user: dict) -> None:
+    """Mirrors the extended account locally and marks the order delivered.
+
+    Same guard as _record_delivered: if the sweeper settled this order in its
+    own session while Marzban was working, re-charge rather than let a paid
+    extension become a free one.
+    """
+    session.expire(order)
+    session.refresh(order)
+    if order.status != ShopOrderStatus.provisioning:
+        logger.error(
+            "Order #%s reached extension as '%s', not 'provisioning' — re-charging so the "
+            "added volume is not free.", order.id, order.status.value,
+        )
+        post_wallet_entry(
+            session,
+            order.shop_user_id,
+            entry_type=ShopWalletEntryType.purchase,
+            amount=-order.price,
+            note=f"Re-charge: order #{order.id} was refunded but extended anyway",
+            order_id=order.id,
+            commit=False,
+        )
+    now = utcnow()
+    sync_marzban_fields(account, marzban_user)
+    account.last_synced_at = now
+    session.add(account)
+    session.add(AccountEvent(
+        account_id=account.id,
+        action="extend",
+        detail=(f"Renewed in place via shop order #{order.id} "
+                f"(+{order.data_limit_gb:g} GB, +{order.duration_days} days)"),
+    ))
+    order.account_id = account.id
+    order.marzban_username = account.marzban_username
+    order.status = ShopOrderStatus.delivered
+    order.delivered_at = now
+    order.error = None
+    session.add(order)
+    session.commit()
+
+
+async def _extend_order(session: Session, order: ShopOrder, account: Account) -> bool:
+    """Adds this order's plan to `account`. Returns False only when the
+    account turned out not to be extendable (gone from the panel) and the
+    caller should create a new one instead; True means the order reached a
+    terminal state here — delivered or refunded. Never raises.
+
+    Stacks rather than resets. Remaining gigabytes and remaining days are
+    things the customer already paid for; resetting on renewal would quietly
+    confiscate them, and renewing EARLY is exactly the behaviour the expiry
+    warnings exist to encourage.
+    """
+    username = account.marzban_username
+    async with _extend_lock_for(account.id):
+        try:
+            current = await marzban_client.get_user(username)
+        except Exception as exc:  # noqa: BLE001 — nothing has been changed yet, so refunding is safe
+            logger.exception("Order #%s: could not read %s to extend it", order.id, username)
+            refund_order(session, order, reason=f"Could not read the account to extend: {exc}")
+            return True
+        if current is None:
+            logger.warning("Order #%s: %s is gone from the panel — creating a new account instead",
+                           order.id, username)
+            return False
+
+        used = int(current.get("used_traffic") or 0)
+        limit = current.get("data_limit")
+        base_limit = int(limit) if limit is not None else used
+        target_limit = base_limit + bytes_from_gb(order.data_limit_gb)
+        now_ts = int(utcnow().timestamp())
+        target_expire = max(now_ts, int(current.get("expire") or 0)) + order.duration_days * SECONDS_IN_DAY
+
+        # Committed BEFORE the call: these are the evidence a timeout or a
+        # crash is later checked against. See ShopOrder.target_data_limit.
+        order.extends_account_id = account.id
+        order.target_data_limit = target_limit
+        order.target_expire = target_expire
+        session.add(order)
+        session.commit()
+
+        try:
+            updated = await marzban_client.modify_user(
+                username, {"data_limit": target_limit, "expire": target_expire, "status": "active"},
+            )
+        except (ValueError, MarzbanUnavailable, MarzbanAuthError) as exc:
+            logger.exception("Order #%s: modify of %s failed or timed out", order.id, username)
+            landed = await _extension_landed(username, target_limit, target_expire)
+            if landed is not None:
+                logger.warning("Order #%s: the modify call failed but the extension is on the "
+                               "panel — delivering instead of refunding", order.id)
+                try:
+                    _record_extended(session, order, account, landed)
+                except Exception:
+                    session.rollback()
+                    logger.exception("Order #%s: extension landed but could not be recorded", order.id)
+                    _mark_delivered_untracked(session, order, username, "extension adopted after a failed call")
+                return True
+            refund_order(session, order, reason=str(exc))
+            return True
+
+        try:
+            _record_extended(session, order, account, updated)
+        except Exception as exc:  # noqa: BLE001 — the panel is already extended; never drop it silently
+            session.rollback()
+            logger.exception("Order #%s: extended %s but failed to record it", order.id, username)
+            _mark_delivered_untracked(session, order, username, str(exc))
+        return True
+
+
+# ── keeping the promise about the wait ────────────────────────────────────
+
+
+async def notify_overdue_payments(session: Session) -> int:
+    """Tells a customer, once, when their payment has waited past the promised
+    time — and tells the operator in the same breath.
+
+    Silence after a stated deadline is the single most likely moment for an
+    honest shop to be taken for a scam: the customer has sent money to a
+    personal card, was told "usually within N minutes", and N minutes have
+    passed with nothing. A sentence that owns the delay costs nothing and
+    turns a broken promise into evidence that someone is actually there.
+    """
+    from app import shop_texts
+    from app.notify import notify_admin, send_to_shop_user
+
+    settings = get_shop_settings(session)
+    cutoff = utcnow() - timedelta(minutes=settings.approval_eta_minutes)
+    overdue = session.exec(
+        select(ShopTopup).where(
+            ShopTopup.status == ShopTopupStatus.pending,
+            ShopTopup.overdue_notified_at.is_(None),
+            ShopTopup.receipt_file_id.is_not(None),
+            ShopTopup.created_at < cutoff,
+        )
+    ).all()
+    sent = 0
+    for topup in overdue:
+        user = session.get(ShopUser, topup.shop_user_id)
+        if user is None:
+            continue
+        try:
+            await send_to_shop_user(
+                user.telegram_id,
+                shop_texts.payment_overdue(topup.reference_code, settings.support_handle),
+            )
+        except Exception:
+            logger.exception("Could not tell the customer that payment #%s is late", topup.id)
+            continue
+        topup.overdue_notified_at = utcnow()
+        session.add(topup)
+        session.commit()
+        sent += 1
+        try:
+            await notify_admin(
+                f"⏰ Payment #{topup.id} ({topup.reference_code or 'no code'}) has waited past your "
+                f"{settings.approval_eta_minutes}-minute promise. The customer has been told it is late."
+            )
+        except Exception:
+            logger.exception("Could not alert the operator that payment #%s is late", topup.id)
+    return sent
+
+
+# ── picking a conversation back up ────────────────────────────────────────
+
+
+def latest_awaiting_order(session: Session, shop_user_id: int, max_age_hours: int = 48) -> Optional[ShopOrder]:
+    """The order a receipt most likely belongs to, when the bot has lost track.
+
+    The bot keeps "what did this person tap last" in memory. That is lost on a
+    restart — and in Iran it is routinely lost for a more ordinary reason:
+    banking apps refuse to open over a VPN, so the customer turns the VPN off
+    to pay, Telegram drops with it, and the receipt arrives in what the bot
+    sees as a brand-new conversation. Recovering the order from the database
+    means the receipt still lands on the right plan.
+    """
+    cutoff = utcnow() - timedelta(hours=max_age_hours)
+    return session.exec(
+        select(ShopOrder)
+        .where(
+            ShopOrder.shop_user_id == shop_user_id,
+            ShopOrder.status == ShopOrderStatus.awaiting_payment,
+            ShopOrder.created_at > cutoff,
+        )
+        .order_by(ShopOrder.id.desc())
+    ).first()
+
+
+def find_topup_by_code(session: Session, shop_user_id: int, code: str) -> Optional[ShopTopup]:
+    """A customer's own payment by the code they were given. Scoped to them:
+    a code is short, and one customer must never be able to read another's
+    payment by guessing."""
+    return session.exec(
+        select(ShopTopup).where(
+            ShopTopup.shop_user_id == shop_user_id,
+            ShopTopup.reference_code == code,
+        )
+    ).first()
+
+
+async def _sweep_extension(session: Session, order: ShopOrder) -> None:
+    """The stuck-order sweeper's branch for renewals. Delivers if the panel
+    already shows the extension, refunds otherwise — never re-applies it,
+    since a second modify on top of a landed one would give the customer the
+    plan twice."""
+    account = session.get(Account, order.extends_account_id)
+    if account is not None and order.target_data_limit is not None and order.target_expire is not None:
+        landed = await _extension_landed(account.marzban_username, order.target_data_limit, order.target_expire)
+        if landed is not None:
+            try:
+                _record_extended(session, order, account, landed)
+            except Exception:
+                session.rollback()
+                logger.exception("Order #%s: could not record the recovered extension", order.id)
+                _mark_delivered_untracked(session, order, account.marzban_username,
+                                          "extension recovered by the stuck-order sweep")
+            return
+    refund_order(session, order, reason="Renewal never completed (server restarted?) — refunded automatically")

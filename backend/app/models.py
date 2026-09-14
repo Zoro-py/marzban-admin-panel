@@ -420,6 +420,12 @@ class ShopTopup(SQLModel, table=True):
     # just get scammed?" messages.
     reference_code: Optional[str] = Field(default=None, index=True)
 
+    # When the customer was told their payment is taking longer than promised.
+    # Once only. The promise ("usually within N minutes") is what makes the
+    # wait bearable; breaking it in silence is exactly when an honest shop
+    # starts to look like a scam, so the broken promise is announced instead.
+    overdue_notified_at: Optional[datetime] = None
+
     status: ShopTopupStatus = Field(default=ShopTopupStatus.pending, index=True)
     reject_reason: Optional[str] = None
 
@@ -454,6 +460,20 @@ class ShopOrder(SQLModel, table=True):
     # blocked by the very customer it is trying to keep.
     expiry_warned_at: Optional[datetime] = None
     usage_warned_at: Optional[datetime] = None
+
+    # RENEWAL IN PLACE. When set, this order ADDS its volume and days to an
+    # account the customer already has, instead of minting a new one — so the
+    # link already imported in their VPN app keeps working and simply grows.
+    # Minting a new link per purchase meant the trial's "buy so you don't get
+    # cut off" was false (the trial link died anyway), and every later month
+    # was a re-import with a dead duplicate left behind in the app.
+    extends_account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True)
+    # The account's data_limit / expire as they must read AFTER the extension.
+    # Written before Marzban is called, because they are the only EVIDENCE a
+    # timed-out modify (or a crash) can be checked against: "is the limit
+    # already this high?" is answerable; "did my earlier call land?" is not.
+    target_data_limit: Optional[int] = None
+    target_expire: Optional[int] = None
 
 
 class ShopSettings(SQLModel, table=True):

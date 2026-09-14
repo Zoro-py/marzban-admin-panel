@@ -62,6 +62,23 @@ _STATE_CHOOSING_TOPUP = "choosing_topup"
 _STATE_AWAITING_RECEIPT = "awaiting_receipt"
 _ORDER_ID = "order_id"
 _PENDING_AMOUNT = "pending_amount"
+_PENDING_VOLUME = "pending_volume"
+
+# A reference code as the backend issues them (4 unambiguous characters, or
+# the rare R+6-hex fallback). Typed back into the chat, it returns that
+# payment's status — so the code the customer holds actually answers the
+# question they are holding it for.
+_CODE_PATTERN = re.compile(r"[ACDEFGHJKMNPQRTUVWXYZ2345789]{4}|R[0-9A-F]{6}")
+
+# Wallet history is labelled by what happened, in Persian. It used to print
+# the operator's internal English note ("Card payment approved (top-up #12)"),
+# which reads to a customer like a glitch.
+_WALLET_LABELS = {
+    "topup": "شارژ کیف پول",
+    "purchase": "خرید سرویس",
+    "refund": "بازگشت وجه",
+    "adjust": "اصلاح موجودی",
+}
 
 # What an Iranian phone keyboard actually produces. Persian (۰-۹) and
 # Arabic-Indic (٠-٩) digits both reach us, often mixed with Latin ones.
@@ -303,6 +320,7 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
         return
 
     context.user_data[_ORDER_ID] = intent["order_id"]
+    context.user_data[_PENDING_VOLUME] = intent["data_limit_gb"]
 
     if intent["payable_from_wallet"]:
         # Enough credit already: one tap, no card, no human in the loop.
@@ -399,7 +417,8 @@ async def _handle_topup_amount(update: Update, context: ContextTypes.DEFAULT_TYP
 # ── receipts ──────────────────────────────────────────────────────────────
 
 
-def _topup_submitted_text(reference, eta: int, handle, has_order: bool) -> str:
+def _topup_submitted_text(reference, eta: int, handle, has_order: bool,
+                          volume_gb: float | None = None) -> str:
     """Read at the highest-anxiety moment in the product: the customer has just
     sent real money to a stranger's card and now holds nothing.
 
@@ -409,31 +428,65 @@ def _topup_submitted_text(reference, eta: int, handle, has_order: bool) -> str:
     is where it becomes useful: before paying they hold the card number and
     the amount; after paying they hold only the waiting.
     """
-    lines = ["✅ رسیدتان رسید."]
+    # ONE time promise. An earlier version added "if nothing in 120 minutes,
+    # send this code" under a line promising 30 — two deadlines in one breath,
+    # the second reading as a stall. The late case is now handled by a push
+    # the moment the promise is missed (shop_service.notify_overdue_payments),
+    # so this message only has to make the promise, not hedge it.
+    what = f" — برای سرویس {texts.gb(volume_gb)}" if (has_order and volume_gb) else ""
+    lines = [f"✅ رسیدتان رسید{what}."]
     if has_order:
-        lines.append(f"تا {texts.fa(eta)} دقیقه بررسی می‌شود و سرویس‌تان خودکار ساخته می‌شود.")
+        lines.append(f"تا {texts.fa(eta)} دقیقه بررسی می‌شود و سرویس‌تان خودکار آماده می‌شود.")
     else:
         lines.append(f"تا {texts.fa(eta)} دقیقه بررسی می‌شود و کیف پولتان شارژ می‌شود.")
+    lines.append("لازم نیست ربات را باز نگه دارید — خبرش همینجا می‌آید.")
     if reference:
-        lines.append(f"کد پیگیری: {reference}")
-        # A named threshold, not a vague "get in touch if something's wrong":
-        # the customer otherwise cannot tell whether twenty minutes of silence
-        # is normal or abandonment.
-        lines.append(f"اگر تا {texts.fa(max(eta * 4, 120))} دقیقه خبری نشد، همین کد را بفرستید.")
+        # Says what the code is FOR. A code with no use reads as decoration;
+        # this one returns the payment's status the moment it is typed back.
+        lines.append(f"کد پیگیری: {reference} — هر وقت خواستید همین کد را اینجا بفرستید تا وضعیتش را ببینید.")
     return "\n".join(lines) + texts.support(handle)
+
+
+async def _recover_pending_order(update: Update) -> dict | None:
+    """The plan this receipt belongs to, when the bot has lost the thread.
+
+    The usual reason in Iran is not a restart: banking apps refuse to open
+    over a VPN, so the customer turns the VPN off to pay, Telegram drops with
+    it, and the receipt arrives in what looks like a fresh conversation.
+    Asking the backend for their waiting order means the receipt still lands
+    on the right plan instead of being bounced as "what is this for?".
+    """
+    try:
+        pending = await backend.get(
+            "/api/shop/bot/orders/pending", params={"telegram_id": update.effective_user.id},
+        )
+    except ShopApiError:
+        logger.exception("Could not look up a pending order for %s", update.effective_user.id)
+        return None
+    if pending and pending.get("shortfall", 0) > 0:
+        return pending
+    return None
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     session = await _session(update)
     amount = context.user_data.get(_PENDING_AMOUNT)
-    if context.user_data.get(_STATE) != _STATE_AWAITING_RECEIPT or not amount:
-        # A photo with nothing pending. Says what it needs rather than
-        # silently ignoring it — an ignored receipt is a customer who believes
-        # they have paid, waiting for a subscription nobody is making.
-        await _reply(update, texts.RECEIPT_WITHOUT_CONTEXT, session)
-        return
-
     order_id = context.user_data.get(_ORDER_ID)
+    volume = context.user_data.get(_PENDING_VOLUME)
+
+    if context.user_data.get(_STATE) != _STATE_AWAITING_RECEIPT or not amount:
+        recovered = await _recover_pending_order(update)
+        if recovered is None:
+            # Genuinely nothing waiting. Says what it needs rather than
+            # silently ignoring the photo — an ignored receipt is a customer
+            # who believes they have paid, waiting for a service nobody is
+            # making.
+            await _reply(update, texts.RECEIPT_WITHOUT_CONTEXT, session)
+            return
+        amount = recovered["shortfall"]
+        order_id = recovered["order_id"]
+        volume = recovered["data_limit_gb"]
+
     # Cleared before the call: a second photo sent while this one is in flight
     # must not open a second payment against the same order.
     context.user_data.clear()
@@ -447,7 +500,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         }, timeout=60)
     except ShopApiError:
         logger.exception("Could not record a receipt for %s", update.effective_user.id)
-        await _reply(update, texts.generic_error(_handle(session)), session)
+        # Specific, not the generic error: the customer's question here is
+        # "did I just lose my money?", and the true answer is no — nothing was
+        # recorded, so resending the same photo is safe.
+        await _reply(update, texts.receipt_failed(_handle(session)), session)
         return
 
     await _reply(
@@ -457,6 +513,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             session.get("approval_eta_minutes", 30),
             _handle(session),
             has_order=order_id is not None,
+            volume_gb=volume,
         ),
         session,
     )
@@ -488,10 +545,8 @@ async def show_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             # detaches from its digits and can render on the wrong side, which
             # on a money line is a support message. The English enum used as a
             # fallback label leaked through here too.
-            verb = "واریز" if entry["amount"] > 0 else "برداشت"
-            note = entry.get("note")
-            tail = f" — {note}" if note else ""
-            lines.append(f"{verb} {texts.money(abs(entry['amount']))}{tail}")
+            label = _WALLET_LABELS.get(entry.get("type"), "تراکنش")
+            lines.append(f"{label}: {texts.money(abs(entry['amount']))}")
     await _reply(update, "\n".join(lines), session)
 
 
@@ -588,4 +643,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     session = await _session(update)
+
+    code = text.upper()
+    if _CODE_PATTERN.fullmatch(code):
+        try:
+            info = await backend.get(
+                "/api/shop/bot/topups/status",
+                params={"telegram_id": update.effective_user.id, "code": code},
+            )
+        except ShopApiError:
+            await _reply(update, texts.CODE_NOT_FOUND, session)
+            return
+        await _reply(
+            update,
+            texts.payment_status(
+                info["status"], info["reference_code"], info.get("order_status"),
+                info.get("data_limit_gb"), info.get("reject_reason"), _handle(session),
+            ),
+            session,
+        )
+        return
+
     await _reply(update, texts.not_understood(_handle(session)), session)

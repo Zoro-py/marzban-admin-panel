@@ -322,6 +322,15 @@ def _run_shop_migrations() -> None:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN expiry_warned_at DATETIME"))
         if order_cols and "usage_warned_at" not in order_cols:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN usage_warned_at DATETIME"))
+        if order_cols and "extends_account_id" not in order_cols:
+            conn.execute(text("ALTER TABLE shoporder ADD COLUMN extends_account_id INTEGER"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shoporder_extends_account_id ON shoporder (extends_account_id)"))
+        if order_cols and "target_data_limit" not in order_cols:
+            conn.execute(text("ALTER TABLE shoporder ADD COLUMN target_data_limit INTEGER"))
+        if order_cols and "target_expire" not in order_cols:
+            conn.execute(text("ALTER TABLE shoporder ADD COLUMN target_expire INTEGER"))
+        if topup_cols and "overdue_notified_at" not in topup_cols:
+            conn.execute(text("ALTER TABLE shoptopup ADD COLUMN overdue_notified_at DATETIME"))
 
         settings_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(shopsettings)"))}
         if settings_cols:

@@ -36,7 +36,9 @@ _PERSIAN_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 def fa_num(value) -> str:
     """Persian digits, with thousands separators for readability."""
     if isinstance(value, float) and value != int(value):
-        text = f"{value:,.2f}".rstrip("0").rstrip(".")
+        # Persian decimal separator «٫»: a «.» inside a Persian line reads as
+        # a stray full stop.
+        text = f"{value:,.2f}".rstrip("0").rstrip(".").replace(".", "٫")
     else:
         text = f"{int(value):,}"
     return text.translate(_PERSIAN_DIGITS)
@@ -120,37 +122,110 @@ def topup_approved_plain(amount: int, balance: int, handle: Optional[str]) -> st
 def topup_approved_with_order(amount: int, balance: int) -> str:
     """The order-first path: the payment is confirmed AND the plan is on its
     way in the same breath. Said before the QR arrives so the customer isn't
-    left wondering during the few seconds provisioning takes."""
+    left wondering during the few seconds provisioning takes.
+
+    `balance` here is what is LEFT after the plan was paid, i.e. an
+    overpayment. Named as such: a customer who transferred a round 100,000 for
+    a 90,000 plan and hears nothing about the other 10,000 concludes the shop
+    kept it."""
+    extra = (
+        f"\n{money_fa(balance)} بیشتر واریز کرده بودید؛ در کیف پولتان ماند و از خرید بعدی کم می‌شود."
+        if balance > 0 else ""
+    )
     return (
         f"✅ پرداختتان تأیید شد — {money_fa(amount)}.\n"
-        "دارم سرویس‌تان را می‌سازم، چند لحظه…"
-        + (f"\nباقیمانده در کیف پول: {money_fa(balance)}" if balance > 0 else "")
+        "دارم سرویس‌تان را آماده می‌کنم، چند لحظه…"
+        + extra
     )
 
 
-def topup_approved_short(amount: int, balance: int, shortfall: int, handle: Optional[str]) -> str:
-    """Approved for less than the plan costs. The money is banked and safe —
-    say that first, because the customer's fear is that it vanished."""
+def topup_approved_short(
+    amount: int,
+    balance: int,
+    shortfall: int,
+    card_number: Optional[str],
+    card_holder: Optional[str],
+    handle: Optional[str],
+) -> str:
+    """Approved for less than the plan costs.
+
+    Three things, in the order the customer fears them: the money that did
+    arrive is safe and theirs; exactly how much more finishes the purchase and
+    where to send it; and that they can have it back if they would rather
+    stop. The previous wording said only "you can top up the rest" — with no
+    card, no amount and no button, which left a newcomer holding money in a
+    wallet they had never seen and no way forward.
+    """
+    card = ""
+    if card_number:
+        holder = f"\nبه نام: {card_holder}" if card_holder else ""
+        card = (
+            f"\n\nبرای تکمیل، {money_fa(shortfall)} دیگر به همان کارت واریز کنید:\n"
+            f"`{plain_digits(card_number)}`{holder}\n"
+            "و عکس رسیدش را همینجا بفرستید — سفارشتان نگه داشته شده است."
+        )
     return (
-        f"✅ پرداختتان تأیید شد — {money_fa(amount)} به کیف پولتان اضافه شد.\n"
-        f"موجودی فعلی: {money_fa(balance)}\n\n"
-        f"برای سرویسی که انتخاب کرده بودید {money_fa(shortfall)} کم است. "
-        "می‌توانید باقی را شارژ کنید یا سرویس کوچک‌تری بگیرید."
+        f"✅ {money_fa(amount)} از پرداختتان رسید و در کیف پولتان محفوظ است.\n"
+        f"برای سرویسی که انتخاب کرده بودید {money_fa(shortfall)} کم است."
+        + card
+        + "\n\nاگر نمی‌خواهید ادامه دهید، پیام بدهید تا مبلغ را برگردانم."
         + support_line(handle)
     )
 
 
 def topup_rejected(reference: Optional[str], reason: Optional[str], handle: Optional[str]) -> str:
-    """Never a bare rejection. The customer believes they sent money; being
-    told 'no' with no reason and no way to argue is the worst message in the
-    product."""
+    """Never a bare rejection, and never a reason-less one.
+
+    The customer believes they sent money. A 'no' with no reason is, from
+    where they sit, indistinguishable from theft — so when the operator gave
+    no reason, the message still names the usual ones and says what to do.
+    """
     head = f"❌ رسید {reference} تأیید نشد." if reference else "❌ رسیدتان تأیید نشد."
-    body = f"\nعلت: {reason}" if reason else ""
+    if reason:
+        body = f"\nعلت: {reason}"
+    else:
+        body = "\nمعمولاً یعنی تصویر رسید خوانا نبود، یا مبلغ یا شماره کارتِ آن با پرداخت نمی‌خواند."
+    tail = (
+        f"\n\nاگر واریز کرده‌اید، همین کد را به @{handle.lstrip('@')} بفرستید تا خودم بررسی کنم."
+        if handle else
+        "\n\nاگر واریز کرده‌اید، رسیدِ واضح‌تری بفرستید."
+    )
+    return head + body + tail
+
+
+def renewed_in_place(added_gb: float, remaining_gb: Optional[float], days_left: Optional[int],
+                     handle: Optional[str]) -> str:
+    """A renewal on the account the customer already has. The whole message
+    is built around one fact: they do not have to do anything. Their app
+    already holds this link, and it simply has more on it now."""
+    remaining = ""
+    if remaining_gb is not None and days_left is not None:
+        remaining = f"\nالان: {fa_num(round(remaining_gb, 2))} گیگ باقیمانده · {fa_num(days_left)} روز"
     return (
-        head + body +
-        "\n\nاگر فکر می‌کنید اشتباه شده، رسیدتان را دوباره بفرستید یا پیام بدهید."
+        f"✅ {fa_num(added_gb)} گیگ به سرویس‌تان اضافه شد."
+        + remaining
+        + "\n\nهمان لینک قبلی کار می‌کند — لازم نیست چیزی را عوض کنید.\n"
+        "اگر برنامه هنوز حجم قبلی را نشان می‌دهد، روی اشتراک بزنید و «به‌روزرسانی» را انتخاب کنید."
         + support_line(handle)
     )
+
+
+def payment_overdue(reference: Optional[str], handle: Optional[str]) -> str:
+    """Sent once, when the promised approval time has passed. Owns the delay
+    instead of letting silence speak for it."""
+    code = f" (کد {reference})" if reference else ""
+    return (
+        f"⏳ بررسی پرداختتان{code} از زمانی که گفته بودم طولانی‌تر شده — ببخشید.\n"
+        "رسیدتان ثبت شده و گم نمی‌شود؛ به محض بررسی همینجا خبر می‌دهم."
+        + support_line(handle)
+    )
+
+
+def plain_digits(card_number: str) -> str:
+    """Card number with nothing but digits, for the tap-to-copy code span.
+    Iranian banking apps reject a pasted card number that contains dashes or
+    spaces, so the copyable form must be bare even if the display is not."""
+    return "".join(ch for ch in card_number if ch.isdigit()) or card_number
 
 
 # ── the order-first payment request ───────────────────────────────────────
