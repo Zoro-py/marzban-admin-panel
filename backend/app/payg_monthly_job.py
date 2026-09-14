@@ -19,6 +19,7 @@ retrying on every subsequent day this job runs (daily, via the scheduler)
 until it does.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -77,9 +78,20 @@ def _settlement_message(gb: float, amount: float, period_label: str) -> str:
     )
 
 
+_run_lock = asyncio.Lock()
+
+
 async def maybe_run_monthly_payg_settlement() -> dict:
     """Entry point, called daily by the scheduler. No-ops on every day
-    except when there's an unsettled target period to act on."""
+    except when there's an unsettled target period to act on.
+
+    The "already settled" check below is a read, and the write that makes it
+    true happens at the very END of a run that takes minutes — so a second
+    trigger arriving in between (the scheduler and an operator, say) would
+    have sailed past it and billed the same month twice. The lock closes that
+    window; the check stays for every later day."""
+    if _run_lock.locked():
+        return {"ran": False, "reason": "already running", "period": _month_key(*_target_settlement_period(jdatetime.date.today()))}
     today_j = jdatetime.date.today()
     target_year, target_month = _target_settlement_period(today_j)
     month_key = _month_key(target_year, target_month)
@@ -90,7 +102,13 @@ async def maybe_run_monthly_payg_settlement() -> dict:
             return {"ran": False, "reason": "already settled", "period": month_key}
 
     log.info("Running monthly payg settlement for %s", month_key)
-    return await _run_monthly_payg_settlement(month_key, target_year, target_month)
+    async with _run_lock:
+        # Re-read inside the lock: the run that just finished may be the one
+        # that settled this very period.
+        with Session(engine) as session:
+            if get_settings(session).last_payg_monthly_settlement == month_key:
+                return {"ran": False, "reason": "already settled", "period": month_key}
+        return await _run_monthly_payg_settlement(month_key, target_year, target_month)
 
 
 async def _run_monthly_payg_settlement(month_key: str, year: int, month: int) -> dict:
@@ -190,10 +208,14 @@ async def _run_monthly_payg_settlement(month_key: str, year: int, month: int) ->
 
         for r in account_rows:
             try:
-                await settle_account(r["account_id"], AccountSettleRequest(mark_paid=False), session)
+                result = await settle_account(r["account_id"], AccountSettleRequest(mark_paid=False), session)
+                # The amount the settle ACTUALLY posted, not the one computed
+                # minutes earlier: usage keeps accruing while the run works
+                # through the list, and the record has to match the ledger.
+                charged = float(result.get("charged_amount", r["amount"])) if isinstance(result, dict) else r["amount"]
                 session.add(MonthlySettlementBatch(
                     jalali_period=month_key, account_id=r["account_id"], display_name=r["name"],
-                    billable_gb=r["gb"], amount=r["amount"], settled_at=now,
+                    billable_gb=r["gb"], amount=charged, settled_at=now,
                 ))
                 session.commit()
                 settled += 1

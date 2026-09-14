@@ -373,7 +373,20 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
         "expire": new_expire,
         "status": "active",
     })
-    await marzban_client.reset_user(account.marzban_username)
+    # The reset is the SECOND call, and failing it used to abort the whole
+    # activation: Marzban was already carrying the new plan and reporting the
+    # account active, so the next sync's expired/limited guard never fired
+    # again — the plan stayed pending forever and the ended one was never
+    # billed. A failure here is therefore recorded, not raised: the only
+    # thing missing is the zeroed meter, and the baseline below accounts for
+    # exactly that.
+    reset_failed = False
+    try:
+        await marzban_client.reset_user(account.marzban_username)
+    except Exception:
+        reset_failed = True
+        log.exception("Activated the next plan for %s but could not zero its usage",
+                      account.marzban_username)
 
     # Step 3: Marzban accepted the new plan — record it locally.
     # Charged on account_id alone, with no `customer_id is not None` guard:
@@ -395,14 +408,20 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
 
     account.data_limit = new_data_limit
     account.expire = new_expire
-    account.used_traffic = 0
+    # When the meter was NOT zeroed, the counter keeps running from where the
+    # old plan left it. Pretending otherwise would bill the new plan for the
+    # old plan's traffic, which was just settled above.
+    if not reset_failed:
+        account.used_traffic = 0
     account.status = "active"
     # None means keep whatever billing_mode the account has right now — not
     # whatever it was when the plan was queued, since an operator could have
     # changed it via BillingSection in the meantime.
     if plan.billing_mode is not None:
         account.billing_mode = plan.billing_mode
-    account.usage_baseline = 0
+    # Measured from wherever the meter actually stands: 0 after a real reset,
+    # the surviving counter when the reset failed.
+    account.usage_baseline = 0 if not reset_failed else account.used_traffic
     account.usage_baseline_at = now
     account.billed_data_limit = 0
     account.last_synced_at = now
@@ -417,7 +436,8 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
         account_id=account.id,
         action="next_plan_activated",
         detail=f"Auto-activated: {plan.data_limit_gb} GB / {plan.duration_days} days"
-        f" (old plan billed {old_amount}){mode_note}",
+        f" (old plan billed {old_amount}){mode_note}"
+        + (" | usage was NOT reset in Marzban" if reset_failed else ""),
         date=now,
         source=LedgerSource.sync,
     ))
@@ -426,6 +446,19 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
     session.commit()
 
     log.info("Activated next plan for %s: %.1f GB / %d days", account.marzban_username, plan.data_limit_gb, plan.duration_days)
+
+    if reset_failed:
+        # The operator has to know: the plan is live and billed, but the
+        # meter still shows the old plan's traffic, so what Marzban displays
+        # will not match the dashboard until they reset it by hand.
+        try:
+            await _notify_admin(
+                f"⚠️ پلن بعدی «{account.marzban_username}» فعال شد و دوره‌ی قبل حساب شد، "
+                "اما صفرکردن مصرف در Marzban انجام نشد — "
+                "محاسبه‌ی ما درست است؛ فقط عدد پنل دستی باید ریست شود."
+            )
+        except Exception:
+            log.warning("Could not warn the operator that %s was not reset", account.marzban_username)
 
     # Best-effort, deliberately AFTER the commit above and in its own
     # try/except: unlike _maybe_auto_queue_next_plan (where a notification

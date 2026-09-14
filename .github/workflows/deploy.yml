@@ -19,5 +19,17 @@ jobs:
           script: |
             set -e
             cd ${{ secrets.DEPLOY_PATH }}
+
+            # A copy of the database BEFORE anything changes. Migrations run on
+            # startup and are one-way; without this, a bad deploy leaves the
+            # only copy of the billing data already migrated. Kept on the
+            # server, 10 most recent, so a rollback has something to restore.
+            mkdir -p ./predeploy-backups
+            if docker compose ps -q backend > /dev/null 2>&1; then
+              stamp=$(date +%Y%m%d-%H%M%S)
+              docker compose cp backend:/app/data/vpn.db "./predeploy-backups/vpn-$stamp.db" ||                 echo "WARNING: could not copy the database - continuing, but there is no pre-deploy backup"
+              ls -1t ./predeploy-backups/vpn-*.db 2>/dev/null | tail -n +11 | xargs -r rm --
+            fi
+
             git pull origin main
             docker compose up -d --build

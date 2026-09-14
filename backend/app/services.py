@@ -1,3 +1,5 @@
+import asyncio
+import functools
 from collections import defaultdict
 from datetime import datetime
 from typing import Optional
@@ -235,6 +237,27 @@ def get_settings(session: Session) -> AppSettings:
 
 def get_default_rate(session: Session) -> float:
     return get_settings(session).default_rate_per_gb or 0
+
+
+billing_lock = asyncio.Lock()
+
+
+def serialise_billing(fn):
+    """Runs the decorated endpoint one at a time, across the whole process.
+
+    The settle/reset paths were written as SELECT ... with_for_update(), which
+    is a silent no-op on SQLite: it parses, locks nothing, and reads exactly
+    like protection that is not there. Two settles for the same account
+    arriving together would each compute the amount from the same baseline
+    and post two charges. This makes that impossible while the backend is one
+    process — which the deployment is, and which the docstring above
+    with_for_update's remaining uses says out loud.
+    """
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        async with billing_lock:
+            return await fn(*args, **kwargs)
+    return wrapper
 
 
 def effective_rate(session: Session, account: Account, group: Optional[Group] = None) -> float:

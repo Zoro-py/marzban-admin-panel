@@ -17,6 +17,7 @@ from app.services import (
     enrich_accounts,
     group_only_posted_balance,
     roll_payg_baseline_after_reset,
+    serialise_billing,
     sync_marzban_fields,
 )
 
@@ -203,6 +204,7 @@ def get_group_invoice(group_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/{group_id}/settle")
+@serialise_billing
 async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(), session: Session = Depends(get_session)):
     """
     Settle the group's current billing cycle.
@@ -381,6 +383,7 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
 
 
 @router.post("/{group_id}/members/{account_id}/settle")
+@serialise_billing
 async def settle_group_member(
     group_id: int,
     account_id: int,
@@ -492,6 +495,7 @@ async def settle_group_member(
 
 
 @router.post("/{group_id}/reset-cycle")
+@serialise_billing
 async def reset_group_cycle(group_id: int, session: Session = Depends(get_session)):
     """Same as /settle EXCEPT it never posts a ledger charge — rolls every
     member's usage_baseline forward and starts a new cycle as if payment was

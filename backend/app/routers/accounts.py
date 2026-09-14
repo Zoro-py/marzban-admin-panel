@@ -45,6 +45,7 @@ from app.services import (
     effective_rate,
     enrich_accounts,
     roll_payg_baseline_after_reset,
+    serialise_billing,
     sync_marzban_fields,
 )
 
@@ -643,6 +644,7 @@ def get_account_invoice(account_id: int, session: Session = Depends(get_session)
 
 
 @router.post("/{account_id}/settle")
+@serialise_billing
 async def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRequest(), session: Session = Depends(get_session)):
     """Charges this standalone account for whatever it currently owes — usage
     since the last settle for payg, or the package (data_limit) itself for
@@ -675,6 +677,12 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
     billable_gb = billable / (1024**3)
     rate = effective_rate(session, account)
     amount = round(billable_gb * rate, 2)
+
+    # A charge with no customer belongs to nobody: it never shows in a
+    # balance, never appears on an invoice, and quietly disappears from the
+    # money the operator is owed. reset_account already refuses this.
+    if amount > 0 and not account.customer_id:
+        raise HTTPException(400, "Can't charge an unassigned account — assign it to a customer first")
 
     # Read BEFORE adding the charge below: this issues a SELECT, which
     # autoflushes pending adds, so reading afterwards would already include
@@ -764,6 +772,7 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
 
 
 @router.post("/{account_id}/reset", response_model=AccountRead)
+@serialise_billing
 async def reset_account(account_id: int, body: AccountResetRequest, session: Session = Depends(get_session)):
     """Starts a new usage cycle in Marzban. If `charge_amount` is explicitly
     given (including 0, to deliberately skip charging e.g. a comp reset), that
@@ -785,9 +794,14 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
 
     mode = effective_billing_mode(session, account)
     charge_amount = body.charge_amount
-    if charge_amount is None and mode == BillingMode.payg:
-        billable = max(0, account.used_traffic - account.usage_baseline)
-        billable_gb = billable / (1024**3)
+    if charge_amount is None:
+        # Both modes, not just payg. A prepay reset used to post nothing and
+        # STILL roll billed_data_limit up to data_limit below — which wrote
+        # the unbilled package off: no charge anywhere, and the pending
+        # amount gone for good. Charging what is actually pending keeps the
+        # rule the docstring states ("resetting never loses billing data");
+        # an operator who means to comp it passes charge_amount=0 explicitly.
+        billable_gb = billable_bytes(account, mode) / (1024**3)
         charge_amount = round(billable_gb * effective_rate(session, account), 2)
 
     if charge_amount and charge_amount > 0 and not account.customer_id and not account.group_id:
