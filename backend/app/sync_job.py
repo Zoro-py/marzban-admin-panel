@@ -144,8 +144,13 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
     if effective_billing_mode(session, account) != BillingMode.prepay:
         return
 
-    remaining_gb = (account.data_limit - account.used_traffic) / GB if account.data_limit is not None else None
-    remaining_days = (account.expire - time.time()) / 86400 if account.expire is not None else None
+    # `not account.data_limit` / `not account.expire`, not `is None`: Marzban
+    # writes 0 for "unlimited" and 0 for "never expires", and sync mirrors
+    # that verbatim. Read as a real number, a 0 cap looks like an account
+    # permanently out of quota and a 0 expiry like one that ended in 1970 —
+    # which queued a renewal for accounts that need neither.
+    remaining_gb = (account.data_limit - account.used_traffic) / GB if account.data_limit else None
+    remaining_days = (account.expire - time.time()) / 86400 if account.expire else None
     near_quota = remaining_gb is not None and remaining_gb <= NEAR_QUOTA_AUTO_QUEUE_REMAINING_GB
     near_expiry = remaining_days is not None and remaining_days <= NEAR_EXPIRY_AUTO_QUEUE_REMAINING_DAYS
     if not near_quota and not near_expiry:
@@ -243,7 +248,10 @@ async def _maybe_settle_payg_cap_hit(session: Session, account: Account, now: da
         return
     if effective_billing_mode(session, account) != BillingMode.payg:
         return
-    if account.data_limit is None:
+    if not account.data_limit:
+        # None or 0 — 0 is how Marzban writes "unlimited". Treating it as a
+        # cap of zero made every unlimited payg account look permanently over
+        # its limit: reset and charged on one sync, and again on the next.
         return  # no hard cap set -- nothing to hit
     remaining_gb = (account.data_limit - account.used_traffic) / GB
     if remaining_gb > PAYG_CAP_HIT_REMAINING_GB:

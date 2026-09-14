@@ -10,6 +10,7 @@ inbounds are configured.
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Optional
 
@@ -17,6 +18,8 @@ import httpx
 from jose import jwt as jose_jwt
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Refresh this long before the token's real expiry (from its own `exp` claim),
 # not exactly at it — clock skew and a request already in flight near the
@@ -127,13 +130,19 @@ class MarzbanClient:
         """
         users: list[dict] = []
         offset = 0
-        while True:
+        # A panel that ignores `offset` (or keeps answering with a full page)
+        # would otherwise spin here forever, holding the sync lock and growing
+        # this list until the process dies. 200 pages is 40,000 users at the
+        # default page size — far past any real panel, and a bounded failure
+        # instead of an unbounded one.
+        for _ in range(200):
             page = await self.list_users(offset=offset, limit=page_size)
             batch = page.get("users", [])
             users.extend(batch)
             if len(batch) < page_size:
-                break
+                return users
             offset += page_size
+        logger.error("Stopped paging Marzban users at %s: the panel kept returning full pages", len(users))
         return users
 
     async def get_user(self, username: str) -> Optional[dict]:

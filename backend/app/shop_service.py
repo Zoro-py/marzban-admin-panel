@@ -64,9 +64,24 @@ STUCK_ORDER_TIMEOUT_MINUTES = 10
 _purchase_locks: dict[int, asyncio.Lock] = {}
 
 
+def _prune(locks: dict[int, asyncio.Lock]) -> None:
+    """Drops locks nobody is holding once the dict gets large.
+
+    One entry per customer that has ever bought something, kept for the life
+    of the process — harmless at a few hundred, a slow leak at scale. A lock
+    that is not currently held has no state worth keeping: the next caller
+    simply gets a fresh one.
+    """
+    if len(locks) <= 1000:
+        return
+    for key in [k for k, lock in locks.items() if not lock.locked()]:
+        del locks[key]
+
+
 def _lock_for(shop_user_id: int) -> asyncio.Lock:
     # setdefault, so two callers can never walk away holding different locks
     # for the same customer — which would make the lock decorative.
+    _prune(_purchase_locks)
     return _purchase_locks.setdefault(shop_user_id, asyncio.Lock())
 
 
@@ -1245,6 +1260,7 @@ _extend_locks: dict[int, asyncio.Lock] = {}
 
 def _extend_lock_for(account_id: int) -> asyncio.Lock:
     # setdefault, for the same reason as _lock_for above.
+    _prune(_extend_locks)
     return _extend_locks.setdefault(account_id, asyncio.Lock())
 
 
