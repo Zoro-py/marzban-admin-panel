@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { shopApi } from '@/lib/api'
+import { apiErrorMessage, shopApi } from '@/lib/api'
 import type { ShopSettings, ShopTopup, ShopUser } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -118,6 +118,9 @@ function PendingTopups({ query }: { query: ReturnType<typeof useQuery<ShopTopup[
       toast.success(`Credited ${toman(topup.approved_amount ?? topup.claimed_amount)}`)
       invalidate()
     },
+    // Without this a failed approval looked identical to a successful one:
+    // the card stayed put and the operator tapped again.
+    onError: (err) => toast.error(apiErrorMessage(err)),
   })
   const reject = useMutation({
     mutationFn: ({ id, reason }: { id: number; reason?: string }) => shopApi.rejectTopup(id, reason),
@@ -125,6 +128,7 @@ function PendingTopups({ query }: { query: ReturnType<typeof useQuery<ShopTopup[
       toast.success('Rejected — the customer has been told')
       invalidate()
     },
+    onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
   if (query.isLoading) return <Skeleton className="h-40 w-full" />
@@ -160,7 +164,10 @@ function PendingTopups({ query }: { query: ReturnType<typeof useQuery<ShopTopup[
         // re-enabled mid-request, and a second click earned the operator an
         // "already approved" error on a payment they had approved once. The
         // backend still credits only once — this is about not lying on screen.
-        const busy = approve.isPending || reject.isPending
+        // Only THIS row, not the whole list: a decision on one customer's
+        // payment has no reason to freeze the others.
+        const deciding = approve.variables?.id ?? reject.variables?.id
+        const busy = (approve.isPending || reject.isPending) && deciding === topup.id
         const overrideRaw = overrides[topup.id] ?? ''
         const overrideAmount = overrideRaw.trim() === '' ? undefined : Number(overrideRaw)
         // Whole Toman only — the backend field is an int (wallet amounts are
@@ -240,7 +247,15 @@ function PendingTopups({ query }: { query: ReturnType<typeof useQuery<ShopTopup[
                   size="sm"
                   className="gap-1.5"
                   disabled={busy || overrideInvalid}
-                  onClick={() => approve.mutate({ id: topup.id, amount: overrideAmount })}
+                  onClick={() => {
+                    // Irreversible: this credits a wallet and, for an
+                    // order-bound payment, hands over a subscription.
+                    const who = topup.display_name ?? `id ${topup.telegram_id}`
+                    const amount = overrideAmount ?? topup.claimed_amount
+                    const extra = topup.order_id ? ` and deliver order #${topup.order_id}` : ''
+                    if (!window.confirm(`Credit ${toman(amount)} to ${who}${extra}?`)) return
+                    approve.mutate({ id: topup.id, amount: overrideAmount })
+                  }}
                 >
                   <Check className="h-3.5 w-3.5" />
                   Credit {toman(overrideAmount ?? topup.claimed_amount)}
@@ -278,7 +293,11 @@ function ShopUsers() {
   const block = useMutation({
     mutationFn: ({ id, blocked }: { id: number; blocked: boolean }) =>
       shopApi.updateUser(id, { is_blocked: blocked }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['shop'] }),
+    onSuccess: (user) => {
+      toast.success(user.is_blocked ? 'Blocked' : 'Unblocked')
+      queryClient.invalidateQueries({ queryKey: ['shop'] })
+    },
+    onError: (err) => toast.error(apiErrorMessage(err)),
   })
   const adjust = useMutation({
     mutationFn: ({ id, amount }: { id: number; amount: number }) =>
@@ -478,7 +497,10 @@ function ShopSettingsForm() {
   const settingsInvalid =
     ![draft.price_per_gb, draft.plan_duration_days, draft.min_gb, draft.max_gb, draft.max_topup].every(positive) ||
     // A minimum top-up of zero is a real choice: it means "no minimum".
-    !nonNegative(draft.min_topup)
+    !nonNegative(draft.min_topup) ||
+    // Only when they are switched on — an off feature's fields are ignored.
+    (Boolean(draft.trial_enabled) && ![draft.trial_gb, draft.trial_hours].every(positive)) ||
+    (Boolean(draft.provisional_enabled) && ![draft.provisional_gb, draft.provisional_hours].every(positive))
 
   const save = useMutation({
     mutationFn: () =>

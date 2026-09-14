@@ -259,7 +259,7 @@ def adjust_wallet(user_id: int, body: ShopWalletAdjustRequest, session: Session 
 @router.get("/topups", response_model=list[ShopTopupRead])
 def list_topups(
     status: Optional[ShopTopupStatus] = None,
-    limit: int = 100,
+    limit: int = Query(100, ge=1, le=500),
     session: Session = Depends(get_session),
 ):
     stmt = select(ShopTopup)
@@ -404,7 +404,7 @@ async def reject_topup_endpoint(
 
 
 @router.get("/orders", response_model=list[ShopOrderRead])
-def list_orders(limit: int = 100, session: Session = Depends(get_session)):
+def list_orders(limit: int = Query(100, ge=1, le=500), session: Session = Depends(get_session)):
     orders = session.exec(select(ShopOrder).order_by(ShopOrder.created_at.desc()).limit(limit)).all()
     users = {u.id: u for u in session.exec(select(ShopUser)).all()}
     return [

@@ -7,7 +7,11 @@ from handlers.common import admin_only, format_toman
 
 @admin_only
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    summary = await backend.get("/api/reports/summary")
+    try:
+        summary = await backend.get("/api/reports/summary")
+    except Exception as exc:  # noqa: BLE001 — silence reads as a dead bot
+        await update.message.reply_text(f"Couldn't build the report: {exc}")
+        return
 
     lines = [f"*Daily summary* — {summary['total_customers']} customers, {summary['total_accounts']} accounts", ""]
 

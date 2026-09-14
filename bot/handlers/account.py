@@ -57,18 +57,25 @@ async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             amount = round(gb * account["effective_rate"], 2)
             if amount > 0:
-                await backend.post(
-                    "/api/ledger",
-                    json={
-                        "type": "charge",
-                        "amount": amount,
-                        "customer_id": account.get("customer_id"),
-                        "group_id": account.get("group_id"),
-                        "account_id": account["id"],
-                        "note": f"+{gb}GB via bot /extend",
-                    },
-                )
-                charge_note = f" — charged {format_toman(amount)}"
+                try:
+                    await backend.post(
+                        "/api/ledger",
+                        json={
+                            "type": "charge",
+                            "amount": amount,
+                            "customer_id": account.get("customer_id"),
+                            "group_id": account.get("group_id"),
+                            "account_id": account["id"],
+                            "note": f"+{gb}GB via bot /extend",
+                        },
+                    )
+                    charge_note = f" — charged {format_toman(amount)}"
+                except Exception as exc:  # noqa: BLE001
+                    # The panel change already happened and cannot be undone
+                    # here. Saying "charged" when nothing was recorded is how
+                    # traffic ends up given away and never invoiced.
+                    charge_note = (f" — ⚠️ panel updated but NOT billed ({exc}). "
+                                   f"Add {format_toman(amount)} by hand.")
 
     await update.message.reply_text(
         f"Updated `{updated['marzban_username']}` — expires {format_expire(updated['expire'])}, "

@@ -29,8 +29,12 @@ async def customer_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text(f"No customer matches '{query}'.")
         return
 
-    balance = await backend.get("/api/ledger/balance", params={"customer_id": customer["id"]})
-    accounts = await backend.get(f"/api/customers/{customer['id']}/accounts")
+    try:
+        balance = await backend.get("/api/ledger/balance", params={"customer_id": customer["id"]})
+        accounts = await backend.get(f"/api/customers/{customer['id']}/accounts")
+    except Exception as exc:  # noqa: BLE001
+        await update.message.reply_text(f"Couldn't read this customer: {exc}")
+        return
 
     lines = [
         f"*{md(customer['name'])}*  (#{customer['id']})",

@@ -24,8 +24,8 @@ class CustomerCreate(BaseModel):
 
 
 class CustomerUpdate(BaseModel):
-    name: Optional[str] = None
-    contact: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100, pattern=r"\S")
+    contact: Optional[str] = Field(default=None, max_length=120)
     is_group_rep: Optional[bool] = None
 
 
@@ -58,14 +58,14 @@ class CustomerWithBalance(CustomerRead):
 class GroupCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100, pattern=r"\S")
     representative_customer_id: int
-    billing_cycle_days: int = 30
+    billing_cycle_days: int = Field(default=30, ge=1, le=365)
     rate_per_gb: Optional[float] = Field(default=None, ge=0.0)
     billing_mode: BillingMode = BillingMode.payg
 
 
 class GroupUpdate(BaseModel):
-    name: Optional[str] = None
-    billing_cycle_days: Optional[int] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100, pattern=r"\S")
+    billing_cycle_days: Optional[int] = Field(default=None, ge=1, le=365)
     rate_per_gb: Optional[float] = Field(default=None, ge=0.0)
     billing_mode: Optional[BillingMode] = None
 

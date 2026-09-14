@@ -260,6 +260,18 @@ async def _maybe_settle_payg_cap_hit(session: Session, account: Account, now: da
     # unblocked and reset when it was neither.
     marzban_user = await marzban_client.reset_user(account.marzban_username)
 
+    # Marzban leaves a capped user 'limited' after a reset: the meter reads 0
+    # but the customer is still cut off, which is the opposite of what both
+    # the message below and the charge above promise. Only if it needs it.
+    if marzban_user.get("status") != "active":
+        try:
+            marzban_user = await marzban_client.modify_user(
+                account.marzban_username, {"status": "active"}
+            ) or marzban_user
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Reset %s after its cap but could not re-activate it", account.marzban_username)
+
     await _notify_admin(
         f"🚫 اکانت «{account.marzban_username}» به سقف حجمش ({account.data_limit / GB:g} گیگ) رسید و بلاک شده بود"
         f"{charge_note} — مصرفش تو Marzban صفر شد تا دوباره وصل بشه."

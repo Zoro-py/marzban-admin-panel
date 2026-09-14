@@ -618,6 +618,17 @@ def create_topup(
             raise ShopError("That order doesn't belong to this account.")
         if order.status != ShopOrderStatus.awaiting_payment:
             raise ShopError("That order has already been paid for.")
+        pending_already = session.exec(
+            select(ShopTopup).where(
+                ShopTopup.order_id == order_id,
+                ShopTopup.status == ShopTopupStatus.pending,
+            )
+        ).first()
+        if pending_already is not None:
+            # Two receipts for one plan means two credits for one payment if
+            # the operator approves both — and the second is usually the same
+            # photo sent again by someone who thinks the first didn't arrive.
+            raise ShopError("A payment for this plan is already waiting to be checked.")
 
     topup = ShopTopup(
         shop_user_id=shop_user.id,

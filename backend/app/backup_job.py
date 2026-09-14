@@ -8,6 +8,7 @@ chat), run on its own schedule via the AsyncIOScheduler in main.py.
 import logging
 import os
 import sqlite3
+from contextlib import closing
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -42,13 +43,11 @@ def _safe_copy_sqlite(src_path: str, dst_path: str) -> None:
     -wal file rather than the main file — a plain copy can miss it, or catch
     the main file mid-write. The backup API is safe against a live,
     concurrently-written database; a raw copy is not."""
-    src = sqlite3.connect(src_path)
-    dst = sqlite3.connect(dst_path)
-    try:
+    # Each connection closed by its own context manager: opening the second
+    # one can fail (a full disk, a bad path), and the old finally-block left
+    # the first connection — and its file handle on a live database — open.
+    with closing(sqlite3.connect(src_path)) as src, closing(sqlite3.connect(dst_path)) as dst:
         src.backup(dst)
-    finally:
-        dst.close()
-        src.close()
 
 
 async def run_backup() -> dict:
