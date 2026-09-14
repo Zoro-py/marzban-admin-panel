@@ -567,9 +567,11 @@ async def bot_deliver_qr(order_id: int, body: ShopBotOrderAction, session: Sessi
             user.telegram_id, subscription_qr_png(subscription_url), caption,
             filename=f"{account.marzban_username}.png",
         )
-    except Exception as exc:  # noqa: BLE001 — the caller needs the real reason to decide whether to retry
+    except Exception:  # noqa: BLE001 — logged in full; the response stays generic
         logger.exception("Order #%s: could not deliver the QR", order_id)
-        raise HTTPException(502, f"Could not send the QR: {exc}")
+        # The reason is in the log, not the response: a Telegram or httpx
+        # error string carries internal hostnames and the bot's own URL.
+        raise HTTPException(502, "Could not send the QR — try again in a moment")
     return {"delivered": True}
 
 

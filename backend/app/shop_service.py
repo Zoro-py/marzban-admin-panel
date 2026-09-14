@@ -693,6 +693,15 @@ async def approve_topup(
     amount = approved_amount if approved_amount is not None else topup.claimed_amount
     if amount <= 0:
         raise ShopError("Approved amount must be positive.")
+    # An operator typing one zero too many credits ten times the money, and
+    # the customer can spend it before anyone notices. The shop's own
+    # max_topup is the ceiling the operator already set for a single payment.
+    settings = get_shop_settings(session)
+    if settings.max_topup and amount > settings.max_topup:
+        raise ShopError(
+            f"{amount:,} T is above the largest top-up this shop takes "
+            f"({settings.max_topup:,} T). Raise the limit in settings if that is really the amount."
+        )
 
     # The pending -> approved move is the only thing standing between one
     # receipt and two credits, so it is made as a conditional UPDATE rather
@@ -1049,22 +1058,26 @@ async def maybe_grant_provisional(session: Session, shop_user: ShopUser, order: 
     a free gigabyte must never disturb the payment they actually sent.
     """
     settings = get_shop_settings(session)
-    refusal = provisional_reason_to_refuse(session, shop_user, order, claimed_amount, settings)
-    if refusal is not None:
-        logger.info("No bridge service for shop user #%s: %s", shop_user.id, refusal)
-        return None
+    # Under the customer's purchase lock: two receipts arriving together would
+    # otherwise both pass the "none in the last 30 days" check and each build
+    # an account.
+    async with _lock_for(shop_user.id):
+        refusal = provisional_reason_to_refuse(session, shop_user, order, claimed_amount, settings)
+        if refusal is not None:
+            logger.info("No bridge service for shop user #%s: %s", shop_user.id, refusal)
+            return None
 
-    bridge = ShopOrder(
-        shop_user_id=shop_user.id,
-        data_limit_gb=settings.provisional_gb,
-        duration_days=max(1, (settings.provisional_hours + 23) // 24),
-        price=0,
-        status=ShopOrderStatus.provisioning,
-        is_provisional=True,
-    )
-    session.add(bridge)
-    session.commit()
-    session.refresh(bridge)
+        bridge = ShopOrder(
+            shop_user_id=shop_user.id,
+            data_limit_gb=settings.provisional_gb,
+            duration_days=max(1, (settings.provisional_hours + 23) // 24),
+            price=0,
+            status=ShopOrderStatus.provisioning,
+            is_provisional=True,
+        )
+        session.add(bridge)
+        session.commit()
+        session.refresh(bridge)
 
     await _provision_order(session, bridge, settings, duration_hours=settings.provisional_hours)
     session.refresh(bridge)
