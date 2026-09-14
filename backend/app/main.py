@@ -49,9 +49,9 @@ async def _scheduled_shop_order_sweep() -> None:
         session_gen = get_session()
         session = next(session_gen)
         try:
-            refunded = sweep_stuck_orders(session)
-            if refunded:
-                logger.warning("Refunded %d stuck shop order(s)", len(refunded))
+            resolved = await sweep_stuck_orders(session)
+            if resolved:
+                logger.warning("Resolved %d stuck shop order(s)", len(resolved))
         finally:
             session_gen.close()
     except Exception:

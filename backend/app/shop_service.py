@@ -271,6 +271,108 @@ async def purchase(session: Session, shop_user: ShopUser, data_limit_gb: float) 
     return order
 
 
+def _order_note(order_id: int) -> str:
+    """The marker written into the Marzban user's `note` at creation.
+
+    This is what makes "does shop7 exist?" answerable as "did WE create shop7
+    for this order?". Order ids are never reused, but an operator can still
+    have made a user with the same name by hand, and adopting theirs would
+    hand a stranger's account to a customer.
+    """
+    return f"shop order #{order_id}"
+
+
+async def _find_our_marzban_user(username: str, order_id: int) -> Optional[dict]:
+    """Returns the Marzban user only if WE created it for this order.
+
+    Exists because a failed create call does NOT mean nothing was created. A
+    read timeout on POST /api/user is raised as MarzbanUnavailable while the
+    panel may have processed the request completely — the response is what was
+    lost, not the work. Refunding on that signal alone produced a full refund
+    plus a live, unbilled account: measured, not theorised.
+
+    A lookup that itself fails returns None, which sends the caller down the
+    refund path. That is the right way to be wrong: refunding a customer whose
+    account does exist is recoverable by the operator, and the next sync
+    surfaces the orphan account; charging for one that does not exist is not.
+    """
+    try:
+        user = await marzban_client.get_user(username)
+    except Exception:
+        logger.exception("Order #%s: could not check whether %s exists in Marzban", order_id, username)
+        return None
+    if user is None:
+        return None
+    if (user.get("note") or "") != _order_note(order_id):
+        logger.warning(
+            "Order #%s: Marzban already has a user named %s that we did not create — not adopting it",
+            order_id, username,
+        )
+        return None
+    return user
+
+
+def _record_delivered(session: Session, order: ShopOrder, username: str, marzban_user: dict) -> None:
+    """Writes the local Account row and marks the order delivered.
+
+    Refuses to do so if the order is no longer `provisioning` — the sweeper
+    runs in its own session and may have refunded it while the Marzban call
+    was in flight. Writing `delivered` over a refunded order is how a paid
+    plan becomes a free one, with the only trace being a refund note on an
+    order that says delivered.
+    """
+    session.expire(order)
+    session.refresh(order)
+    if order.status != ShopOrderStatus.provisioning:
+        logger.error(
+            "Order #%s reached delivery as '%s', not 'provisioning' — it was settled elsewhere "
+            "(the stuck-order sweeper) while Marzban was still working. Re-charging so the "
+            "delivered account is not free.",
+            order.id, order.status.value,
+        )
+        # Deliberately allowed to take the balance negative. A negative wallet
+        # is visible to the operator on the Shop page and correctable with one
+        # adjustment; a delivered account that was never paid for is invisible.
+        post_wallet_entry(
+            session,
+            order.shop_user_id,
+            entry_type=ShopWalletEntryType.purchase,
+            amount=-order.price,
+            note=f"Re-charge: order #{order.id} was refunded but delivered anyway",
+            order_id=order.id,
+            commit=False,
+        )
+
+    now = utcnow()
+    account = Account(
+        marzban_username=username,
+        used_traffic=marzban_user.get("used_traffic", 0),
+        lifetime_used_traffic=marzban_user.get("lifetime_used_traffic", 0),
+        first_seen_traffic=marzban_user.get("lifetime_used_traffic", 0),
+        first_seen_traffic_at=now,
+        usage_baseline_at=now,
+        data_limit=marzban_user.get("data_limit"),
+        expire=marzban_user.get("expire"),
+        status=marzban_user.get("status"),
+        subscription_url=marzban_user.get("subscription_url"),
+        last_synced_at=now,
+    )
+    session.add(account)
+    session.flush()
+    session.add(AccountEvent(
+        account_id=account.id,
+        action="create",
+        detail=f"Sold via shop order #{order.id}",
+    ))
+    order.account_id = account.id
+    order.marzban_username = username
+    order.status = ShopOrderStatus.delivered
+    order.delivered_at = now
+    order.error = None
+    session.add(order)
+    session.commit()
+
+
 async def _provision_order(session: Session, order: ShopOrder, settings: ShopSettings) -> None:
     """Creates the Marzban user for an already-paid order.
 
@@ -297,38 +399,28 @@ async def _provision_order(session: Session, order: ShopOrder, settings: ShopSet
         marzban_user = await marzban_client.create_user(payload)
     except (ValueError, MarzbanUnavailable, MarzbanAuthError) as exc:
         logger.exception("Shop order #%s: Marzban rejected it or was unreachable", order.id)
+        # A failed call is NOT evidence that nothing was created. A read
+        # timeout on POST /api/user loses the response, not necessarily the
+        # work — and refunding on that signal alone produced a full refund
+        # plus a live, unbilled account. Ask the panel before deciding.
+        created = await _find_our_marzban_user(username, order.id)
+        if created is not None:
+            logger.warning(
+                "Shop order #%s: the create call failed but %s exists in Marzban — "
+                "delivering it instead of refunding", order.id, username,
+            )
+            try:
+                _record_delivered(session, order, username, created)
+            except Exception:
+                session.rollback()
+                logger.exception("Shop order #%s: adopted %s but could not record it", order.id, username)
+                _mark_delivered_untracked(session, order, username, "adopted after a failed create")
+            return
         refund_order(session, order, reason=str(exc))
         return
 
-    now = utcnow()
     try:
-        account = Account(
-            marzban_username=username,
-            used_traffic=marzban_user.get("used_traffic", 0),
-            lifetime_used_traffic=marzban_user.get("lifetime_used_traffic", 0),
-            first_seen_traffic=marzban_user.get("lifetime_used_traffic", 0),
-            first_seen_traffic_at=now,
-            usage_baseline_at=now,
-            data_limit=marzban_user.get("data_limit"),
-            expire=marzban_user.get("expire"),
-            status=marzban_user.get("status"),
-            subscription_url=marzban_user.get("subscription_url"),
-            last_synced_at=now,
-        )
-        session.add(account)
-        session.flush()
-        session.add(AccountEvent(
-            account_id=account.id,
-            action="create",
-            detail=f"Sold via shop order #{order.id}",
-        ))
-        order.account_id = account.id
-        order.marzban_username = username
-        order.status = ShopOrderStatus.delivered
-        order.delivered_at = now
-        order.error = None
-        session.add(order)
-        session.commit()
+        _record_delivered(session, order, username, marzban_user)
     except Exception as exc:  # noqa: BLE001 — the Marzban user exists; never silently drop this
         session.rollback()
         logger.exception("Shop order #%s: created %s in Marzban but failed to record it", order.id, username)
@@ -336,12 +428,19 @@ async def _provision_order(session: Session, order: ShopOrder, settings: ShopSet
         # would hand them the plan for free. The order is marked delivered
         # with the bookkeeping error attached, and the sync job adopts the
         # orphaned Account row on its next pass.
-        order.marzban_username = username
-        order.status = ShopOrderStatus.delivered
-        order.delivered_at = now
-        order.error = f"Delivered, but not recorded locally: {exc}"
-        session.add(order)
-        session.commit()
+        _mark_delivered_untracked(session, order, username, str(exc))
+
+
+def _mark_delivered_untracked(session: Session, order: ShopOrder, username: str, reason: str) -> None:
+    """Last resort when the Marzban user exists but the local row could not be
+    written. Records the delivery so the order is never swept and refunded for
+    an account the customer is actually using."""
+    order.marzban_username = username
+    order.status = ShopOrderStatus.delivered
+    order.delivered_at = utcnow()
+    order.error = f"Delivered, but not recorded locally: {reason}"
+    session.add(order)
+    session.commit()
 
 
 def refund_order(session: Session, order: ShopOrder, *, reason: str) -> None:
@@ -352,6 +451,15 @@ def refund_order(session: Session, order: ShopOrder, *, reason: str) -> None:
     Refunding twice would silently mint money, and since a wallet is summed
     from its entries there would be no discrepancy anywhere to notice it by.
     """
+    if order.status != ShopOrderStatus.provisioning:
+        # Guards the state, not just the entry. The existing-refund check below
+        # stops a double refund; this stops refunding an order that reached a
+        # DIFFERENT terminal state — refunding a delivered account would hand
+        # the customer a working plan for nothing.
+        logger.warning("Shop order #%s is '%s', not 'provisioning' — refusing to refund it",
+                       order.id, order.status.value)
+        return
+
     already_refunded = session.exec(
         select(ShopWalletEntry).where(
             ShopWalletEntry.order_id == order.id,
@@ -377,13 +485,23 @@ def refund_order(session: Session, order: ShopOrder, *, reason: str) -> None:
     session.commit()
 
 
-def sweep_stuck_orders(session: Session) -> list[ShopOrder]:
-    """Refunds orders that took the money and never reached a terminal state.
+async def sweep_stuck_orders(session: Session) -> list[ShopOrder]:
+    """Resolves orders that took the money and never reached a terminal state.
 
     That happens when the process dies between the wallet debit and Marzban
     responding. Without this the customer stays charged forever for nothing —
     and would have no way to tell, because from their side the bot simply
     never replied.
+
+    "Stuck" is NOT evidence that nothing was created, which is why this asks
+    the panel about every candidate before touching the money. The process can
+    just as easily have died AFTER Marzban created the account, and refunding
+    on age alone turned that into a free live account — the exact outcome
+    purchase()'s ordering was chosen to prevent. An order whose account does
+    exist is delivered late instead; only the ones the panel has never heard
+    of are refunded.
+
+    Async for that reason alone: the Marzban lookup is the whole point.
     """
     cutoff = utcnow() - timedelta(minutes=STUCK_ORDER_TIMEOUT_MINUTES)
     stuck = session.exec(
@@ -392,14 +510,33 @@ def sweep_stuck_orders(session: Session) -> list[ShopOrder]:
             ShopOrder.created_at < cutoff,
         )
     ).all()
+
+    settings = get_shop_settings(session)
+    resolved: list[ShopOrder] = []
     for order in stuck:
-        logger.warning("Shop order #%s stuck in provisioning since %s — refunding", order.id, order.created_at)
-        refund_order(
-            session,
-            order,
-            reason="Provisioning never completed (server restarted?) — refunded automatically",
-        )
-    return list(stuck)
+        username = f"{settings.username_prefix}{order.id}"
+        created = await _find_our_marzban_user(username, order.id)
+        if created is not None:
+            logger.warning(
+                "Shop order #%s was stuck but %s exists in Marzban — delivering it late "
+                "instead of refunding", order.id, username,
+            )
+            try:
+                _record_delivered(session, order, username, created)
+            except Exception:
+                session.rollback()
+                logger.exception("Shop order #%s: could not record the late delivery", order.id)
+                _mark_delivered_untracked(session, order, username, "recovered by the stuck-order sweep")
+        else:
+            logger.warning("Shop order #%s stuck since %s with no account in Marzban — refunding",
+                           order.id, order.created_at)
+            refund_order(
+                session,
+                order,
+                reason="Provisioning never completed (server restarted?) — refunded automatically",
+            )
+        resolved.append(order)
+    return resolved
 
 
 # ── top-ups ───────────────────────────────────────────────────────────────

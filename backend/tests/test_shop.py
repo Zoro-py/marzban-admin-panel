@@ -42,6 +42,7 @@ from sqlmodel import Session, select  # noqa: E402
 from app import marzban_client as marzban_module  # noqa: E402
 from app.auth import require_auth  # noqa: E402
 from app.db import engine, init_db  # noqa: E402
+from app.marzban_client import MarzbanUnavailable  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import (  # noqa: E402
     Account,
@@ -68,24 +69,45 @@ BOT_HEADERS = {"X-Shop-Bot-Key": "test-shop-key"}
 
 
 class FakeMarzban:
-    def __init__(self, fail_with: Exception | None = None):
-        self.fail_with = fail_with
-        self.created: list[str] = []
+    """Models a panel that can be QUERIED, not just written to.
 
-    async def create_user(self, payload: dict) -> dict:
-        if self.fail_with is not None:
-            raise self.fail_with
+    `panel` is what really exists on the far side. `create_lands` decides
+    whether a failing create still creates the user — that is the real-world
+    case the code has to survive: a read timeout loses the RESPONSE, not
+    necessarily the work.
+    """
+
+    def __init__(self, fail_with: Exception | None = None, create_lands: bool = False):
+        self.fail_with = fail_with
+        self.create_lands = create_lands
+        self.created: list[str] = []
+        self.panel: dict[str, dict] = {}
+
+    def _record(self, payload: dict) -> dict:
         username = payload["username"]
-        self.created.append(username)
-        return {
+        user = {
             "username": username,
             "used_traffic": 0,
             "lifetime_used_traffic": 0,
             "data_limit": payload.get("data_limit"),
             "expire": payload.get("expire"),
             "status": "active",
+            "note": payload.get("note"),
             "subscription_url": f"/sub/tok_{username}",
         }
+        self.panel[username] = user
+        self.created.append(username)
+        return user
+
+    async def create_user(self, payload: dict) -> dict:
+        if self.fail_with is not None:
+            if self.create_lands:
+                self._record(payload)
+            raise self.fail_with
+        return self._record(payload)
+
+    async def get_user(self, username: str):
+        return self.panel.get(username)
 
 
 _failures: list[str] = []
@@ -117,6 +139,7 @@ def _reset(fake: FakeMarzban | None = None, *, open_shop: bool = True) -> TestCl
     _purchase_locks.clear()
     if fake is not None:
         marzban_module.marzban_client.create_user = fake.create_user
+        marzban_module.marzban_client.get_user = fake.get_user
     app.dependency_overrides[require_auth] = lambda: "test-admin"
     return TestClient(app)
 
@@ -137,6 +160,24 @@ def test_auth_boundary() -> None:
     print("\n[1] the shop bot's key opens the bot endpoints and nothing else")
     fake = FakeMarzban()
     client = _reset(fake)
+
+    # Every bot endpoint, not a representative one. AGENTS.md §4.1: confirm the
+    # enforcement runs on the triggering path, not that it exists somewhere in
+    # the file. A per-route guard that was missed on ONE endpoint would look
+    # identical to its neighbours and pass a single-endpoint test.
+    unguarded = []
+    for method, path, kwargs in [
+        ("post", "/api/shop/bot/session", {"json": {"telegram_id": 1}}),
+        ("post", "/api/shop/bot/quote", {"json": {"telegram_id": 1, "data_limit_gb": 10}}),
+        ("post", "/api/shop/bot/purchase", {"json": {"telegram_id": 1, "data_limit_gb": 10}}),
+        ("post", "/api/shop/bot/purchase/1/deliver", {}),
+        ("post", "/api/shop/bot/topups", {"json": {"telegram_id": 1, "claimed_amount": 50000}}),
+        ("get", "/api/shop/bot/accounts", {"params": {"telegram_id": 1}}),
+        ("get", "/api/shop/bot/wallet", {"params": {"telegram_id": 1}}),
+    ]:
+        if getattr(client, method)(path, **kwargs).status_code != 401:
+            unguarded.append(path)
+    check("every bot endpoint refuses an unkeyed request", unguarded, [])
 
     no_key = client.post("/api/shop/bot/session", json={"telegram_id": 1})
     bad_key = client.post("/api/shop/bot/session", headers={"X-Shop-Bot-Key": "wrong"},
@@ -285,7 +326,7 @@ def test_stuck_order_sweep() -> None:
         session.commit()
         check("balance reflects the debit", wallet_balance(session, uid), 70_000)
 
-        swept = sweep_stuck_orders(session)
+        swept = asyncio.run(sweep_stuck_orders(session))
         check("one order swept", len(swept), 1)
         check("money returned", wallet_balance(session, uid), 100_000)
 
@@ -296,7 +337,80 @@ def test_stuck_order_sweep() -> None:
                           status=ShopOrderStatus.provisioning)
         session.add(fresh)
         session.commit()
-        check("a just-created order is left alone", len(sweep_stuck_orders(session)), 0)
+        check("a just-created order is left alone", len(asyncio.run(sweep_stuck_orders(session))), 0)
+
+
+def test_timeout_that_actually_created_is_not_refunded() -> None:
+    print("\n[7b] a lost response on a create that SUCCEEDED delivers, it does not refund")
+    # The real failure: httpx raises MarzbanUnavailable on a read timeout, but
+    # the panel processed the POST. Refunding on that signal alone produced a
+    # full refund AND a live account nobody paid for.
+    fake = FakeMarzban(fail_with=MarzbanUnavailable("ReadTimeout"), create_lands=True)
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 100_000)
+
+    client.post("/api/shop/bot/purchase", headers=BOT_HEADERS,
+                json={"telegram_id": 555, "data_limit_gb": 10})
+    with Session(engine) as session:
+        order = session.exec(select(ShopOrder)).one()
+        balance = wallet_balance(session, uid)
+        refunds = session.exec(
+            select(ShopWalletEntry).where(ShopWalletEntry.type == ShopWalletEntryType.refund)
+        ).all()
+    check("the account on the panel is delivered", order.status, ShopOrderStatus.delivered)
+    check("the customer was charged for it", balance, 70_000)
+    check("no spurious refund", len(refunds), 0)
+    check("not a free account", order.marzban_username, "shop1")
+
+
+def test_sweeper_checks_the_panel_before_refunding() -> None:
+    print("\n[7c] a stuck order whose account DOES exist is delivered late, not refunded")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 100_000)
+
+    from datetime import timedelta
+    with Session(engine) as session:
+        # The process died after Marzban created the user but before the
+        # response was handled: order + debit exist, the account exists on the
+        # panel, nothing links them.
+        order = ShopOrder(shop_user_id=uid, data_limit_gb=10, duration_days=30, price=30_000,
+                          status=ShopOrderStatus.provisioning,
+                          created_at=utcnow() - timedelta(minutes=STUCK_ORDER_TIMEOUT_MINUTES + 1))
+        session.add(order)
+        session.flush()
+        post_wallet_entry(session, uid, entry_type=ShopWalletEntryType.purchase,
+                          amount=-30_000, order_id=order.id, commit=False)
+        session.commit()
+        oid = order.id
+    fake.panel["shop" + str(oid)] = {
+        "username": f"shop{oid}", "used_traffic": 0, "lifetime_used_traffic": 0,
+        "data_limit": 10 * 1024 ** 3, "expire": None, "status": "active",
+        "note": f"shop order #{oid}", "subscription_url": f"/sub/tok_shop{oid}",
+    }
+
+    with Session(engine) as session:
+        asyncio.run(sweep_stuck_orders(session))
+        order = session.get(ShopOrder, oid)
+        check("delivered late, not refunded", order.status, ShopOrderStatus.delivered)
+        check("customer stays charged for what they have", wallet_balance(session, uid), 70_000)
+
+    # And the opposite: an account the panel has never heard of IS refunded.
+    fake.panel.clear()
+    with Session(engine) as session:
+        order2 = ShopOrder(shop_user_id=uid, data_limit_gb=10, duration_days=30, price=30_000,
+                           status=ShopOrderStatus.provisioning,
+                           created_at=utcnow() - timedelta(minutes=STUCK_ORDER_TIMEOUT_MINUTES + 1))
+        session.add(order2)
+        session.flush()
+        post_wallet_entry(session, uid, entry_type=ShopWalletEntryType.purchase,
+                          amount=-30_000, order_id=order2.id, commit=False)
+        session.commit()
+        asyncio.run(sweep_stuck_orders(session))
+        session.refresh(order2)
+    check("no account on the panel -> refunded", order2.status, ShopOrderStatus.failed)
 
 
 def test_topup_approval_credits_once() -> None:
@@ -403,6 +517,8 @@ def main() -> int:
         test_failed_provision_refunds,
         test_refund_is_idempotent,
         test_stuck_order_sweep,
+        test_timeout_that_actually_created_is_not_refunded,
+        test_sweeper_checks_the_panel_before_refunding,
         test_topup_approval_credits_once,
         test_topup_amount_override_and_reject,
         test_closed_shop_and_bounds,
