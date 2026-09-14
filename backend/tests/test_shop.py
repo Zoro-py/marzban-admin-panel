@@ -566,6 +566,7 @@ def main() -> int:
         test_receipt_recovery_and_status_by_code,
         test_second_photo_does_not_duplicate_payment,
         test_bridge_service_guards,
+        test_approval_cannot_exceed_the_shops_own_ceiling,
     ):
         test()
     print()
@@ -1134,6 +1135,26 @@ def test_bridge_service_guards() -> None:
     client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
                 json={"telegram_id": 555, "claimed_amount": 30_000, "order_id": again["order_id"]})
     check("no bridge after a rejection", len(fake.created), 1)
+
+
+def test_approval_cannot_exceed_the_shops_own_ceiling() -> None:
+    print("")
+    print("[32] an approval above max_topup is refused — one extra zero must not credit ten times the money")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    topup = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "claimed_amount": 100_000}).json()
+
+    fat = client.post(f"/api/shop/topups/{topup['id']}/approve", json={"amount": 100_000_000})
+    check("refused (400)", fat.status_code, 400)
+    with Session(engine) as session:
+        check("nothing credited", wallet_balance(session, uid), 0)
+
+    ok = client.post(f"/api/shop/topups/{topup['id']}/approve", json={"amount": 100_000})
+    check("the real amount still goes through", ok.status_code, 200)
+    with Session(engine) as session:
+        check("credited once", wallet_balance(session, uid), 100_000)
 
 
 if __name__ == "__main__":
