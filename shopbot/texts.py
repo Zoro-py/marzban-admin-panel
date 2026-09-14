@@ -81,6 +81,13 @@ MENU_HELP = "❓ راهنما"
 MENU_SUPPORT = "💬 پشتیبانی"
 
 CONFIRM_BUY = "✅ تأیید و دریافت"
+# The common sizes are buttons; this is the way out of them for someone who
+# wants a size that is not offered.
+CUSTOM_VOLUME = "✏️ حجم دلخواه"
+ASK_CUSTOM_VOLUME = "عدد حجم را به گیگابایت بفرستید — مثلاً ۳۵"
+# The button that renews a service straight from its own warning message.
+RENEW_BUTTON = "🔄 تمدید همین سرویس"
+BUY_BUTTON = "🛒 خرید سرویس"
 CANCEL = "❌ انصراف"
 
 

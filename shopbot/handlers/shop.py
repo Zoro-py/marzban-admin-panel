@@ -179,7 +179,7 @@ async def _reply(update: Update, text: str, session: dict | None = None, **kwarg
     last shown — which, mid-purchase, is a row of volume buttons with no way
     back to the menu. Centralised so a new handler cannot forget.
     """
-    await update.message.reply_text(text, reply_markup=main_menu(session), **kwargs)
+    await update.effective_message.reply_text(text, reply_markup=main_menu(session), **kwargs)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -190,7 +190,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Could not open a shop session for %s", update.effective_user.id)
         # With the menu: a first-time visitor has never seen a keyboard, so a
         # bare error leaves them with an empty screen and nothing to tap.
-        await update.message.reply_text(texts.generic_error(None), reply_markup=main_menu(None))
+        await update.effective_message.reply_text(texts.generic_error(None), reply_markup=main_menu(None))
         return
     await _reply(
         update,
@@ -273,14 +273,47 @@ async def start_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data[_STATE] = _STATE_CHOOSING_VOLUME
     quick = [v for v in QUICK_VOLUMES if session["min_gb"] <= v <= session["max_gb"]]
     keyboard = [[KeyboardButton(texts.gb(v)) for v in quick[i:i + 3]] for i in range(0, len(quick), 3)]
+    keyboard.append([KeyboardButton(texts.CUSTOM_VOLUME)])
     keyboard.append([KeyboardButton(texts.CANCEL)])
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         texts.buy_prompt(
             session["price_per_gb"], session["min_gb"], session["max_gb"],
             session["plan_duration_days"],
         ),
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
     )
+
+
+async def on_renew(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The renew button under an expiry or usage warning.
+
+    It exists because the gap between "your service ends in three days" and
+    actually renewing is where the customer is lost: they read the message,
+    mean to deal with it later, and later is after it stopped working. One tap
+    puts them straight on the payment screen for the same plan they had.
+    """
+    query = update.callback_query
+    await query.answer()
+    try:
+        volume = float(query.data.split(":", 1)[1])
+    except (AttributeError, IndexError, ValueError):
+        return
+    # The button is removed once used, so an old warning cannot open a second
+    # order days later.
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        logger.debug("Could not clear the renew button", exc_info=True)
+
+    context.user_data.clear()
+    session = await _session(update)
+    if session["is_blocked"]:
+        await _reply(update, texts.blocked(_handle(session)), session)
+        return
+    if not session["is_open"]:
+        await _reply(update, texts.shop_closed(_handle(session)), session)
+        return
+    await _handle_volume(update, context, volume)
 
 
 def _payment_request_text(intent: dict) -> str:
@@ -307,7 +340,7 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
     whichever of the two payment screens applies."""
     session = await _session(update)
     if not (session["min_gb"] <= volume <= session["max_gb"]):
-        await update.message.reply_text(texts.out_of_range(session["min_gb"], session["max_gb"]))
+        await update.effective_message.reply_text(texts.out_of_range(session["min_gb"], session["max_gb"]))
         return
 
     try:
@@ -327,7 +360,7 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
     if intent["payable_from_wallet"]:
         # Enough credit already: one tap, no card, no human in the loop.
         context.user_data[_STATE] = _STATE_CONFIRMING_WALLET_BUY
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             texts.confirm_from_wallet(
                 intent["data_limit_gb"], intent["duration_days"],
                 intent["price"], intent["balance"],
@@ -346,7 +379,7 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
 
     context.user_data[_STATE] = _STATE_AWAITING_RECEIPT
     context.user_data[_PENDING_AMOUNT] = intent["shortfall"]
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         _payment_request_text(intent),
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton(texts.CANCEL)]], resize_keyboard=True),
@@ -389,7 +422,7 @@ async def start_topup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _reply(update, texts.NO_CARD, session)
         return
     context.user_data[_STATE] = _STATE_CHOOSING_TOPUP
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         texts.topup_ask_amount(session["min_topup"], session["max_topup"]),
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton(texts.CANCEL)]], resize_keyboard=True),
     )
@@ -399,7 +432,7 @@ async def _handle_topup_amount(update: Update, context: ContextTypes.DEFAULT_TYP
     session = await _session(update)
     value = int(amount)
     if not (session["min_topup"] <= value <= session["max_topup"]):
-        await update.message.reply_text(
+        await update.effective_message.reply_text(
             texts.topup_out_of_range(session["min_topup"], session["max_topup"])
         )
         return
@@ -407,7 +440,7 @@ async def _handle_topup_amount(update: Update, context: ContextTypes.DEFAULT_TYP
     context.user_data[_PENDING_AMOUNT] = value
     # No order attached: this is a plain wallet top-up.
     context.user_data.pop(_ORDER_ID, None)
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         texts.topup_instructions(
             value, session["card_number"], session.get("card_holder"),
             session.get("approval_eta_minutes", 30),
@@ -559,7 +592,7 @@ async def show_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         history = await backend.get("/api/shop/bot/wallet", params={"telegram_id": update.effective_user.id})
     except ShopApiError:
         logger.exception("Wallet lookup failed for %s", update.effective_user.id)
-        await update.message.reply_text(texts.generic_error(None))
+        await update.effective_message.reply_text(texts.generic_error(None))
         return
 
     if not session["balance"] and not history:
@@ -587,7 +620,7 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         rows = await backend.get("/api/shop/bot/accounts", params={"telegram_id": update.effective_user.id})
     except ShopApiError:
         logger.exception("Account list failed for %s", update.effective_user.id)
-        await update.message.reply_text(texts.generic_error(None))
+        await update.effective_message.reply_text(texts.generic_error(None))
         return
 
     if not rows:
@@ -610,7 +643,7 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # reordered by bidirectional rendering and can be copied wrong.
             lines.append("")
             lines.append(row["subscription_url"])
-        await update.message.reply_text("\n".join(lines))
+        await update.effective_message.reply_text("\n".join(lines))
 
     await _reply(update, texts.wallet_summary(session["balance"]), session)
 
@@ -660,16 +693,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return await _confirm_wallet_purchase(update, context)
 
     if state == _STATE_CHOOSING_VOLUME:
+        if text == texts.CUSTOM_VOLUME:
+            # Stays in the same state: the next message is read as the number.
+            await update.effective_message.reply_text(texts.ASK_CUSTOM_VOLUME)
+            return
         volume = parse_number(text)
         if volume is None:
-            await update.message.reply_text(texts.not_a_number("۳۵"))
+            await update.effective_message.reply_text(texts.not_a_number("۳۵"))
             return
         return await _handle_volume(update, context, volume)
 
     if state == _STATE_CHOOSING_TOPUP:
         amount = parse_number(text)
         if amount is None:
-            await update.message.reply_text(texts.not_a_number("۲۰۰,۰۰۰"))
+            await update.effective_message.reply_text(texts.not_a_number("۲۰۰,۰۰۰"))
             return
         return await _handle_topup_amount(update, context, amount)
 
@@ -677,7 +714,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # They are expected to send a photo. Tell them that instead of
         # dropping the message — someone typing "واریز کردم" here is telling
         # us something and deserves an answer.
-        await update.message.reply_text(texts.NEED_PHOTO)
+        await update.effective_message.reply_text(texts.NEED_PHOTO)
         return
 
     session = await _session(update)

@@ -40,7 +40,7 @@ from sqlmodel import Session, select
 from app.auth import require_auth
 from app.bulk_accounts import build_caption, format_plan_line, resolve_subscription_url
 from app.config import settings as app_settings
-from app.db import get_session
+from app.db import engine, get_session
 from app import shop_texts
 from app.models import (
     Account,
@@ -84,19 +84,21 @@ from app.shop_service import (
     ShopError,
     approve_topup,
     create_awaiting_order,
-    deliver_order_to_customer,
-    grant_trial,
-    find_topup_by_code,
-    is_existing_customer,
-    latest_awaiting_order,
-    pay_awaiting_order,
     create_topup,
+    deliver_order_to_customer,
+    find_topup_by_code,
     get_or_create_shop_user,
     get_shop_settings,
+    grant_trial,
+    is_existing_customer,
+    latest_awaiting_order,
+    maybe_grant_provisional,
+    pay_awaiting_order,
     post_wallet_entry,
     purchase,
     quote_price,
     reject_topup,
+    revoke_provisional,
     validate_purchase_request,
     wallet_balance,
 )
@@ -376,17 +378,24 @@ async def reject_topup_endpoint(
 
     user = session.get(ShopUser, topup.shop_user_id)
     if user is not None:
+        # A bridge service handed out for THIS payment stops with it —
+        # otherwise a rejected receipt would still buy working service.
+        stopped = False
+        try:
+            stopped = await revoke_provisional(session, topup.shop_user_id)
+        except Exception:
+            logger.exception("Could not stop the bridge service after rejecting top-up #%s", topup.id)
         # Through shop_texts so a rejection is never reason-less: from where the
         # customer sits, a bare "no" after sending money to a personal card is
         # indistinguishable from theft.
         try:
-            await send_to_shop_user(
-                user.telegram_id,
-                shop_texts.topup_rejected(
-                    topup.reference_code, topup.reject_reason,
-                    get_shop_settings(session).support_handle,
-                ),
+            message = shop_texts.topup_rejected(
+                topup.reference_code, topup.reject_reason,
+                get_shop_settings(session).support_handle,
             )
+            if stopped:
+                message += shop_texts.provisional_stopped()
+            await send_to_shop_user(user.telegram_id, message)
         except Exception:
             logger.exception("Top-up #%s rejected but the customer could not be notified", topup.id)
 
@@ -774,11 +783,37 @@ async def bot_create_topup(
         bound = session.get(ShopOrder, topup.order_id)
         if bound is not None:
             order_summary = f"{bound.data_limit_gb:g} GB / {bound.duration_days} days, price {bound.price:,} T"
+    # Ordered deliberately: the operator is alerted first, then the bridge
+    # service is built. If Marzban is having a bad minute, the receipt is
+    # still in front of the operator.
+    background_tasks.add_task(_grant_bridge_service, topup.id)
     background_tasks.add_task(_alert_operator_to_topup, topup.id, user.telegram_id,
                               user.display_name or user.telegram_username, body.receipt_file_id,
                               topup.claimed_amount, topup.reference_code, order_summary)
 
     return ShopTopupRead(**topup.model_dump(), telegram_id=user.telegram_id, display_name=user.display_name)
+
+
+async def _grant_bridge_service(topup_id: int) -> None:
+    """Runs after the customer has been told their receipt arrived.
+
+    Its own session because a background task outlives the request's. Every
+    failure is swallowed on purpose: the payment stands with or without this,
+    and an exception here would only surface as a 500 on a request that has
+    already succeeded.
+    """
+    try:
+        with Session(engine) as session:
+            topup = session.get(ShopTopup, topup_id)
+            if topup is None or topup.order_id is None:
+                return
+            user = session.get(ShopUser, topup.shop_user_id)
+            order = session.get(ShopOrder, topup.order_id)
+            if user is None or order is None:
+                return
+            await maybe_grant_provisional(session, user, order, topup.claimed_amount)
+    except Exception:
+        logger.exception("Bridge service for top-up #%s failed", topup_id)
 
 
 async def _alert_operator_to_topup(

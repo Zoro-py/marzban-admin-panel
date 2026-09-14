@@ -202,7 +202,7 @@ async def forward_photo_to_admin(file_id: str, caption: str, reply_markup: dict 
         raise RuntimeError(f"Telegram rejected the receipt photo ({resp.status_code}): {resp.text}")
 
 
-async def send_to_shop_user(chat_id: int, text: str) -> None:
+async def send_to_shop_user(chat_id: int, text: str, reply_markup: dict | None = None) -> None:
     """Message a SHOP customer directly from the backend, using the shop bot's
     own token. Needed because a purchase is provisioned inside an HTTP request
     from the bot — the reply the customer gets for their tap is the bot's job,
@@ -210,10 +210,14 @@ async def send_to_shop_user(chat_id: int, text: str) -> None:
     approval landing) has no open request to ride back on."""
     if not settings.shop_bot_token:
         raise RuntimeError("SHOP_BOT_TOKEN not set — nowhere to send this customer message")
+    payload = {"chat_id": chat_id, "text": text}
+    if reply_markup is not None:
+        # Sent as form data, so the markup travels as a JSON string.
+        payload["reply_markup"] = json.dumps(reply_markup)
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{settings.shop_bot_token}/sendMessage",
-            data={"chat_id": chat_id, "text": text},
+            data=payload,
         )
     if resp.status_code != 200:
         raise RuntimeError(f"Telegram rejected the customer message ({resp.status_code}): {resp.text}")

@@ -463,6 +463,9 @@ class ShopSettingsRead(BaseModel):
     shop_name: Optional[str] = None
     support_handle: Optional[str] = None
     approval_eta_minutes: int = 30
+    provisional_enabled: bool = True
+    provisional_gb: float = 1.0
+    provisional_hours: int = 24
     trial_enabled: bool = False
     trial_gb: float = 1.0
     trial_hours: int = 24
@@ -492,6 +495,11 @@ class ShopSettingsUpdate(BaseModel):
     # money, and "we'll look at it within a week" is not a promise that keeps
     # anyone waiting — it loses the sale outright.
     approval_eta_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
+    provisional_enabled: Optional[bool] = None
+    # Deliberately small caps: this is service given away before any money is
+    # confirmed, so the most a mistyped settings page can cost is a few GB.
+    provisional_gb: Optional[float] = Field(default=None, gt=0, le=20)
+    provisional_hours: Optional[int] = Field(default=None, ge=1, le=168)
     trial_enabled: Optional[bool] = None
     trial_gb: Optional[float] = Field(default=None, gt=0, le=100)
     trial_hours: Optional[int] = Field(default=None, ge=1, le=720)
@@ -580,6 +588,7 @@ class ShopOrderRead(BaseModel):
     error: Optional[str]
     created_at: datetime
     delivered_at: Optional[datetime]
+    is_provisional: bool = False
     telegram_id: Optional[int] = None
     display_name: Optional[str] = None
 

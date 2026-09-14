@@ -415,7 +415,9 @@ function ShopOrders() {
                 and a trial was free by design. */}
             <TableCell className="text-right text-xs tabular-nums">
               {order.price === 0 ? (
-                <span className="text-muted-foreground">trial</span>
+                <span className="text-muted-foreground">
+                  {order.is_provisional ? 'bridge' : 'trial'}
+                </span>
               ) : order.status === 'delivered' || order.status === 'provisioning' ? (
                 toman(order.price)
               ) : (
@@ -494,6 +496,9 @@ function ShopSettingsForm() {
         shop_name: draft.shop_name?.trim() || null,
         support_handle: draft.support_handle?.trim() || null,
         approval_eta_minutes: Number(draft.approval_eta_minutes ?? 30),
+        provisional_enabled: Boolean(draft.provisional_enabled),
+        provisional_gb: Number(draft.provisional_gb ?? 1),
+        provisional_hours: Number(draft.provisional_hours ?? 24),
         trial_enabled: Boolean(draft.trial_enabled),
         trial_gb: Number(draft.trial_gb ?? 1),
         trial_hours: Number(draft.trial_hours ?? 24),
@@ -617,6 +622,40 @@ function ShopSettingsForm() {
           Customers are told this number the moment they send a receipt. Set what you can keep on a bad day, not a
           good one — it is a promise, and a missed one costs more trust than a longer honest one.
         </p>
+
+        <div className="flex flex-col gap-3 rounded-md border p-3">
+          <label className="flex items-center gap-2">
+            <Checkbox
+              checked={Boolean(draft.provisional_enabled)}
+              onCheckedChange={(c) => set('provisional_enabled', Boolean(c))}
+            />
+            <span className="text-sm">Hand over a small service as soon as a receipt arrives</span>
+          </label>
+          <p className="text-xs text-muted-foreground">
+            The wait for your approval is where a first-time buyer decides they have been robbed. This connects them in
+            seconds on the link their real plan extends in place once you approve. Only for a receipt claiming most of
+            the plan's price, once per customer per 30 days, never after a payment of theirs was rejected, and it stops
+            the moment you reject one.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Bridge volume (GB)">
+              <Input
+                type="number"
+                value={draft.provisional_gb ?? ''}
+                onChange={(e) => set('provisional_gb', Number(e.target.value))}
+                disabled={!draft.provisional_enabled}
+              />
+            </Field>
+            <Field label="Bridge length (hours)">
+              <Input
+                type="number"
+                value={draft.provisional_hours ?? ''}
+                onChange={(e) => set('provisional_hours', Number(e.target.value))}
+                disabled={!draft.provisional_enabled}
+              />
+            </Field>
+          </div>
+        </div>
 
         <div className="flex flex-col gap-3 rounded-md border p-3">
           <label className="flex items-center gap-2">

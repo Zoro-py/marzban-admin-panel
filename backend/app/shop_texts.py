@@ -84,10 +84,21 @@ def setup_guide(handle: Optional[str]) -> str:
     )
 
 
-def delivery_caption(volume_gb: float, days: int, is_trial: bool = False) -> str:
+def delivery_caption(volume_gb: float, days: int, is_trial: bool = False,
+                     is_provisional: bool = False, hours: int = 0) -> str:
     """Caption on the QR image itself. Kept short — Telegram truncates long
     captions, and the setup guide follows as its own message where it can be
     read without fighting the image for space."""
+    if is_provisional:
+        # Said in this order on purpose: connected NOW, the real plan is not
+        # lost, and nothing extra is owed. A customer who thinks this small
+        # service IS what they paid for would feel cheated on sight.
+        return (
+            f"⏳ تا تأیید پرداختتان، این سرویس موقت را داشته باشید\n"
+            f"{fa_num(volume_gb)} گیگ — {fa_num(hours)} ساعت\n\n"
+            "سفارش خودتان سر جایش است و همین لینک "
+            "بعد از تأیید، به پلن کامل تبدیل می‌شود."
+        )
     if is_trial:
         return (
             f"🎁 سرویس تست شما آماده است\n"
@@ -206,6 +217,17 @@ def topup_rejected(reference: Optional[str], reason: Optional[str], handle: Opti
         "\n\nاگر واریز کرده‌اید، رسیدِ واضح‌تری بفرستید."
     )
     return head + body + tail
+
+
+def provisional_stopped() -> str:
+    """Appended to a rejection when a bridge service was running.
+
+    Without it the customer's service simply dies a minute after they are
+    told their payment was refused, and they connect the two themselves —
+    badly."""
+    return (
+        f"\n\nسرویس موقتی که داده بودیم هم متوقف شد."
+    )
 
 
 def renewed_in_place(added_gb: float, remaining_gb: Optional[float], days_left: Optional[int],

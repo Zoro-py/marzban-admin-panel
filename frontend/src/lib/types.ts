@@ -357,6 +357,9 @@ export interface ShopSettings {
   shop_name: string | null
   support_handle: string | null
   approval_eta_minutes: number
+  provisional_enabled: boolean
+  provisional_gb: number
+  provisional_hours: number
   trial_enabled: boolean
   trial_gb: number
   trial_hours: number
@@ -424,6 +427,7 @@ export interface ShopOrder {
   error: string | null
   created_at: string
   delivered_at: string | null
+  is_provisional: boolean
   telegram_id: number | null
   display_name: string | null
 }

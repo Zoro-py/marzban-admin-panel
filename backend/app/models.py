@@ -474,6 +474,11 @@ class ShopOrder(SQLModel, table=True):
     # already this high?" is answerable; "did my earlier call land?" is not.
     target_data_limit: Optional[int] = None
     target_expire: Optional[int] = None
+    # A small service handed over the moment a receipt arrives, before the
+    # operator has approved anything — see shop_service.maybe_grant_provisional
+    # for why it exists and what stops it being farmed. price is 0 like a
+    # trial, so this flag is what tells the two apart in the operator's list.
+    is_provisional: bool = Field(default=False, index=True)
 
 
 class ShopSettings(SQLModel, table=True):
@@ -544,5 +549,11 @@ class ShopSettings(SQLModel, table=True):
     # escrow, no refunds and no ratings: the shop goes first. Off by default,
     # like is_open — the operator turns it on deliberately.
     trial_enabled: bool = False
+    # Bridge-the-wait service, delivered when a receipt is uploaded. Off means
+    # the customer waits for the operator with nothing, which is the state the
+    # whole feature exists to remove.
+    provisional_enabled: bool = True
+    provisional_gb: float = 1.0
+    provisional_hours: int = 24
     trial_gb: float = 1.0
     trial_hours: int = 24

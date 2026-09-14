@@ -708,8 +708,14 @@ function BillingSection({ account }: { account: AccountRow }) {
         <Input id="insp-rate" type="number" value={rateInput || ''} onChange={(e) => setRateInput(e.target.value)} placeholder="blank = inherit" />
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           Blank inherits {account.group_id ? "the group's rate, then " : ''}the dashboard default. A value here overrides
-          both — e.g. a per-account discount inside a group.
+          both — e.g. a per-account discount inside a group. <strong>0 means this account is free</strong>: it is billed
+          nothing, here or by the monthly job, while every other account of the same customer bills normally.
         </p>
+        {rateInput.trim() === '0' && (
+          <p className="text-[11px] font-medium text-muted-foreground">
+            Free account — nothing will ever be charged for it.
+          </p>
+        )}
       </div>
       <div className="flex flex-col gap-1.5">
         <Label className="text-xs">Billing mode</Label>

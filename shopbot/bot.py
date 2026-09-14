@@ -28,11 +28,18 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 
-from telegram.ext import Application, CommandHandler, MessageHandler, filters  # noqa: E402
+from telegram.ext import (  # noqa: E402
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+)
 
 from handlers.shop import (  # noqa: E402
     handle_document,
     handle_other,
+    on_renew,
     handle_photo,
     handle_text,
     help_command,
@@ -73,6 +80,7 @@ def main() -> None:
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CallbackQueryHandler(on_renew, pattern=r"^renew:"))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     # A receipt sent as a file is still a receipt; anything else at least gets
     # an answer instead of silence.

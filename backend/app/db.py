@@ -327,7 +327,18 @@ def _run_shop_migrations() -> None:
         if topup_cols:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shoptopup_order_id ON shoptopup (order_id)"))
 
+        settings_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(shopsettings)"))}
+        if settings_cols and "provisional_enabled" not in settings_cols:
+            # Defaults ON for an existing shop: it only ever ADDS a small
+            # service to a customer who has already sent a receipt, and an
+            # operator who doesn't want it can switch it off on the Shop page.
+            conn.execute(text("ALTER TABLE shopsettings ADD COLUMN provisional_enabled BOOLEAN NOT NULL DEFAULT 1"))
+            conn.execute(text("ALTER TABLE shopsettings ADD COLUMN provisional_gb FLOAT NOT NULL DEFAULT 1.0"))
+            conn.execute(text("ALTER TABLE shopsettings ADD COLUMN provisional_hours INTEGER NOT NULL DEFAULT 24"))
+
         order_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(shoporder)"))}
+        if order_cols and "is_provisional" not in order_cols:
+            conn.execute(text("ALTER TABLE shoporder ADD COLUMN is_provisional BOOLEAN NOT NULL DEFAULT 0"))
         if order_cols and "expiry_warned_at" not in order_cols:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN expiry_warned_at DATETIME"))
         if order_cols and "usage_warned_at" not in order_cols:

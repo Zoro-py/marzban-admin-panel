@@ -565,6 +565,7 @@ def main() -> int:
         test_overdue_payment_is_announced_once,
         test_receipt_recovery_and_status_by_code,
         test_second_photo_does_not_duplicate_payment,
+        test_bridge_service_guards,
     ):
         test()
     print()
@@ -601,13 +602,19 @@ def test_order_first_approval_delivers() -> None:
     check("the customer gets a reference code", bool(topup.get("reference_code")), True)
     check("the payment remembers its order", topup.get("order_id"), intent["order_id"])
 
+    # The receipt itself now buys a bridge service, so one account exists
+    # BEFORE the operator has decided anything.
+    check("a bridge service was handed over on the receipt", len(fake.created), 1)
+
     r = client.post(f"/api/shop/topups/{topup['id']}/approve", json={})
     check("approval ok", r.status_code, 200)
     with Session(engine) as session:
         order = session.get(ShopOrder, intent["order_id"])
         check("the plan was delivered by the approval itself", order.status, ShopOrderStatus.delivered)
         check("paid exactly once — nothing left over", wallet_balance(session, uid), 0)
-    check("exactly one account on the panel", fake.created, [f"shop{intent['order_id']}"])
+        check("and it extended the bridge rather than making a second account",
+              order.extends_account_id is not None, True)
+    check("still exactly one account on the panel", len(fake.created), 1)
 
 
 def test_order_first_short_approval_waits() -> None:
@@ -626,7 +633,12 @@ def test_order_first_short_approval_waits() -> None:
         order = session.get(ShopOrder, intent["order_id"])
         check("the plan still waits for payment", order.status, ShopOrderStatus.awaiting_payment)
         check("the money that did arrive is kept", wallet_balance(session, uid), 10_000)
-    check("no account handed over for a partial payment", fake.created, [])
+    # The customer CLAIMED the full price, so the bridge was granted on the
+    # receipt; what a partial approval must not do is deliver the plan.
+    check("the plan itself created no account", len(fake.created), 1)
+    with Session(engine) as session:
+        plan = session.get(ShopOrder, intent["order_id"])
+        check("the paid plan has no account yet", plan.account_id, None)
 
     # And the next quote knows about that credit: only the rest is asked for.
     again = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
@@ -747,10 +759,10 @@ def test_renewal_warnings() -> None:
 
     sent: list[tuple[int, str]] = []
 
-    async def capture(chat_id, text):
+    async def capture(chat_id, text, reply_markup=None):
         sent.append((chat_id, text))
 
-    async def broken(chat_id, text):
+    async def broken(chat_id, text, reply_markup=None):
         raise RuntimeError("telegram down")
 
     fake = FakeMarzban()
@@ -946,7 +958,7 @@ def test_overdue_payment_is_announced_once() -> None:
 
     sent = []
 
-    async def capture(chat_id, text):
+    async def capture(chat_id, text, reply_markup=None):
         sent.append((chat_id, text))
 
     async def admin_capture(text):
@@ -1066,7 +1078,7 @@ def test_approval_says_so_when_the_service_could_not_be_built() -> None:
 
     sent: list[tuple[int, str]] = []
 
-    async def capture(chat_id, text):
+    async def capture(chat_id, text, reply_markup=None):
         sent.append((chat_id, text))
 
     # The endpoint imported the function by name, so the patch has to land in
@@ -1087,6 +1099,41 @@ def test_approval_says_so_when_the_service_could_not_be_built() -> None:
     body = sent[-1][1] if sent else ""
     check("the customer is told the service was not built", "ساخت سرویس" in body, True)
     check("and is not asked for the rest of the money", "شماره کارت" in body, False)
+
+
+def test_bridge_service_guards() -> None:
+    print("")
+    print("[31] the bridge service is guarded: not for a token claim, and never again after a rejection")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+
+    # A receipt claiming far less than the plan costs buys nothing.
+    small = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "data_limit_gb": 10}).json()
+    client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                json={"telegram_id": 555, "claimed_amount": 10_000, "order_id": small["order_id"]})
+    check("a token claim earns no bridge", len(fake.created), 0)
+
+    # A full claim does.
+    full = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                       json={"telegram_id": 555, "data_limit_gb": 10}).json()
+    topup = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "claimed_amount": 30_000,
+                              "order_id": full["order_id"]}).json()
+    check("a full claim does", len(fake.created), 1)
+    bridge_name = fake.created[0]
+
+    # Rejecting it stops the bridge...
+    client.post(f"/api/shop/topups/{topup['id']}/reject", json={"reason": "no such transfer"})
+    check("the bridge account is disabled", fake.panel[bridge_name]["status"], "disabled")
+
+    # ...and there is no second one for the next receipt.
+    again = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "data_limit_gb": 10}).json()
+    client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                json={"telegram_id": 555, "claimed_amount": 30_000, "order_id": again["order_id"]})
+    check("no bridge after a rejection", len(fake.created), 1)
 
 
 if __name__ == "__main__":

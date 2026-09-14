@@ -824,7 +824,12 @@ async def deliver_order_to_customer(session: Session, order: ShopOrder) -> bool:
         await send_photo_to_shop_user(
             user.telegram_id,
             subscription_qr_png(url),
-            shop_texts.delivery_caption(order.data_limit_gb, order.duration_days, is_trial=is_trial),
+            shop_texts.delivery_caption(
+                order.data_limit_gb, order.duration_days,
+                is_trial=is_trial and not order.is_provisional,
+                is_provisional=order.is_provisional,
+                hours=settings.provisional_hours,
+            ),
             filename=f"{order.marzban_username or order.id}.png",
         )
         delivered = True
@@ -940,6 +945,137 @@ def create_awaiting_order(session: Session, shop_user: ShopUser, data_limit_gb: 
     return order
 
 
+PROVISIONAL_MIN_SHARE = 0.7
+PROVISIONAL_COOLDOWN_DAYS = 30
+
+
+def provisional_reason_to_refuse(session: Session, shop_user: ShopUser, order: Optional[ShopOrder],
+                                 claimed_amount: int, settings: ShopSettings) -> Optional[str]:
+    """Why this receipt does NOT earn a bridge service, or None if it does.
+
+    The feature gives a stranger working service before any money is
+    confirmed, so the guards are the feature. Each one closes a way of
+    farming it:
+
+      * bound to a real order, and the claim covers most of its price — a
+        receipt "for" 5,000 Toman against a 200,000 plan buys nothing;
+      * never for someone whose payment has been rejected before — one fake
+        receipt costs them this for good;
+      * once per 30 days, and never while an earlier one is still running;
+      * not for a customer who already has a working service, since their
+        purchase extends it anyway and a second account would be pure gift.
+
+    Returns a reason string for the log rather than a bare False: when an
+    operator asks why a customer didn't get one, the answer has to exist.
+    """
+    if not settings.provisional_enabled or settings.provisional_gb <= 0:
+        return "the shop has it switched off"
+    if shop_user.is_blocked:
+        return "the customer is blocked"
+    if order is None or order.status != ShopOrderStatus.awaiting_payment:
+        return "the payment is not for a plan that is waiting"
+    if order.price > 0 and claimed_amount < order.price * PROVISIONAL_MIN_SHARE:
+        return "the claimed amount is far below the plan's price"
+
+    rejected_before = session.exec(
+        select(ShopTopup).where(
+            ShopTopup.shop_user_id == shop_user.id,
+            ShopTopup.status == ShopTopupStatus.rejected,
+        )
+    ).first()
+    if rejected_before is not None:
+        return "a previous payment from this customer was rejected"
+
+    since = utcnow() - timedelta(days=PROVISIONAL_COOLDOWN_DAYS)
+    recent = session.exec(
+        select(ShopOrder).where(
+            ShopOrder.shop_user_id == shop_user.id,
+            ShopOrder.is_provisional == True,  # noqa: E712 — SQL, not Python truthiness
+            ShopOrder.created_at >= since,
+        )
+    ).first()
+    if recent is not None:
+        return "they had one within the last 30 days"
+
+    if renewable_account(session, shop_user.id) is not None:
+        return "they already have a working service to extend"
+    return None
+
+
+async def maybe_grant_provisional(session: Session, shop_user: ShopUser, order: ShopOrder,
+                                  claimed_amount: int) -> Optional[ShopOrder]:
+    """Hands over a small service the moment a receipt arrives.
+
+    The wait for a human to approve a card transfer is the one part of this
+    flow nobody can shorten, and it is exactly where a first-time customer
+    decides they have been robbed. This makes the wait harmless: they are
+    connected within seconds, on the same link their real plan will extend in
+    place once the payment is approved.
+
+    Best-effort by design. Anything that goes wrong here leaves the order
+    exactly as it was — awaiting payment — because a failure to give someone
+    a free gigabyte must never disturb the payment they actually sent.
+    """
+    settings = get_shop_settings(session)
+    refusal = provisional_reason_to_refuse(session, shop_user, order, claimed_amount, settings)
+    if refusal is not None:
+        logger.info("No bridge service for shop user #%s: %s", shop_user.id, refusal)
+        return None
+
+    bridge = ShopOrder(
+        shop_user_id=shop_user.id,
+        data_limit_gb=settings.provisional_gb,
+        duration_days=max(1, (settings.provisional_hours + 23) // 24),
+        price=0,
+        status=ShopOrderStatus.provisioning,
+        is_provisional=True,
+    )
+    session.add(bridge)
+    session.commit()
+    session.refresh(bridge)
+
+    await _provision_order(session, bridge, settings, duration_hours=settings.provisional_hours)
+    session.refresh(bridge)
+    if bridge.status != ShopOrderStatus.delivered:
+        logger.warning("Bridge service for shop user #%s could not be created: %s", shop_user.id, bridge.error)
+        return None
+    await deliver_order_to_customer(session, bridge)
+    return bridge
+
+
+async def revoke_provisional(session: Session, shop_user_id: int) -> bool:
+    """Switches off a bridge service after its payment was rejected.
+
+    Leaving it running would make a rejected receipt strictly better than no
+    receipt at all, which is the one thing that would turn this feature into
+    free service on request.
+    """
+    since = utcnow() - timedelta(days=PROVISIONAL_COOLDOWN_DAYS)
+    bridges = session.exec(
+        select(ShopOrder).where(
+            ShopOrder.shop_user_id == shop_user_id,
+            ShopOrder.is_provisional == True,  # noqa: E712
+            ShopOrder.status == ShopOrderStatus.delivered,
+            ShopOrder.created_at >= since,
+        )
+    ).all()
+    stopped = False
+    for bridge in bridges:
+        account = session.get(Account, bridge.account_id) if bridge.account_id else None
+        if account is None:
+            continue
+        try:
+            await marzban_client.modify_user(account.marzban_username, {"status": "disabled"})
+        except Exception:
+            logger.exception("Could not disable the bridge account %s", account.marzban_username)
+            continue
+        account.status = "disabled"
+        session.add(account)
+        session.commit()
+        stopped = True
+    return stopped
+
+
 def reject_topup(session: Session, topup: ShopTopup, *, reason: Optional[str] = None) -> ShopTopup:
     if topup.status != ShopTopupStatus.pending:
         raise ShopError(f"This top-up was already {topup.status.value}.")
@@ -1046,8 +1182,18 @@ async def warn_customers_before_service_ends(session: Session) -> int:
 
         if message is None:
             continue
+        # The renewal button IS the point of warning them: the customer who
+        # would have renewed is otherwise lost between reading this and
+        # finding the menu again. A trial has no volume worth repeating, so it
+        # offers the smallest real plan instead.
+        renew_gb = settings.min_gb if is_trial else order.data_limit_gb
+        keyboard = {"inline_keyboard": [[{
+            "text": "🛒 خرید سرویس" if is_trial
+                    else "🔄 تمدید همین سرویس",
+            "callback_data": f"renew:{renew_gb:g}",
+        }]]}
         try:
-            await send_to_shop_user(user.telegram_id, message)
+            await send_to_shop_user(user.telegram_id, message, keyboard)
         except Exception:
             logger.exception("Could not send the %s warning for order #%s", mark, order.id)
             continue
