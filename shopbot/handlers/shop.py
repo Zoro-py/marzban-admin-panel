@@ -117,7 +117,7 @@ def parse_number(text: str) -> float | None:
             raw = raw.replace(word, " ")
             break
 
-    lowered = raw.strip()
+    lowered = raw.strip().lower()
     for unit in _TRAILING_UNITS:
         if lowered.endswith(unit):
             lowered = lowered[: -len(unit)].strip()
@@ -471,7 +471,33 @@ async def _recover_pending_order(update: Update) -> dict | None:
     return None
 
 
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A receipt sent as a FILE rather than a photo.
+
+    Telegram sends an image as a document whenever the sender picks "send as
+    file", and some banking apps save receipts as PDF. Neither used to reach
+    any handler at all, so the customer got silence after paying — the worst
+    possible moment for the bot to say nothing.
+    """
+    doc = update.message.document
+    mime = (doc.mime_type or "") if doc else ""
+    if mime.startswith("image/"):
+        await handle_photo(update, context, file_id=doc.file_id)
+        return
+    session = await _session(update)
+    await _reply(update, texts.RECEIPT_AS_FILE, session)
+
+
+async def handle_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Voice notes, stickers, locations, contacts — anything with no meaning
+    here. Answering is the point: silence reads as a broken bot, especially to
+    someone who has just sent money."""
+    session = await _session(update)
+    await _reply(update, texts.not_understood(_handle(session)), session)
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                       *, file_id: str | None = None) -> None:
     session = await _session(update)
     amount = context.user_data.get(_PENDING_AMOUNT)
     order_id = context.user_data.get(_ORDER_ID)
@@ -499,7 +525,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         topup = await backend.post("/api/shop/bot/topups", json={
             "telegram_id": update.effective_user.id,
             "claimed_amount": amount,
-            "receipt_file_id": update.message.photo[-1].file_id,
+            "receipt_file_id": file_id or update.message.photo[-1].file_id,
             "order_id": order_id,
         }, timeout=60)
     except ShopApiError:
@@ -574,7 +600,10 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         days_left = None
         if row["expire"]:
             expires = datetime.fromtimestamp(row["expire"], tz=timezone.utc)
-            days_left = (expires - datetime.now(timezone.utc)).days
+            seconds = (expires - datetime.now(timezone.utc)).total_seconds()
+            # Rounded UP: .days truncates, so a service with ten hours left
+            # came out as 0 and was shown to its owner as finished.
+            days_left = -(-int(seconds) // 86400) if seconds > 0 else 0
         lines = [texts.account_line(limit_gb, used_gb, days_left)]
         if row["subscription_url"]:
             # On its own line: a Latin URL inline with Persian text gets

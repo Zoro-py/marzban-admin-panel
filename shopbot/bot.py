@@ -30,7 +30,14 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters  # noqa: E402
 
-from handlers.shop import handle_photo, handle_text, help_command, start  # noqa: E402
+from handlers.shop import (  # noqa: E402
+    handle_document,
+    handle_other,
+    handle_photo,
+    handle_text,
+    help_command,
+    start,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -67,9 +74,16 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    # A receipt sent as a file is still a receipt; anything else at least gets
+    # an answer instead of silence.
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     # TEXT & ~COMMAND: an unrecognised /command should fall through to
     # Telegram's own "unknown command" rather than being parsed as a volume.
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(
+        ~filters.COMMAND & ~filters.TEXT & ~filters.PHOTO & ~filters.Document.ALL & ~filters.StatusUpdate.ALL,
+        handle_other,
+    ))
     app.add_error_handler(on_error)
 
     logger.info("Shop bot starting")

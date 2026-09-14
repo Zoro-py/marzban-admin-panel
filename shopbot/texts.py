@@ -175,6 +175,13 @@ NEED_PHOTO = (
     "اگر رسیدتان PDF است، از آن عکس بگیرید."
 )
 
+RECEIPT_AS_FILE = (
+    "این فایل را نمی‌توانم باز کنم. "
+    "لطفاً رسید را به صورت عکس بفرستید "
+    "که بتوانم برای بررسی بفرستم؛ "
+    "سفارشتان محفوظ است."
+)
+
 RECEIPT_WITHOUT_CONTEXT = (
     "این عکس مربوط به چه پرداختی است؟\n"
     f"اول از «{MENU_BUY}» سرویس را انتخاب کنید یا «{MENU_TOPUP}» را بزنید، بعد رسید را بفرستید."
@@ -199,6 +206,19 @@ def plain_digits(card_number: str) -> str:
     return "".join(ch for ch in card_number if ch.isdigit()) or card_number
 
 
+def md_escape(value: str) -> str:
+    """Neutralises the four characters legacy Markdown treats as formatting.
+
+    These messages are sent with parse_mode=MARKDOWN for the tap-to-copy
+    spans, and the card holder's name comes from the operator's settings. A
+    single underscore in it made Telegram reject the whole message, so the
+    customer got the generic error instead of the card to pay into.
+    """
+    for ch in ("_", "*", "`", "["):
+        value = value.replace(ch, "\\" + ch)
+    return value
+
+
 def topup_instructions(amount: int, card_number: str, card_holder: Optional[str], eta_minutes: int) -> str:
     """The payment request.
 
@@ -212,7 +232,7 @@ def topup_instructions(amount: int, card_number: str, card_holder: Optional[str]
     Telegram drops with it. Without being told their order survives that, a
     newcomer reasonably assumes it doesn't.
     """
-    holder = f"\nبه نام: {card_holder}" if card_holder else ""
+    holder = f"\nبه نام: {md_escape(card_holder)}" if card_holder else ""
     return (
         f"مبلغ {money(amount)} را به این کارت واریز کنید:\n\n"
         f"`{plain_digits(card_number)}`{holder}\n"
