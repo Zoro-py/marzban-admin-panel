@@ -21,6 +21,7 @@ import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
 import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import type { AccountRow, AccountRole, BillingMode, LedgerType } from '@/lib/types'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -113,6 +114,7 @@ function InspectorBody({ account, onClose }: { account: AccountRow; onClose: () 
             <Badge variant={account.effective_billing_mode === 'payg' ? 'warning' : 'secondary'}>
               {account.effective_billing_mode === 'payg' ? 'pay-as-you-go' : 'prepay'}
             </Badge>
+            {!account.auto_renew_enabled && <Badge variant="outline">auto-renew off</Badge>}
           </div>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">
             {account.customer_id ? (
@@ -686,12 +688,14 @@ function InvoiceSection({ account, canBill }: { account: AccountRow; canBill: bo
 function BillingSection({ account }: { account: AccountRow }) {
   const [rateInput, setRateInput] = React.useState(account.rate_per_gb != null ? String(account.rate_per_gb) : '')
   const [billingMode, setBillingMode] = React.useState<BillingMode>(account.billing_mode)
+  const [autoRenewEnabled, setAutoRenewEnabled] = React.useState(account.auto_renew_enabled)
   const invalidate = useInvalidateAccount(account.id)
 
   const mutation = useMutation({
     mutationFn: () =>
       accountsApi.updateBilling(account.id, {
         billing_mode: billingMode,
+        auto_renew_enabled: autoRenewEnabled,
         ...(rateInput ? { rate_per_gb: Number(rateInput) } : { clear_rate: true }),
       }),
     onSuccess: () => {
@@ -729,6 +733,16 @@ function BillingSection({ account }: { account: AccountRow }) {
           </SelectContent>
         </Select>
       </div>
+      <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-muted/40 p-2.5 text-xs">
+        <Checkbox checked={autoRenewEnabled} onCheckedChange={(v) => setAutoRenewEnabled(v === true)} className="mt-0.5" />
+        <span className="flex-1">
+          <span className="font-medium">Auto-renew</span>
+          <p className="mt-0.5 text-muted-foreground">
+            Off means this account is never auto-queued for renewal near quota/expiry, no matter how close it gets —
+            renew it by hand, every time. Use for comp/staff/family accounts you don't want auto-priced.
+          </p>
+        </span>
+      </label>
       <Button size="sm" variant="outline" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
         {mutation.isPending ? 'Saving…' : 'Save billing'}
       </Button>

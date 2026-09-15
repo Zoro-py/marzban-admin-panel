@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { accountsApi, apiErrorMessage, customersApi, groupsApi } from '@/lib/api'
 import type { BulkAccountRequest, BulkAccountResult } from '@/lib/types'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -54,6 +55,7 @@ export function BulkAccountDialog({ defaultCustomerId, defaultGroupId, trigger }
   const [expireDays, setExpireDays] = React.useState('30')
   const [dataLimitGb, setDataLimitGb] = React.useState('')
   const [ratePerGb, setRatePerGb] = React.useState('')
+  const [autoRenewEnabled, setAutoRenewEnabled] = React.useState(true)
   const [result, setResult] = React.useState<BulkAccountResult | null>(null)
   const queryClient = useQueryClient()
 
@@ -106,6 +108,7 @@ export function BulkAccountDialog({ defaultCustomerId, defaultGroupId, trigger }
     expire_days: expireDays.trim() === '' ? null : Number(expireDays),
     data_limit_gb: dataLimitGb.trim() === '' ? null : Number(dataLimitGb),
     rate_per_gb: ratePerGb.trim() === '' ? null : Number(ratePerGb),
+    auto_renew_enabled: autoRenewEnabled,
   })
 
   const mutation = useMutation({
@@ -293,6 +296,17 @@ export function BulkAccountDialog({ defaultCustomerId, defaultGroupId, trigger }
                   />
                 </div>
               )}
+
+              <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-muted/40 p-2.5 text-xs">
+                <Checkbox checked={autoRenewEnabled} onCheckedChange={(v) => setAutoRenewEnabled(v === true)} className="mt-0.5" />
+                <span className="flex-1">
+                  <span className="font-medium">Auto-renew these accounts</span>
+                  <p className="mt-0.5 text-muted-foreground">
+                    Uncheck for a batch you always want to renew by hand (comp/staff/family) — none of them will ever
+                    be auto-queued near quota/expiry. Changeable later per account in its inspector.
+                  </p>
+                </span>
+              </label>
 
               <p className="text-xs text-muted-foreground">
                 Nothing is charged. These accounts are created and (optionally) assigned — billing stays a

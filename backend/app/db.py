@@ -65,6 +65,12 @@ def _run_lightweight_migrations() -> None:
             # migration that makes its own Marzban calls at startup.
             conn.execute(text("ALTER TABLE account ADD COLUMN subscription_url VARCHAR"))
 
+        if existing and "auto_renew_enabled" not in existing:
+            # Opt-out flag, defaults True — every account that already exists
+            # keeps auto-renewing exactly as before; nobody's behavior changes
+            # until they explicitly flip one off.
+            conn.execute(text("ALTER TABLE account ADD COLUMN auto_renew_enabled BOOLEAN NOT NULL DEFAULT 1"))
+
         if existing and "first_seen_traffic" not in existing:
             conn.execute(text("ALTER TABLE account ADD COLUMN first_seen_traffic INTEGER NOT NULL DEFAULT 0"))
             conn.execute(text("ALTER TABLE account ADD COLUMN first_seen_traffic_at DATETIME"))

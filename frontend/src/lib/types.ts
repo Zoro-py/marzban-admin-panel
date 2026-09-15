@@ -72,6 +72,10 @@ export interface Account {
   // it to something openable before sending it here.
   subscription_url: string | null
   last_synced_at: string | null
+  // Opt-out — gates the near-quota/near-expiry auto-renew queue only.
+  // Defaults true; explicit false is how an operator excludes a specific
+  // account (or a whole bulk-created batch) from ever being auto-renewed.
+  auto_renew_enabled: boolean
   created_at: string
 }
 
@@ -124,6 +128,8 @@ export interface BulkAccountRequest {
   data_limit_gb?: number | null
   note?: string | null
   notify?: boolean
+  // Applied to every account in the batch. Default true (today's behavior).
+  auto_renew_enabled?: boolean
 }
 
 export type UsageConfidence = 'insufficient_data' | 'preliminary' | 'full'

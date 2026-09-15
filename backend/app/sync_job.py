@@ -136,10 +136,17 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
     and "deleted_from_marzban" (this dashboard's own soft-delete marker for
     an account Marzban no longer has at all — nothing to renew).
 
+    And: account.auto_renew_enabled == False — an explicit, per-account
+    opt-out (settable on the account itself, or once for a whole bulk-created
+    batch) for accounts the operator always wants to renew by hand — a comp
+    account, a family member, anything they don't want auto-priced.
+
     Never repeats for the same shortage: skipped entirely the moment a
     pending plan exists, whether this queued it moments ago or the operator
     queued one by hand — same gate the dashboard's "Next ▸" badge reads."""
     if account.status in _EXCLUDED_STATUSES:
+        return
+    if not account.auto_renew_enabled:
         return
     if effective_billing_mode(session, account) != BillingMode.prepay:
         return

@@ -127,6 +127,14 @@ class Account(SQLModel, table=True):
     # services.ONLINE_THRESHOLD_SECONDS) for the online-accounts trend chart.
     online_at: Optional[datetime] = None
 
+    # Opt-OUT flag: defaults True so every existing and newly-created account
+    # keeps today's behavior unless someone explicitly turns it off. Read only
+    # by sync_job.py's near-quota/near-expiry auto-queue (prepay-only to begin
+    # with) — a comp/test/staff account, or one the operator wants to renew by
+    # hand every time, sets this False once and stays excluded from then on,
+    # including when created as part of a bulk batch (see bulk_accounts.py).
+    auto_renew_enabled: bool = True
+
     created_at: datetime = Field(default_factory=utcnow)
 
 

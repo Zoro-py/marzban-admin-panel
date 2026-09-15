@@ -167,8 +167,10 @@ export const accountsApi = {
     (await api.post<BulkAccountResult>('/api/accounts/bulk', body, { timeout: 180_000 })).data,
   updateRelationship: async (id: number, body: { customer_id?: number | null; group_id?: number | null; role?: 'primary' | 'sub' }) =>
     (await api.patch<Account>(`/api/accounts/${id}/relationship`, body)).data,
-  updateBilling: async (id: number, body: { rate_per_gb?: number | null; billing_mode?: BillingMode; clear_rate?: boolean }) =>
-    (await api.patch<Account>(`/api/accounts/${id}/billing`, body)).data,
+  updateBilling: async (
+    id: number,
+    body: { rate_per_gb?: number | null; billing_mode?: BillingMode; clear_rate?: boolean; auto_renew_enabled?: boolean },
+  ) => (await api.patch<Account>(`/api/accounts/${id}/billing`, body)).data,
   adjust: async (
     id: number,
     body: { extend_days?: number; extend_gb?: number; set_expire?: number; set_data_limit_gb?: number; note?: string },

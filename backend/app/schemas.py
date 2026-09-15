@@ -165,6 +165,9 @@ class AccountBillingUpdate(BaseModel):
     rate_per_gb: Optional[float] = Field(default=None, ge=0.0)
     billing_mode: Optional[BillingMode] = None
     clear_rate: bool = False  # explicit clear, since rate_per_gb=None is ambiguous with "unset"
+    # None = leave as-is. Gates sync_job.py's near-quota/near-expiry auto-queue
+    # only — has no effect on anything else (settle, reset, manual next-plan).
+    auto_renew_enabled: Optional[bool] = None
 
 
 class AccountAdjustRequest(BaseModel):
@@ -221,6 +224,7 @@ class AccountRead(BaseModel):
     expire: Optional[int]
     status: Optional[str]
     last_synced_at: Optional[datetime]
+    auto_renew_enabled: bool
     created_at: datetime
 
 
@@ -386,6 +390,11 @@ class BulkAccountCreateRequest(BaseModel):
     # Off only for a caller that wants the links in the HTTP response without
     # filling the operator's chat (e.g. re-running a preview-driven flow).
     notify: bool = True
+
+    # Applied to every account created in this batch. Default True (today's
+    # behavior); turn off for a batch the operator always wants to renew by
+    # hand (comp accounts, staff, family) — see Account.auto_renew_enabled.
+    auto_renew_enabled: bool = True
 
 
 class BulkAccountPlannedName(BaseModel):

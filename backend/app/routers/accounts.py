@@ -374,6 +374,7 @@ async def create_bulk_accounts(
             status=marzban_user.get("status"),
             subscription_url=marzban_user.get("subscription_url"),
             last_synced_at=now,
+            auto_renew_enabled=body.auto_renew_enabled,
         )
         try:
             session.add(account)
@@ -510,13 +511,16 @@ def update_billing(account_id: int, body: AccountBillingUpdate, session: Session
     if body.billing_mode is not None:
         account.billing_mode = body.billing_mode
 
+    if body.auto_renew_enabled is not None:
+        account.auto_renew_enabled = body.auto_renew_enabled
+
     try:
         session.add(account)
         session.add(
             AccountEvent(
                 account_id=account.id,
                 action="billing_change",
-                detail=f"rate_per_gb={account.rate_per_gb}, billing_mode={account.billing_mode}",
+                detail=f"rate_per_gb={account.rate_per_gb}, billing_mode={account.billing_mode}, auto_renew_enabled={account.auto_renew_enabled}",
             )
         )
         session.commit()
