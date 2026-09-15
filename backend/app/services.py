@@ -6,7 +6,7 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from app.models import Account, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerType, QueuedPlan, QueuedPlanStatus, utcnow
+from app.models import Account, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, QueuedPlan, QueuedPlanStatus, utcnow
 
 # ══════════════════════════════════════════════════════════════ the money model
 #
@@ -291,6 +291,62 @@ def effective_billing_mode(session: Session, account: Account, group: Optional[G
         if group is not None:
             return group.billing_mode
     return account.billing_mode
+
+
+def close_out_payg_usage_before_delete(
+    session: Session, account: Account, *, source: LedgerSource, note: str,
+) -> Optional[LedgerEntry]:
+    """Before permanently removing an account, any UNBILLED payg usage since
+    the last settle is a real meter reading that only exists locally —
+    deleting the Marzban user without billing it first loses it forever
+    (unlike prepay, where the package size is already fixed data, not a
+    live reading). Returns the entry to add (caller decides when to
+    session.add it — see the "Marzban call before any DB write" ordering
+    every deletion here follows), or None if there's nothing owed (prepay,
+    or zero accrued usage).
+
+    Also rolls usage_baseline forward when it posts a charge — skipping
+    that would leave MoneyBook.account_pending reading the SAME
+    already-billed usage as still pending forever, since nothing else ever
+    revisits a deleted account's baseline (it's excluded from every
+    "operator can still act on this" screen but MoneyBook itself
+    deliberately keeps summing deleted accounts' money — see
+    Account.deleted_at's own docstring)."""
+    mode = effective_billing_mode(session, account)
+    if mode != BillingMode.payg:
+        return None
+    billable_gb = billable_bytes(account, mode) / GB
+    rate = effective_rate(session, account)
+    amount = round(billable_gb * rate, 2)
+    if amount <= 0:
+        return None
+    entry = LedgerEntry(
+        type=LedgerType.charge,
+        amount=amount,
+        customer_id=account.customer_id,
+        group_id=account.group_id,
+        account_id=account.id,
+        note=note,
+        source=source,
+    )
+    account.usage_baseline = account.used_traffic
+    account.usage_baseline_at = utcnow()
+    return entry
+
+
+def cancel_pending_queued_plan(session: Session, account_id: int) -> None:
+    """A pending QueuedPlan (auto-queued by sync_job, or set by hand) left
+    behind after an account is deleted would sit 'pending' forever —
+    sync_job only ever activates one while iterating Marzban's live user
+    list, and a deleted account has left that list for good — so it would
+    keep showing as a phantom future charge on
+    /api/reports/upcoming-renewals for an account that no longer exists."""
+    pending_plan = session.exec(
+        select(QueuedPlan).where(QueuedPlan.account_id == account_id, QueuedPlan.status == QueuedPlanStatus.pending)
+    ).first()
+    if pending_plan is not None:
+        pending_plan.status = QueuedPlanStatus.cancelled
+        session.add(pending_plan)
 
 
 def rate_is_configured(session: Session, account: Account, group: Optional[Group] = None) -> bool:

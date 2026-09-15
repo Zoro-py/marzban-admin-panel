@@ -41,6 +41,8 @@ from app.services import (
     account_posted_balance,
     billable_bytes,
     bytes_from_gb,
+    cancel_pending_queued_plan,
+    close_out_payg_usage_before_delete,
     effective_billing_mode,
     effective_rate,
     enrich_accounts,
@@ -963,3 +965,45 @@ def cancel_next_plan(account_id: int, session: Session = Depends(get_session)):
         session.rollback()
         raise
     return {"ok": True, "cancelled_plan_id": plan.id}
+
+
+@router.post("/{account_id}/delete")
+async def delete_account(account_id: int, session: Session = Depends(get_session)):
+    """Permanently removes this Marzban user and marks the local account
+    deleted (soft delete — see models.py's Account.deleted_at; every
+    ledger/history row about it stays intact and reachable). Irreversible
+    — there is no undo endpoint. The frontend confirms before calling
+    this, same as every other destructive action on this page (see
+    ShopPage.tsx's window.confirm() calls for the established pattern);
+    nothing here re-confirms server-side.
+
+    This is the operator's own version of what
+    delegate_service.delete_delegate_account does for a delegate acting on
+    their own scoped accounts — same close_out_payg_usage_before_delete /
+    cancel_pending_queued_plan safety nets, no ownership/credit-limit
+    checks because the operator already has full access."""
+    account = session.get(Account, account_id)
+    if not account:
+        raise HTTPException(404, "Account not found")
+    if account.deleted_at is not None:
+        raise HTTPException(400, "This account is already deleted")
+
+    final_charge = close_out_payg_usage_before_delete(
+        session, account, source=LedgerSource.web, note="Final payg usage before delete",
+    )
+
+    try:
+        await marzban_client.delete_user(account.marzban_username)
+    except ValueError as exc:
+        raise HTTPException(400, f"Marzban rejected this: {exc}")
+    except (MarzbanUnavailable, MarzbanAuthError) as exc:
+        raise HTTPException(502, str(exc))
+
+    if final_charge is not None:
+        session.add(final_charge)
+    account.deleted_at = utcnow()
+    session.add(account)
+    cancel_pending_queued_plan(session, account.id)
+    session.add(AccountEvent(account_id=account.id, action="delete", detail="Deleted via dashboard"))
+    session.commit()
+    return {"ok": True}

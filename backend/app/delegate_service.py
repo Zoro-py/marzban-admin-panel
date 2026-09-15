@@ -22,19 +22,16 @@ from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_cli
 from app.models import (
     Account,
     AccountEvent,
-    BillingMode,
     Customer,
     Delegate,
     Group,
     LedgerEntry,
     LedgerSource,
     LedgerType,
-    QueuedPlan,
-    QueuedPlanStatus,
     utcnow,
 )
 from app.notify import notify_admin
-from app.services import GB, MoneyBook, billable_bytes, bytes_from_gb, effective_billing_mode, effective_rate
+from app.services import MoneyBook, bytes_from_gb, cancel_pending_queued_plan, close_out_payg_usage_before_delete, effective_rate
 
 logger = logging.getLogger(__name__)
 
@@ -325,34 +322,17 @@ async def delete_delegate_account(session: Session, delegate: Delegate, account_
         raise DelegateError("دسترسی شما غیرفعال شده — با تیم فروش تماس بگیرید.")
     account = _get_owned_account(session, delegate, account_id)
 
-    # Every account THIS service creates is prepay, fully billed at create
-    # time (see create_delegate_account's billed_data_limit comment), so
-    # there's nothing outstanding to catch for those. But a delegate's scope
-    # can also include a PRE-EXISTING account the operator already put on
-    # payg — for that mode specifically, usage since the last settle is a
-    # real meter reading that only exists locally; deleting the Marzban user
-    # without billing it first would lose that usage forever (unlike prepay,
-    # where the package size is already fixed data, not a live reading).
     # Computed BEFORE the Marzban call so it reflects the account's real
     # state right up to the moment it's destroyed; written to the DB only
     # AFTER Marzban confirms the delete, same "Marzban call before any DB
-    # write" ordering settle_account uses.
-    mode = effective_billing_mode(session, account)
-    final_charge: Optional[LedgerEntry] = None
-    if mode == BillingMode.payg:
-        billable_gb = billable_bytes(account, mode) / GB
-        rate = effective_rate(session, account)
-        final_amount = round(billable_gb * rate, 2)
-        if final_amount > 0:
-            final_charge = LedgerEntry(
-                type=LedgerType.charge,
-                amount=final_amount,
-                customer_id=delegate.customer_id,
-                group_id=delegate.group_id,
-                account_id=account.id,
-                note=f"Delegate self-service: final payg usage before delete ({billable_gb:.2f}GB)",
-                source=LedgerSource.delegate,
-            )
+    # write" ordering settle_account uses. Every account THIS service
+    # creates is prepay and fully billed at create time, so this is a no-op
+    # for those — it only matters for a PRE-EXISTING payg account that
+    # happened to be in the delegate's scope.
+    final_charge = close_out_payg_usage_before_delete(
+        session, account, source=LedgerSource.delegate,
+        note="Delegate self-service: final payg usage before delete",
+    )
 
     try:
         await marzban_client.delete_user(account.marzban_username)
@@ -363,31 +343,9 @@ async def delete_delegate_account(session: Session, delegate: Delegate, account_
 
     if final_charge is not None:
         session.add(final_charge)
-        # Roll the payg baseline to match what was just billed — same fix
-        # roll_payg_baseline_after_reset applies after a normal settle,
-        # applied inline here (that helper's own docstring assumes a
-        # Marzban-side usage RESET happened, which delete doesn't do). Skip
-        # this and MoneyBook.account_pending would keep reading the same
-        # now-already-charged usage as still-pending forever: the account
-        # stays in _accounts (deleted_at doesn't filter money math — a
-        # deleted account's real debt is still real debt), so the
-        # customer's dashboard "pending" total would be permanently
-        # inflated by this one already-billed amount.
-        account.usage_baseline = account.used_traffic
-        account.usage_baseline_at = utcnow()
     account.deleted_at = utcnow()
     session.add(account)
-    # A pending QueuedPlan (auto-renewal queued by sync_job, or set by hand)
-    # would otherwise sit 'pending' forever and keep showing up in the
-    # dashboard's /api/reports/upcoming-renewals as a future charge that can
-    # never actually happen — sync_job only activates a plan while iterating
-    # Marzban's own live user list, and this account just left it for good.
-    pending_plan = session.exec(
-        select(QueuedPlan).where(QueuedPlan.account_id == account.id, QueuedPlan.status == QueuedPlanStatus.pending)
-    ).first()
-    if pending_plan is not None:
-        pending_plan.status = QueuedPlanStatus.cancelled
-        session.add(pending_plan)
+    cancel_pending_queued_plan(session, account.id)
     session.add(AccountEvent(
         account_id=account.id,
         action="delegate_delete",

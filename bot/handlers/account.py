@@ -1,8 +1,17 @@
-from telegram import Update
+import itertools
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from api_client import backend
-from handlers.common import admin_only, format_expire, format_gb, format_toman, resolve_account
+from handlers.common import admin_only, format_expire, format_gb, format_toman, md, resolve_account
+
+# Same "popped, not read" pending-confirm pattern as wallet.py/
+# delegate_admin.py — deletion is irreversible (there is no undo
+# endpoint), so it gets the same mandatory Confirm/Cancel step those two
+# use for anything money-moving or high-blast-radius.
+_pending_delete: dict[int, dict] = {}
+_next_delete_token = itertools.count(1)
 
 
 @admin_only
@@ -80,5 +89,73 @@ async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(
         f"Updated `{updated['marzban_username']}` — expires {format_expire(updated['expire'])}, "
         f"limit {format_gb(updated['data_limit'])}{charge_note}",
+        parse_mode="Markdown",
+    )
+
+
+@admin_only
+async def delete_account_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: `/delete_account <username>`\n"
+            "Permanently removes the Marzban user — irreversible, no undo. "
+            "Asks you to confirm before it actually deletes anything.",
+            parse_mode="Markdown",
+        )
+        return
+
+    username = context.args[0]
+    account = await resolve_account(username)
+    if account is None:
+        await update.message.reply_text(f"No tracked account named `{username}`.", parse_mode="Markdown")
+        return
+
+    token = next(_next_delete_token)
+    _pending_delete[token] = {"account_id": account["id"], "marzban_username": account["marzban_username"]}
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Confirm delete", callback_data=f"delacc:ok:{token}"),
+        InlineKeyboardButton("❌ Cancel", callback_data=f"delacc:no:{token}"),
+    ]])
+    await update.message.reply_text(
+        f"⚠️ Permanently delete `{md(account['marzban_username'])}`? This cannot be undone.",
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
+
+
+@admin_only
+async def delete_account_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    try:
+        _, action, raw_token = query.data.split(":", 2)
+        token = int(raw_token)
+    except (ValueError, AttributeError):
+        await query.edit_message_text("This button is malformed — start over with /delete_account.")
+        return
+
+    pending = _pending_delete.pop(token, None)
+    if pending is None:
+        await query.edit_message_text("This confirmation already expired or was used — start over with /delete_account.")
+        return
+
+    original = query.message.text or ""
+    if action == "no":
+        await query.edit_message_text(f"{original}\n\n❌ Cancelled — nothing deleted.", reply_markup=None, parse_mode="Markdown")
+        return
+    if action != "ok":
+        await query.edit_message_text("Unrecognised button — start over with /delete_account.")
+        return
+
+    try:
+        await backend.post(f"/api/accounts/{pending['account_id']}/delete")
+    except Exception as exc:  # noqa: BLE001
+        await query.edit_message_text(f"{original}\n\n❌ Failed — {md(str(exc))}", reply_markup=None, parse_mode="Markdown")
+        return
+
+    await query.edit_message_text(
+        f"{original}\n\n🗑 Deleted `{md(pending['marzban_username'])}`.",
+        reply_markup=None,
         parse_mode="Markdown",
     )

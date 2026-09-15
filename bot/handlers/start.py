@@ -10,6 +10,7 @@ HELP_TEXT = """*VPN reseller bot*
 /charge <customer> <amount> [note] — record a debt (بدهی)
 /credit <customer> <amount> [note] — record a credit/payment (طلب)
 /extend <username> <days> [gb] — extend or reduce time (and optionally data) on a Marzban account
+/delete_account <username> — permanently delete a Marzban account; irreversible, asks you to confirm first
 /bulk <name> <count> [30gb] [30d] [from=N] — create a family batch (name1, name2, …); shows the exact usernames and waits for your confirmation, then sends a QR + link for each
 /topups — payment receipts from shop customers waiting for your approval (you also get each one pushed here with approve/reject buttons the moment it arrives)
 /wallet_find <name> — look up a shop customer's telegram_id + balance by name/username

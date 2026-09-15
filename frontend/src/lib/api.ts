@@ -194,6 +194,7 @@ export const accountsApi = {
   setNextPlan: async (id: number, body: { data_limit_gb: number; duration_days: number; billing_mode?: BillingMode | null }) =>
     (await api.post<NextPlan>(`/api/accounts/${id}/next-plan`, body)).data,
   cancelNextPlan: async (id: number) => (await api.delete(`/api/accounts/${id}/next-plan`)).data,
+  deleteAccount: async (id: number) => (await api.post(`/api/accounts/${id}/delete`)).data,
 }
 
 // ---- ledger ----

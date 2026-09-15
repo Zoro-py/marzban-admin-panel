@@ -14,6 +14,7 @@ import {
   Receipt,
   RotateCcw,
   Tag,
+  Trash2,
   X,
 } from 'lucide-react'
 import { accountsApi, customersApi, groupsApi, ledgerApi, apiErrorMessage } from '@/lib/api'
@@ -253,6 +254,7 @@ function InspectorBody({ account, onClose }: { account: AccountRow; onClose: () 
         <NextPlanSection account={account} />
         <OwnershipSection account={account} />
         <HistorySection account={account} />
+        <DangerSection account={account} onClose={onClose} />
       </div>
     </>
   )
@@ -1021,6 +1023,49 @@ function HistorySection({ account }: { account: AccountRow }) {
           </li>
         ))}
       </ol>
+    </Section>
+  )
+}
+
+function DangerSection({ account, onClose }: { account: AccountRow; onClose: () => void }) {
+  const queryClient = useQueryClient()
+
+  const mutation = useMutation({
+    mutationFn: () => accountsApi.deleteAccount(account.id),
+    onSuccess: () => {
+      toast.success(`Deleted ${account.marzban_username}`)
+      // The account is gone — closing the panel and invalidating the list
+      // queries (not just this one account's, which no longer exists) is
+      // the same cleanup useInvalidateAccount does for every other mutation
+      // here, plus the close this specific case needs.
+      queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      queryClient.invalidateQueries({ queryKey: ['customers'] })
+      queryClient.invalidateQueries({ queryKey: ['groups'] })
+      queryClient.invalidateQueries({ queryKey: ['reports'] })
+      onClose()
+    },
+    onError: (err) => toast.error(apiErrorMessage(err)),
+  })
+
+  return (
+    <Section icon={Trash2} title="Danger zone">
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        Permanently removes this Marzban user. Irreversible — there is no undo. Ledger/history
+        entries about this account stay intact and remain visible from wherever they're
+        referenced; the account itself just stops showing up as a live one.
+      </p>
+      <Button
+        size="sm"
+        variant="destructive"
+        disabled={mutation.isPending}
+        onClick={() => {
+          if (window.confirm(`Permanently delete ${account.marzban_username}? This cannot be undone.`)) {
+            mutation.mutate()
+          }
+        }}
+      >
+        {mutation.isPending ? 'Deleting…' : `Delete ${account.marzban_username}`}
+      </Button>
     </Section>
   )
 }
