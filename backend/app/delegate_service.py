@@ -29,6 +29,8 @@ from app.models import (
     LedgerEntry,
     LedgerSource,
     LedgerType,
+    QueuedPlan,
+    QueuedPlanStatus,
     utcnow,
 )
 from app.notify import notify_admin
@@ -361,8 +363,31 @@ async def delete_delegate_account(session: Session, delegate: Delegate, account_
 
     if final_charge is not None:
         session.add(final_charge)
+        # Roll the payg baseline to match what was just billed — same fix
+        # roll_payg_baseline_after_reset applies after a normal settle,
+        # applied inline here (that helper's own docstring assumes a
+        # Marzban-side usage RESET happened, which delete doesn't do). Skip
+        # this and MoneyBook.account_pending would keep reading the same
+        # now-already-charged usage as still-pending forever: the account
+        # stays in _accounts (deleted_at doesn't filter money math — a
+        # deleted account's real debt is still real debt), so the
+        # customer's dashboard "pending" total would be permanently
+        # inflated by this one already-billed amount.
+        account.usage_baseline = account.used_traffic
+        account.usage_baseline_at = utcnow()
     account.deleted_at = utcnow()
     session.add(account)
+    # A pending QueuedPlan (auto-renewal queued by sync_job, or set by hand)
+    # would otherwise sit 'pending' forever and keep showing up in the
+    # dashboard's /api/reports/upcoming-renewals as a future charge that can
+    # never actually happen — sync_job only activates a plan while iterating
+    # Marzban's own live user list, and this account just left it for good.
+    pending_plan = session.exec(
+        select(QueuedPlan).where(QueuedPlan.account_id == account.id, QueuedPlan.status == QueuedPlanStatus.pending)
+    ).first()
+    if pending_plan is not None:
+        pending_plan.status = QueuedPlanStatus.cancelled
+        session.add(pending_plan)
     session.add(AccountEvent(
         account_id=account.id,
         action="delegate_delete",

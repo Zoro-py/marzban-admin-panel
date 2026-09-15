@@ -34,7 +34,7 @@ from app import marzban_client as marzban_module  # noqa: E402
 from app.auth import require_auth  # noqa: E402
 from app.db import engine, init_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Account, AppSettings, BillingMode, Customer, Delegate, Group, LedgerEntry  # noqa: E402
+from app.models import Account, AppSettings, BillingMode, Customer, Delegate, Group, LedgerEntry, QueuedPlan, QueuedPlanStatus  # noqa: E402
 
 init_db()
 
@@ -229,6 +229,34 @@ check("renewing an expired account succeeds", r.status_code == 200)
 check("the renewed expiry is in the future (extended from now, not the stale past expire)",
       r.json()["expire"] > int(_time.time()))
 
+# ── deleting an account with a PENDING QueuedPlan cancels it, so it doesn't
+# sit forever as a phantom future charge on /api/reports/upcoming-renewals
+# for an account that no longer exists to ever activate it. ─────────────
+with Session(engine) as session:
+    qp_customer = Customer(name="Queued Plan Customer")
+    session.add(qp_customer)
+    session.commit()
+    session.refresh(qp_customer)
+    qp_customer_id = qp_customer.id
+client.post("/api/delegate", json={"customer_id": qp_customer_id, "telegram_id": 9007, "daily_create_cap": 10})
+r = client.post("/api/delegate/bot/accounts", headers=BOT_HEADERS, json={"telegram_id": 9007, "data_limit_gb": 5})
+qp_account_id = r.json()["id"]
+with Session(engine) as session:
+    session.add(QueuedPlan(account_id=qp_account_id, data_limit_gb=10, duration_days=30))
+    session.commit()
+r = client.get("/api/reports/upcoming-renewals")
+check("the pending plan shows up in upcoming-renewals before delete",
+      qp_account_id in [row.get("account_id") for row in r.json()])
+r = client.post(f"/api/delegate/bot/accounts/{qp_account_id}/delete", headers=BOT_HEADERS, json={"telegram_id": 9007})
+check("delete with a pending queued plan succeeds", r.status_code == 200)
+with Session(engine) as session:
+    plans = session.exec(select(QueuedPlan).where(QueuedPlan.account_id == qp_account_id)).all()
+    check("the pending plan was cancelled on delete, not left dangling",
+          len(plans) == 1 and plans[0].status == QueuedPlanStatus.cancelled)
+r = client.get("/api/reports/upcoming-renewals")
+check("the deleted account's plan no longer shows as an upcoming renewal",
+      qp_account_id not in [row.get("account_id") for row in r.json()])
+
 # ── group delegates: scope isolation + ledger entries carry group_id so
 # reports.py can show WHICH group a charge belongs to. ──────────────────
 with Session(engine) as session:
@@ -278,6 +306,21 @@ with Session(engine) as session:
     entries = session.exec(select(LedgerEntry).where(LedgerEntry.account_id == payg_account_id)).all()
     check("a final charge for the 5GB unbilled payg usage was posted before delete",
           len(entries) == 1 and entries[0].amount == 5000.0)  # 5GB * 1000 rate
+    acc = session.get(Account, payg_account_id)
+    check("usage_baseline rolled forward so the just-billed usage doesn't ALSO show as pending forever",
+          acc.usage_baseline == acc.used_traffic)
+
+# The dashboard's own "pending" figure for this now-deleted account must be
+# 0 — not the 5GB it was already charged for at delete time. MoneyBook
+# still counts deleted accounts (their real debt is still real debt), so
+# this is specifically checking the baseline-roll fix, not deleted_at
+# filtering.
+from app.services import MoneyBook  # noqa: E402
+with Session(engine) as session:
+    book = MoneyBook(session)
+    acc = session.get(Account, payg_account_id)
+    check("pending for the deleted payg account is 0 after the baseline roll",
+          book.account_pending(acc) == 0.0)
 
 # ── a deleted GROUP member is excluded from settle_group, so it doesn't
 # fail that group's settlement forever. ──────────────────────────────────
