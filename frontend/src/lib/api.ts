@@ -209,7 +209,7 @@ export const ledgerApi = {
     account_id?: number | null
     note?: string
   }) => (await api.post<LedgerEntry>('/api/ledger', body)).data,
-  balance: async (params: { customer_id?: number; group_id?: number }) =>
+  balance: async (params: { customer_id?: number; group_id?: number; since?: string }) =>
     (await api.get<Balance>('/api/ledger/balance', { params })).data,
 }
 

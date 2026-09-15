@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -55,6 +56,13 @@ def create_ledger_entry(body: LedgerCreate, session: Session = Depends(get_sessi
 def get_balance(
     customer_id: Optional[int] = None,
     group_id: Optional[int] = None,
+    # "What do they owe FROM this date forward" — e.g. the date of their
+    # last payment, so a running balance doesn't quietly drift out of sight
+    # between manual reconciliations. Date-only (no time) is deliberately
+    # accepted as-is: FastAPI parses "2026-09-01" into midnight that day,
+    # which is the natural reading of "since the 1st" — entries posted
+    # earlier that same day are correctly excluded.
+    since: Optional[datetime] = None,
     session: Session = Depends(get_session),
 ):
     if (customer_id is None) == (group_id is None):
@@ -62,7 +70,7 @@ def get_balance(
 
     # Roll-ups, not a raw scan of rows carrying this id — see
     # services.MoneyBook for why those two are not the same thing.
-    book = MoneyBook(session)
+    book = MoneyBook(session, since=since)
     if customer_id is not None:
         customer = session.get(Customer, customer_id)
         if not customer:

@@ -59,7 +59,16 @@ class MoneyBook:
     because one of them was computed a query later than the other.
     """
 
-    def __init__(self, session: Session):
+    def __init__(self, session: Session, *, since: Optional[datetime] = None):
+        """`since`, when given, restricts every `*_posted` figure to
+        LedgerEntry rows dated on or after it — "what do they owe FROM this
+        date forward" (e.g. since their last payment), not all-time. Applied
+        once here, at the SQL aggregation level, so every posted-balance
+        method below (account/group/customer) automatically respects it
+        without each needing its own date-filtering logic. `*_pending` is
+        deliberately UNAFFECTED — it's a live "right now" figure read off
+        Marzban's current usage snapshot, not ledger history, so "since" has
+        no meaning for it."""
         self.session = session
         self._accounts = session.exec(select(Account)).all()
         self._groups = {g.id: g for g in session.exec(select(Group)).all()}
@@ -72,16 +81,19 @@ class MoneyBook:
 
         # Sum by account_id where account_id is not null
         stmt_acc = select(LedgerEntry.account_id, LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.account_id.is_not(None)).group_by(LedgerEntry.account_id, LedgerEntry.type)
-        for acc_id, l_type, total in session.exec(stmt_acc).all():
-            self._posted_by_account[acc_id] += total if l_type == LedgerType.charge else -total
-
         # Sum by group_id where account_id is null and group_id is not null
         stmt_grp = select(LedgerEntry.group_id, LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_not(None)).group_by(LedgerEntry.group_id, LedgerEntry.type)
-        for grp_id, l_type, total in session.exec(stmt_grp).all():
-            self._posted_group_only[grp_id] += total if l_type == LedgerType.charge else -total
-
         # Sum by customer_id where account_id is null and group_id is null and customer_id is not null
         stmt_cust = select(LedgerEntry.customer_id, LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_(None), LedgerEntry.customer_id.is_not(None)).group_by(LedgerEntry.customer_id, LedgerEntry.type)
+        if since is not None:
+            stmt_acc = stmt_acc.where(LedgerEntry.date >= since)
+            stmt_grp = stmt_grp.where(LedgerEntry.date >= since)
+            stmt_cust = stmt_cust.where(LedgerEntry.date >= since)
+
+        for acc_id, l_type, total in session.exec(stmt_acc).all():
+            self._posted_by_account[acc_id] += total if l_type == LedgerType.charge else -total
+        for grp_id, l_type, total in session.exec(stmt_grp).all():
+            self._posted_group_only[grp_id] += total if l_type == LedgerType.charge else -total
         for cust_id, l_type, total in session.exec(stmt_cust).all():
             self._posted_customer_only[cust_id] += total if l_type == LedgerType.charge else -total
 
