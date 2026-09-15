@@ -19,6 +19,7 @@ import { StatCard } from '@/components/StatCard'
 import { Money } from '@/components/Money'
 import { OnlineTrendChart } from '@/components/dashboard/OnlineTrendChart'
 import { SystemResourcesChart } from '@/components/dashboard/SystemResourcesChart'
+import { UpcomingRenewalsCard } from '@/components/dashboard/UpcomingRenewalsCard'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
 import { cn, formatToman } from '@/lib/utils'
 
@@ -99,6 +100,7 @@ export function DashboardPage() {
         </Link>
       </div>
 
+      <UpcomingRenewalsCard />
       <OnlineTrendChart />
       <SystemResourcesChart />
 

@@ -287,6 +287,23 @@ export interface SystemStatus {
   load_avg_1m: number | null
 }
 
+export interface UpcomingRenewal {
+  queued_plan_id: number
+  account_id: number
+  marzban_username: string
+  owner_name: string | null
+  data_limit_gb: number
+  duration_days: number
+  // gb * effective_rate at read time — an estimate, not a locked-in price;
+  // the real charge is computed fresh again at activation.
+  estimated_amount: number
+  rate_per_gb: number
+  // Null if the account has no expire set (shouldn't normally happen for a
+  // queued plan, but not assumed).
+  days_until_activation: number | null
+  queued_at: string
+}
+
 export interface FinanceTransaction {
   id: number
   type: LedgerType

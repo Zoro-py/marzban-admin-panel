@@ -30,6 +30,7 @@ import type {
   ShopWalletEntry,
   SyncStatus,
   SystemStatus,
+  UpcomingRenewal,
 } from './types'
 
 const TOKEN_KEY = 'vpn_dashboard_token'
@@ -218,6 +219,7 @@ export const reportsApi = {
   onlineHistory: async (range: OnlineHistoryRange) =>
     (await api.get<OnlineHistory>('/api/reports/online-history', { params: { range } })).data,
   systemStatus: async () => (await api.get<SystemStatus>('/api/reports/system-status')).data,
+  upcomingRenewals: async () => (await api.get<UpcomingRenewal[]>('/api/reports/upcoming-renewals')).data,
 }
 
 export const syncApi = {

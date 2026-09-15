@@ -377,3 +377,59 @@ def system_status():
         "mem_total_mb": round(mem.total / 1024 / 1024),
         "load_avg_1m": load1,
     }
+
+
+@router.get("/upcoming-renewals")
+def upcoming_renewals(session: Session = Depends(get_session)):
+    """Every PENDING QueuedPlan (auto-queued by sync_job's near-quota/
+    near-expiry check, or set by hand) with its estimated charge — "this WILL
+    auto-charge, for about this much, once the current plan actually ends."
+    Read-only: computes nothing new, changes nothing, exists so an operator
+    can see this coming instead of finding out from a Telegram message after
+    it already happened (the exact gap that made a batch of near-zero-usage
+    auto-charges land with no review window — see docs/DOMAIN_AND_BILLING.md
+    §4.2 for why there's deliberately no delay in the queue itself; this is
+    the visibility half of that tradeoff instead)."""
+    now = utcnow()
+    plans = session.exec(
+        select(QueuedPlan).where(QueuedPlan.status == QueuedPlanStatus.pending)
+    ).all()
+    if not plans:
+        return []
+
+    account_ids = {p.account_id for p in plans}
+    accounts = {a.id: a for a in session.exec(select(Account).where(Account.id.in_(account_ids))).all()}
+    customer_ids = {a.customer_id for a in accounts.values() if a.customer_id}
+    group_ids = {a.group_id for a in accounts.values() if a.group_id}
+    customers = {c.id: c for c in session.exec(select(Customer).where(Customer.id.in_(customer_ids))).all()} if customer_ids else {}
+    groups = {g.id: g for g in session.exec(select(Group).where(Group.id.in_(group_ids))).all()} if group_ids else {}
+
+    rows = []
+    for p in plans:
+        account = accounts.get(p.account_id)
+        if account is None:
+            continue
+        group = groups.get(account.group_id) if account.group_id else None
+        customer = customers.get(account.customer_id) if account.customer_id else None
+        # The plan's own billing_mode wins if it's switching modes at
+        # activation; otherwise the account's current effective mode — same
+        # resolution order activation itself uses.
+        rate = effective_rate(session, account, group)
+        days_until_activation = round((account.expire - now.timestamp()) / 86400, 1) if account.expire else None
+        rows.append({
+            "queued_plan_id": p.id,
+            "account_id": account.id,
+            "marzban_username": account.marzban_username,
+            "owner_name": (customer.name if customer else None) or (group.name if group else None),
+            "data_limit_gb": p.data_limit_gb,
+            "duration_days": p.duration_days,
+            "estimated_amount": round(p.data_limit_gb * rate, 2),
+            "rate_per_gb": rate,
+            "days_until_activation": days_until_activation,
+            "queued_at": p.created_at,
+        })
+
+    # Soonest-to-activate first — that's the one the operator has the least
+    # time left to reconsider or cancel.
+    rows.sort(key=lambda r: (r["days_until_activation"] is None, r["days_until_activation"]))
+    return rows
