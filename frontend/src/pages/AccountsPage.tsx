@@ -5,6 +5,7 @@ import { accountsApi, groupsApi } from '@/lib/api'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { SortableHeader, nextSort, type SortState } from '@/components/ui/sortable-header'
@@ -23,6 +24,42 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Search } from 'lucide-react'
 
 type View = 'all' | 'attention' | 'unassigned' | 'debt' | 'payg' | 'no_rate' | 'disabled' | 'deleted'
+
+// Independent, combinable narrowing on top of the (single-select) View tabs
+// above — "payg AND near-quota AND auto-renew off" is a real question an
+// operator asks, and the view tabs alone can't express an AND of two of
+// their own options.
+type StatusFilter = 'all' | 'active' | 'near_quota' | 'expired' | 'limited' | 'account_disabled'
+type ModeFilter = 'all' | 'prepay' | 'payg'
+type AutoRenewFilter = 'all' | 'on' | 'off'
+
+const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
+  { id: 'all', label: 'Any status' },
+  { id: 'active', label: 'Active' },
+  { id: 'near_quota', label: 'Near quota (≥80%)' },
+  { id: 'expired', label: 'Expired' },
+  { id: 'limited', label: 'Limited (stuck)' },
+  { id: 'account_disabled', label: 'Disabled' },
+]
+
+function matchesStatusFilter(a: AccountRow, f: StatusFilter): boolean {
+  switch (f) {
+    case 'all':
+      return true
+    case 'near_quota': {
+      const pct = a.data_limit ? (a.used_traffic / a.data_limit) * 100 : null
+      return pct !== null && pct >= 80
+    }
+    case 'expired':
+      return a.status === 'expired'
+    case 'limited':
+      return a.status === 'limited'
+    case 'account_disabled':
+      return a.status === 'disabled'
+    case 'active':
+      return a.status === 'active'
+  }
+}
 
 const VIEWS: { id: View; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -73,7 +110,11 @@ export function AccountsPage() {
   const selectedId = searchParams.get('acct')
   const [search, setSearch] = React.useState('')
   const [view, setView] = React.useState<View>('all')
+  const [statusFilter, setStatusFilter] = React.useState<StatusFilter>('all')
+  const [modeFilter, setModeFilter] = React.useState<ModeFilter>('all')
+  const [autoRenewFilter, setAutoRenewFilter] = React.useState<AutoRenewFilter>('all')
   const [sort, setSort] = React.useState<SortState | null>(null)
+  const filtersActive = statusFilter !== 'all' || modeFilter !== 'all' || autoRenewFilter !== 'all'
 
   // Back-compat: old deep links used ?highlight=<id> — same intent, new surface.
   React.useEffect(() => {
@@ -104,13 +145,18 @@ export function AccountsPage() {
       )
     }
     rows = rows.filter((a) => matchesView(a, view))
+    rows = rows.filter((a) => matchesStatusFilter(a, statusFilter))
+    if (modeFilter !== 'all') rows = rows.filter((a) => a.effective_billing_mode === modeFilter)
+    if (autoRenewFilter !== 'all') {
+      rows = rows.filter((a) => (autoRenewFilter === 'on' ? a.auto_renew_enabled : !a.auto_renew_enabled))
+    }
 
     if (sort) {
       const dir = sort.dir === 'asc' ? 1 : -1
       rows = [...rows].sort((a, b) => dir * compareBy(sort.key, a, b))
     }
     return rows
-  }, [accountsQuery.data, search, view, sort])
+  }, [accountsQuery.data, search, view, statusFilter, modeFilter, autoRenewFilter, sort])
 
   const viewCounts = React.useMemo(() => {
     const counts = new Map<View, number>()
@@ -164,7 +210,7 @@ export function AccountsPage() {
         </div>
 
         <TabsContent value="table" className="mt-3 flex flex-col gap-3">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             <div className="relative flex-1 sm:max-w-xs">
               <Search className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
               <Input
@@ -174,7 +220,55 @@ export function AccountsPage() {
                 className="pl-8"
               />
             </div>
-            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+
+            <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+              <SelectTrigger className="w-[150px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STATUS_FILTERS.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={modeFilter} onValueChange={(v) => setModeFilter(v as ModeFilter)}>
+              <SelectTrigger className="w-[130px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Any mode</SelectItem>
+                <SelectItem value="prepay">Prepay</SelectItem>
+                <SelectItem value="payg">Pay-as-you-go</SelectItem>
+              </SelectContent>
+            </Select>
+
+            <Select value={autoRenewFilter} onValueChange={(v) => setAutoRenewFilter(v as AutoRenewFilter)}>
+              <SelectTrigger className="w-[150px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Auto-renew: any</SelectItem>
+                <SelectItem value="on">Auto-renew: on</SelectItem>
+                <SelectItem value="off">Auto-renew: off</SelectItem>
+              </SelectContent>
+            </Select>
+
+            {filtersActive && (
+              <button
+                type="button"
+                onClick={() => {
+                  setStatusFilter('all')
+                  setModeFilter('all')
+                  setAutoRenewFilter('all')
+                }}
+                className="text-xs text-muted-foreground hover:text-foreground hover:underline"
+              >
+                Clear filters
+              </button>
+            )}
+
+            <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">
               {filtered.length} of {accountsQuery.data?.length ?? 0}
             </span>
           </div>
@@ -267,6 +361,16 @@ function AccountTableRow({
                 <span className="inline-flex shrink-0 items-center rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                   Next ▸
                 </span>
+              )}
+              {!a.auto_renew_enabled && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex shrink-0 items-center rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      no auto-renew
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>Excluded from the near-quota/near-expiry auto-renew queue.</TooltipContent>
+                </Tooltip>
               )}
             </span>
             {/* Owner moves in here once its own column is hidden, so a phone
