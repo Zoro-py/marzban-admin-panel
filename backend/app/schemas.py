@@ -700,7 +700,7 @@ class ShopBotTopupRequest(BaseModel):
     # Alternative to receipt_file_id, never both (the bot sends exactly one —
     # see handlers/shop.py). A typed tracking code, not free text: the bot
     # itself rejects anything that doesn't look like one before ever calling
-    # this endpoint (see _looks_like_receipt), but the cap here is the real
+    # this endpoint (see _looks_like_receipt_text), but the cap here is the real
     # backstop since nothing about this field is trusted just because it came
     # from the bot process.
     receipt_text: Optional[str] = Field(default=None, max_length=300)
