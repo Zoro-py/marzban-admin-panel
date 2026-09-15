@@ -414,6 +414,14 @@ class ShopTopup(SQLModel, table=True):
 
     receipt_file_id: Optional[str] = None
 
+    # A typed tracking code/reference instead of (never both with) a photo —
+    # some banking apps make a screenshot awkward, and the operator makes the
+    # same manual approve/reject call either way; this only changes what
+    # counts as "a receipt was submitted", not who decides whether to credit
+    # the wallet. Capped short (see ShopBotTopupRequest) — this is a tracking
+    # code, not a place for a customer to write a message.
+    receipt_text: Optional[str] = Field(default=None, max_length=300)
+
     # The order this payment was sent FOR, when the customer chose a plan
     # first. Approving such a top-up credits the wallet and then immediately
     # pays and delivers this order, so the customer never has to come back and

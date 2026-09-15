@@ -615,6 +615,7 @@ def create_topup(
     claimed_amount: int,
     receipt_file_id: Optional[str],
     order_id: Optional[int] = None,
+    receipt_text: Optional[str] = None,
 ) -> ShopTopup:
     """Records a claimed card-to-card payment.
 
@@ -655,6 +656,7 @@ def create_topup(
         shop_user_id=shop_user.id,
         claimed_amount=claimed_amount,
         receipt_file_id=receipt_file_id,
+        receipt_text=receipt_text,
         order_id=order_id,
         reference_code=_generate_reference_code(session),
     )
@@ -662,6 +664,26 @@ def create_topup(
     session.commit()
     session.refresh(topup)
     return topup
+
+
+def find_prior_receipt_text_use(session: Session, receipt_text: Optional[str], *, exclude_topup_id: Optional[int] = None) -> Optional[ShopTopup]:
+    """Has this exact typed receipt been submitted before, by anyone? A typed
+    code is trivial to copy-paste, unlike a photo — reusing the SAME
+    tracking code across multiple top-ups is exactly the pattern a customer
+    hoping one real payment covers several credits would produce. Doesn't
+    block anything; the caller flags it to the operator, who still decides —
+    same reasoning as everywhere else money moves on this bot's say-so, not
+    the system's."""
+    if not receipt_text or not receipt_text.strip():
+        return None
+    normalized = receipt_text.strip().lower()
+    stmt = select(ShopTopup).where(ShopTopup.receipt_text.is_not(None))
+    if exclude_topup_id is not None:
+        stmt = stmt.where(ShopTopup.id != exclude_topup_id)
+    for prior in session.exec(stmt).all():
+        if prior.receipt_text and prior.receipt_text.strip().lower() == normalized:
+            return prior
+    return None
 
 
 async def approve_topup(

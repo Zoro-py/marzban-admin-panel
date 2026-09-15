@@ -358,6 +358,8 @@ def _run_shop_migrations() -> None:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN target_expire INTEGER"))
         if topup_cols and "overdue_notified_at" not in topup_cols:
             conn.execute(text("ALTER TABLE shoptopup ADD COLUMN overdue_notified_at DATETIME"))
+        if topup_cols and "receipt_text" not in topup_cols:
+            conn.execute(text("ALTER TABLE shoptopup ADD COLUMN receipt_text VARCHAR"))
 
         settings_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(shopsettings)"))}
         if settings_cols:

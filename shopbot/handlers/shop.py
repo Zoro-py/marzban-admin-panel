@@ -63,6 +63,10 @@ _STATE_AWAITING_RECEIPT = "awaiting_receipt"
 _ORDER_ID = "order_id"
 _PENDING_AMOUNT = "pending_amount"
 _PENDING_VOLUME = "pending_volume"
+# Per-process, not persisted: worst case a bot restart offers the phone
+# prompt one more time than intended, which is a fully dismissible, harmless
+# repeat, not a reason to migrate a new column for it.
+_PHONE_ASKED = "phone_asked"
 
 # A reference code as the backend issues them (4 unambiguous characters, or
 # the rare R+6-hex fallback). Typed back into the chat, it returns that
@@ -153,6 +157,50 @@ def main_menu(session: dict | None = None) -> ReplyKeyboardMarkup:
         rows.append([KeyboardButton(texts.MENU_WALLET), KeyboardButton(texts.MENU_TOPUP)])
     rows.append([KeyboardButton(texts.MENU_HELP), KeyboardButton(texts.MENU_SUPPORT)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+async def _maybe_offer_phone_share(update: Update, context: ContextTypes.DEFAULT_TYPE, session: dict) -> None:
+    """Offered exactly once, right after a first real purchase lands — never
+    on /start (a stranger who hasn't seen a price yet asked for their phone
+    number reads as a scam signal and costs conversions), and never
+    required for anything downstream. See PHONE_LATER/handle_contact for
+    the other two paths out of this prompt.
+
+    Tracked in chat_data, NOT user_data: almost every handler in this file
+    clears user_data at its start (it holds "what did this person tap
+    last", meant to reset on every new flow — see the module docstring), so
+    a flag stored there would be wiped before the very next message and
+    "ask once" would silently become "ask every time"."""
+    if session.get("phone") or context.chat_data.get(_PHONE_ASKED):
+        return
+    context.chat_data[_PHONE_ASKED] = True
+    await update.effective_message.reply_text(
+        texts.SHARE_PHONE_PROMPT,
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton(texts.SHARE_PHONE_BUTTON, request_contact=True)], [KeyboardButton(texts.PHONE_LATER)]],
+            resize_keyboard=True,
+        ),
+    )
+
+
+async def handle_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    contact = update.message.contact
+    session = await _session(update)
+    # Only the customer's OWN number — accepting one shared on someone
+    # else's behalf would attribute a stranger's phone to this account.
+    if contact is None or contact.user_id != update.effective_user.id:
+        await _reply(update, texts.PHONE_LATER_ACK, session)
+        return
+    try:
+        await backend.post("/api/shop/bot/phone", json={
+            "telegram_id": update.effective_user.id,
+            "phone": contact.phone_number,
+        })
+    except ShopApiError:
+        logger.exception("Could not save phone for %s", update.effective_user.id)
+        await _reply(update, texts.generic_error(_handle(session)), session)
+        return
+    await _reply(update, texts.PHONE_SAVED, session)
 
 
 def _handle(session: dict | None) -> str | None:
@@ -255,6 +303,7 @@ async def take_trial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # No success message: the backend's delivery lands within a second and
     # says it better. A "done!" from the bot first would just be noise above
     # the thing the customer actually wants.
+    await _maybe_offer_phone_share(update, context, session)
 
 
 # ── buying, order first ───────────────────────────────────────────────────
@@ -407,6 +456,7 @@ async def _confirm_wallet_purchase(update: Update, context: ContextTypes.DEFAULT
         return
     # Delivery is pushed by the backend — the same path an approved card
     # payment takes, so the customer receives an identical message either way.
+    await _maybe_offer_phone_share(update, context, session)
 
 
 # ── topping up a wallet directly (repeat customers) ───────────────────────
@@ -531,6 +581,39 @@ async def handle_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE,
                        *, file_id: str | None = None) -> None:
+    await _submit_receipt(update, context, receipt_file_id=file_id or update.message.photo[-1].file_id)
+
+
+# A typed tracking code instead of a photo — some banking apps make a
+# screenshot awkward, and the operator makes the same manual call either
+# way (see backend/app/models.py's ShopTopup.receipt_text). This is NOT
+# meant to admit arbitrary chat — someone typing "سلام" or "چقدر شد؟" while
+# the bot is waiting for a receipt is asking a real question, not sending
+# one, and silently opening a pending top-up for it would burn the
+# operator's attention on nothing. A plausible tracking code is short,
+# mixed with the transfer's own reference digits, never a full sentence.
+_MIN_RECEIPT_TEXT_LEN = 5
+_MIN_RECEIPT_TEXT_DIGITS = 4
+
+
+def _looks_like_receipt_text(text: str) -> bool:
+    stripped = text.strip()
+    if len(stripped) < _MIN_RECEIPT_TEXT_LEN:
+        return False
+    digit_count = sum(1 for ch in stripped.translate(_DIGITS) if ch.isdigit())
+    return digit_count >= _MIN_RECEIPT_TEXT_DIGITS
+
+
+async def _submit_receipt(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    receipt_file_id: str | None = None,
+    receipt_text: str | None = None,
+) -> None:
+    """Shared by a photo receipt and a typed one — everything past "what
+    counts as proof" is identical: same pending-order recovery, same
+    one-at-a-time guard, same failure messages."""
     session = await _session(update)
     amount = context.user_data.get(_PENDING_AMOUNT)
     order_id = context.user_data.get(_ORDER_ID)
@@ -541,7 +624,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE,
         recovered = await _recover_pending_order(update)
         if recovered is None:
             # Genuinely nothing waiting. Says what it needs rather than
-            # silently ignoring the photo — an ignored receipt is a customer
+            # silently ignoring the receipt — an ignored one is a customer
             # who believes they have paid, waiting for a service nobody is
             # making.
             await _reply(update, texts.RECEIPT_WITHOUT_CONTEXT, session)
@@ -550,15 +633,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE,
         order_id = recovered["order_id"]
         volume = recovered["data_limit_gb"]
 
-    # Cleared before the call: a second photo sent while this one is in flight
-    # must not open a second payment against the same order.
+    # Cleared before the call: a second receipt sent while this one is in
+    # flight must not open a second payment against the same order.
     context.user_data.clear()
 
     try:
         topup = await backend.post("/api/shop/bot/topups", json={
             "telegram_id": update.effective_user.id,
             "claimed_amount": amount,
-            "receipt_file_id": file_id or update.message.photo[-1].file_id,
+            "receipt_file_id": receipt_file_id,
+            "receipt_text": receipt_text,
             "order_id": order_id,
         }, timeout=60)
     except ShopApiError as exc:
@@ -570,7 +654,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE,
         logger.exception("Could not record a receipt for %s", update.effective_user.id)
         # Specific, not the generic error: the customer's question here is
         # "did I just lose my money?", and the true answer is no — nothing was
-        # recorded, so resending the same photo is safe.
+        # recorded, so resending the same receipt is safe.
         await _reply(update, texts.receipt_failed(_handle(session)), session)
         return
 
@@ -666,6 +750,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """
     text = (update.message.text or "").strip()
 
+    if text == texts.PHONE_LATER:
+        context.user_data.clear()
+        session = await _session(update)
+        await _reply(update, texts.PHONE_LATER_ACK, session)
+        return
+
     if text == texts.MENU_BUY:
         return await start_buy(update, context)
     if text == texts.MENU_TRIAL:
@@ -716,9 +806,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return await _handle_topup_amount(update, context, amount)
 
     if state == _STATE_AWAITING_RECEIPT:
-        # They are expected to send a photo. Tell them that instead of
-        # dropping the message — someone typing "واریز کردم" here is telling
-        # us something and deserves an answer.
+        # A plausible tracking code is accepted as the receipt itself — see
+        # _submit_receipt. Anything else (a question, "واریز کردم" with
+        # nothing to identify it by) gets an answer rather than silently
+        # dropped, but does NOT open a pending top-up: that would burn the
+        # operator's attention on something that isn't proof of anything.
+        if _looks_like_receipt_text(text):
+            return await _submit_receipt(update, context, receipt_text=text.strip())
         await update.effective_message.reply_text(texts.NEED_PHOTO)
         return
 

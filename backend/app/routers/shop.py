@@ -64,6 +64,7 @@ from app.qr import subscription_qr_png
 from app.schemas import (
     ShopBotAccountRow,
     ShopBotOrderAction,
+    ShopBotPhoneRequest,
     ShopBotPurchaseRequest,
     ShopBotSession,
     ShopBotSessionRequest,
@@ -87,6 +88,7 @@ from app.shop_service import (
     create_awaiting_order,
     create_topup,
     deliver_order_to_customer,
+    find_prior_receipt_text_use,
     find_topup_by_code,
     get_or_create_shop_user,
     get_shop_settings,
@@ -457,7 +459,23 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
                          and not is_existing_customer(session, user.id)),
         trial_gb=settings.trial_gb,
         trial_hours=settings.trial_hours,
+        phone=user.phone,
     )
+
+
+@bot_router.post("/phone")
+def bot_save_phone(body: ShopBotPhoneRequest, session: Session = Depends(get_session)):
+    """Stores a phone number the customer chose to share via Telegram's own
+    contact-share button — never requested before their first purchase (see
+    handlers/shop.py's take_trial/_confirm_wallet_purchase), and nothing
+    here is ever gated on it being present."""
+    user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
+    if user is None:
+        raise HTTPException(404, "Unknown shop user — call /session first")
+    user.phone = body.phone
+    session.add(user)
+    session.commit()
+    return {"ok": True}
 
 
 @bot_router.post("/quote")
@@ -771,9 +789,13 @@ async def bot_create_topup(
     user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
     if user is None:
         raise HTTPException(404, "Unknown shop user — call /session first")
+    # Checked BEFORE creating this one, against everything that already
+    # exists — the topup this request is about to make doesn't count as a
+    # prior use of its own text.
+    reused = find_prior_receipt_text_use(session, body.receipt_text)
     try:
         topup = create_topup(session, user, body.claimed_amount, body.receipt_file_id,
-                             order_id=body.order_id)
+                             order_id=body.order_id, receipt_text=body.receipt_text)
     except ShopConflict as exc:
         raise HTTPException(409, str(exc))
     except ShopError as exc:
@@ -794,7 +816,8 @@ async def bot_create_topup(
     background_tasks.add_task(_grant_bridge_service, topup.id)
     background_tasks.add_task(_alert_operator_to_topup, topup.id, user.telegram_id,
                               user.display_name or user.telegram_username, body.receipt_file_id,
-                              topup.claimed_amount, topup.reference_code, order_summary)
+                              topup.claimed_amount, topup.reference_code, order_summary,
+                              body.receipt_text, reused.id if reused else None)
 
     return ShopTopupRead(**topup.model_dump(), telegram_id=user.telegram_id, display_name=user.display_name)
 
@@ -829,6 +852,8 @@ async def _alert_operator_to_topup(
     claimed_amount: int,
     reference_code: Optional[str] = None,
     order_summary: Optional[str] = None,
+    receipt_text: Optional[str] = None,
+    reused_from_topup_id: Optional[int] = None,
 ) -> None:
     # The reference code is shown because the customer was given it and will
     # quote it back. The order line matters more: approving an order-bound
@@ -838,11 +863,20 @@ async def _alert_operator_to_topup(
     ref = f" · code {reference_code}" if reference_code else ""
     kind = (f"\nFor: {order_summary} (approving delivers it)" if order_summary
             else "\nFor: wallet credit only")
+    # Plain text throughout this module (see notify.py) — no parse_mode is
+    # ever set, so nothing the customer typed can be interpreted as
+    # formatting. It's shown quoted only for visual separation from the
+    # operator's own lines, not because it needs escaping.
+    receipt_line = f"\n📝 Typed receipt: “{receipt_text}”" if receipt_text else ""
+    dupe_line = (
+        f"\n⚠️ This exact text was already used on top-up #{reused_from_topup_id} — check before approving."
+        if reused_from_topup_id else ""
+    )
     caption = (
         f"💳 New payment #{topup_id}{ref}\n"
         f"From: {who or 'unknown'} (id {telegram_id})\n"
         f"Claimed: {claimed_amount:,} T"
-        f"{kind}"
+        f"{kind}{receipt_line}{dupe_line}"
     )
     keyboard = {
         "inline_keyboard": [[

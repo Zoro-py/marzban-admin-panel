@@ -560,6 +560,7 @@ class ShopTopupRead(BaseModel):
     claimed_amount: int
     approved_amount: Optional[int]
     receipt_file_id: Optional[str]
+    receipt_text: Optional[str] = None
     status: ShopTopupStatus
     reject_reason: Optional[str]
     created_at: datetime
@@ -611,6 +612,14 @@ class ShopBotSessionRequest(BaseModel):
     display_name: Optional[str] = Field(default=None, max_length=100)
 
 
+class ShopBotPhoneRequest(BaseModel):
+    telegram_id: int
+    # Whatever Telegram's own contact-share button hands back — not
+    # normalised or validated beyond a sane length, since this is only ever
+    # for the operator to look at, never dialled by code.
+    phone: str = Field(min_length=5, max_length=32)
+
+
 class ShopBotSession(BaseModel):
     shop_user_id: int
     is_blocked: bool
@@ -644,6 +653,12 @@ class ShopBotSession(BaseModel):
     trial_available: bool = False
     trial_gb: float = 0.0
     trial_hours: int = 0
+
+    # Whether we already have their phone number — lets the bot ask exactly
+    # once (after they've actually bought something, never on /start; see
+    # take_trial/_confirm_wallet_purchase in handlers/shop.py) instead of
+    # re-prompting every session.
+    phone: Optional[str] = None
 
 
 class ShopBotOrderAction(BaseModel):
@@ -682,6 +697,13 @@ class ShopBotTopupRequest(BaseModel):
     telegram_id: int
     claimed_amount: int = Field(gt=0, le=1_000_000_000)
     receipt_file_id: Optional[str] = Field(default=None, max_length=256)
+    # Alternative to receipt_file_id, never both (the bot sends exactly one —
+    # see handlers/shop.py). A typed tracking code, not free text: the bot
+    # itself rejects anything that doesn't look like one before ever calling
+    # this endpoint (see _looks_like_receipt), but the cap here is the real
+    # backstop since nothing about this field is trusted just because it came
+    # from the bot process.
+    receipt_text: Optional[str] = Field(default=None, max_length=300)
     # The plan this payment was sent FOR, when the customer chose first.
     # Approving such a top-up credits the wallet AND delivers the plan, so the
     # customer never has to come back and place the order a second time.

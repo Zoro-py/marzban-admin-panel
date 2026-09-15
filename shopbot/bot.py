@@ -37,6 +37,7 @@ from telegram.ext import (  # noqa: E402
 )
 
 from handlers.shop import (  # noqa: E402
+    handle_contact,
     handle_document,
     handle_other,
     on_renew,
@@ -85,6 +86,10 @@ def main() -> None:
     # A receipt sent as a file is still a receipt; anything else at least gets
     # an answer instead of silence.
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    # Registered before handle_other's catch-all, or a shared contact (from
+    # the optional phone-share prompt — see _maybe_offer_phone_share) would
+    # fall through to "not understood" instead of being saved.
+    app.add_handler(MessageHandler(filters.CONTACT, handle_contact))
     # TEXT & ~COMMAND: an unrecognised /command should fall through to
     # Telegram's own "unknown command" rather than being parsed as a volume.
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

@@ -203,6 +203,15 @@ function PendingTopups({ query }: { query: ReturnType<typeof useQuery<ShopTopup[
                       <span className="text-muted-foreground">Wallet credit only</span>
                     )}
                   </div>
+                  {/* Typed instead of a photo — see receipt_text in
+                      backend/app/models.py. Shown quoted so it's never
+                      mistaken for the operator's own text on this card. */}
+                  {topup.receipt_text && (
+                    <div className="mt-1 rounded border border-border bg-muted/40 px-2 py-1 text-xs">
+                      <span className="text-muted-foreground">📝 Typed receipt: </span>
+                      <span className="font-mono">{topup.receipt_text}</span>
+                    </div>
+                  )}
                 </div>
                 <div className="text-sm font-medium tabular-nums">{toman(topup.claimed_amount)} claimed</div>
               </div>

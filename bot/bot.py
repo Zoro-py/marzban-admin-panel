@@ -28,6 +28,7 @@ from handlers.topup import (  # noqa: E402
     topup_callback,
     topups_command,
 )
+from handlers.wallet import wallet_callback, wallet_command, wallet_find_command  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -55,6 +56,9 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Regex(r"^/approve_\d+(@\w+)?$"), approve_by_command))
     app.add_handler(MessageHandler(filters.Regex(r"^/reject_\d+(@\w+)?$"), reject_by_command))
     app.add_handler(CallbackQueryHandler(topup_callback, pattern=r"^topup:"))
+    app.add_handler(CommandHandler("wallet", wallet_command))
+    app.add_handler(CommandHandler("wallet_find", wallet_find_command))
+    app.add_handler(CallbackQueryHandler(wallet_callback, pattern=r"^wallet:"))
     app.add_handler(CommandHandler("sync", sync_command))
     app.add_handler(CommandHandler("backup", backup_command))
 

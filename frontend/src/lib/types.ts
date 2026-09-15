@@ -422,6 +422,9 @@ export interface ShopTopup {
   claimed_amount: number
   approved_amount: number | null
   receipt_file_id: string | null
+  // Alternative to receipt_file_id (never both) — a typed tracking code
+  // instead of a photo.
+  receipt_text: string | null
   status: ShopTopupStatus
   reject_reason: string | null
   created_at: string
