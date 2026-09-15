@@ -149,21 +149,29 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "telegram_id": update.effective_user.id, "data_limit_gb": gb,
             })
         except DelegateApiError as exc:
-            await query.edit_message_text(str(exc) if exc.status == 400 else texts.GENERIC_ERROR)
+            # reply_markup=None explicitly (not omitted) clears the volume-
+            # picker buttons still attached to this message — same
+            # established idiom as bot/handlers/wallet.py's own confirm
+            # step. Omitting it here would leave the old buttons tappable,
+            # letting a stale "10GB" get tapped again after the flow already
+            # resolved — each such tap is still correctly scoped/charged
+            # (not a money bug), just an easy way to accidentally create or
+            # renew something a second time.
+            await query.edit_message_text(str(exc) if exc.status == 400 else texts.GENERIC_ERROR, reply_markup=None)
             return
         # default_duration_days isn't in DelegateAccountRow — re-read it from
         # the session rather than threading it through the callback data,
         # which would otherwise grow with every field a future edit needs.
         session = await _session(update)
         duration = session["default_duration_days"] if session else 30
-        await query.edit_message_text(texts.account_created(account["marzban_username"], gb, duration))
+        await query.edit_message_text(texts.account_created(account["marzban_username"], gb, duration), reply_markup=None)
         return
 
     if action == "renew_ask":
         account_id = int(parts[2])
         session = await _session(update)
         if session is None:
-            await query.edit_message_text(texts.NOT_A_DELEGATE)
+            await query.edit_message_text(texts.NOT_A_DELEGATE, reply_markup=None)
             return
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton(f"+{g}GB", callback_data=f"d:renew:{account_id}:{g}") for g in session["quick_volumes_gb"]
@@ -191,11 +199,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     json={"telegram_id": update.effective_user.id, "extend_gb": gb},
                 )
             except DelegateApiError as exc:
-                await query.edit_message_text(str(exc) if exc.status == 400 else texts.GENERIC_ERROR)
+                await query.edit_message_text(str(exc) if exc.status == 400 else texts.GENERIC_ERROR, reply_markup=None)
                 return
             session = await _session(update)
             duration = session["default_duration_days"] if session else 30
-            await query.edit_message_text(texts.renewed(account["marzban_username"], gb, duration))
+            await query.edit_message_text(texts.renewed(account["marzban_username"], gb, duration), reply_markup=None)
             return
         finally:
             _RENEW_IN_FLIGHT.discard(guard_key)
@@ -215,7 +223,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if action == "del_cancel":
-        await query.edit_message_text(texts.delete_cancelled())
+        await query.edit_message_text(texts.delete_cancelled(), reply_markup=None)
         return
 
     if action == "del":
@@ -227,9 +235,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 json={"telegram_id": update.effective_user.id},
             )
         except DelegateApiError as exc:
-            await query.edit_message_text(str(exc) if exc.status == 400 else texts.GENERIC_ERROR)
+            await query.edit_message_text(str(exc) if exc.status == 400 else texts.GENERIC_ERROR, reply_markup=None)
             return
-        await query.edit_message_text(texts.deleted(username))
+        await query.edit_message_text(texts.deleted(username), reply_markup=None)
         return
 
 
