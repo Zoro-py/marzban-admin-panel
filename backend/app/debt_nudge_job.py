@@ -1,0 +1,141 @@
+"""Weekly heads-up for debt that's been sitting a while — the operator asked
+for the bot to raise this itself instead of them having to remember to check
+Finance, but explicitly NOT as noise: only customers whose debt has been
+outstanding a real while, checked once a week, not per-charge or per-sync.
+
+Deliberately about DURATION, not amount — a customer who was just charged
+5,000,000 Toman five minutes ago isn't "overdue" in any useful sense yet; a
+customer who has owed 80,000 Toman for six weeks is the one actually worth a
+nudge. Uses POSTED debt only (real ledger charges), never the pending/
+unbilled estimate — "real debt" per the operator's own framing, not a moving
+number that hasn't been invoiced yet.
+
+Purely informational: no charge, no Marzban call, nothing to roll back or
+retry. If a week's send fails, the next week's scheduled run tries again on
+its own — no self-healing "did this week already run" tracking needed, the
+kind the money-moving jobs (payg monthly settlement) require to never
+silently skip a cycle."""
+
+import logging
+from datetime import datetime
+
+from sqlmodel import Session, or_, select
+
+from app.db import engine
+from app.models import Account, Customer, Group, LedgerEntry, LedgerType, utcnow
+from app.notify import notify_admin
+from app.services import MoneyBook
+
+log = logging.getLogger(__name__)
+
+# How long a positive balance has to have persisted, continuously, before
+# it's worth a proactive nudge — not configurable via .env on purpose (this
+# is a judgment call about "when is debt actually stale," not a deployment
+# concern like a sync interval); change the constant if the threshold is
+# ever wrong in practice.
+DEBT_NUDGE_MIN_DAYS = 14.0
+
+
+def _customer_ledger_scope(session: Session, customer: Customer) -> list[LedgerEntry]:
+    """Every LedgerEntry that counts toward this customer's own total —
+    their own accounts, every group they represent (both that group's
+    member accounts and its own unattributed entries), and entries posted
+    directly against the customer — the exact same attribution MoneyBook
+    sums, just returned as rows instead of a total so the age of the debt
+    can be read off them too."""
+    accounts = session.exec(select(Account).where(Account.customer_id == customer.id)).all()
+    groups = session.exec(select(Group).where(Group.representative_customer_id == customer.id)).all()
+    group_ids = [g.id for g in groups]
+    if group_ids:
+        accounts += session.exec(select(Account).where(Account.group_id.in_(group_ids))).all()
+    account_ids = [a.id for a in accounts]
+
+    conditions = [LedgerEntry.account_id.in_(account_ids)] if account_ids else []
+    if group_ids:
+        conditions.append((LedgerEntry.account_id.is_(None)) & (LedgerEntry.group_id.in_(group_ids)))
+    conditions.append(
+        (LedgerEntry.account_id.is_(None)) & (LedgerEntry.group_id.is_(None)) & (LedgerEntry.customer_id == customer.id)
+    )
+    return session.exec(select(LedgerEntry).where(or_(*conditions)).order_by(LedgerEntry.date.asc())).all()
+
+
+def _debt_age_days(entries: list[LedgerEntry], now: datetime) -> float | None:
+    """Walks this customer's own ledger rows in date order, tracking a
+    running balance, and returns how long it's been since the balance last
+    CROSSED from zero-or-below into positive and stayed there — "how long
+    has the debt that exists right now actually existed," not a FIFO
+    charge-by-charge aging (which would need to decide which specific old
+    charge a later payment paid off; for a once-a-week nudge, "still in
+    debt, and has been since X" is the useful fact, not which exact invoice
+    a partial payment covered).
+
+    Deliberately NOT "time since the balance last touched non-positive" —
+    a customer who was fully paid off 34 days ago and charged again
+    yesterday has 1-day-old debt, not 34-day-old debt, even though the
+    balance was last exactly 0 a month ago. Every crossing back to positive
+    resets the start point; a crossing to non-positive clears it until the
+    next one.
+
+    None if there is no ledger history at all, or the balance isn't
+    currently positive (nothing to age right now)."""
+    if not entries:
+        return None
+    running = 0.0
+    debt_started_at = None
+    for e in entries:
+        prev = running
+        running += e.amount if e.type == LedgerType.charge else -e.amount
+        if prev <= 0 and running > 0:
+            debt_started_at = e.date
+        elif running <= 0:
+            debt_started_at = None
+    if running <= 0 or debt_started_at is None:
+        return None
+    # SQLite round-trips datetimes as naive; `now` here is expected naive too
+    # (see caller) so this subtraction doesn't raise on an aware/naive mix.
+    return (now - debt_started_at).total_seconds() / 86400
+
+
+def _format_toman(amount: float) -> str:
+    return f"{round(amount):,}"
+
+
+async def run_debt_nudge() -> dict:
+    """Entry point, called weekly by the scheduler. Finds every customer
+    with real posted debt outstanding for at least DEBT_NUDGE_MIN_DAYS and
+    sends one summary message, oldest debt first. A customer with nothing
+    owed, or whose debt is too recent, is silently skipped — most weeks this
+    sends nothing for most operators, which is the point (no noise)."""
+    now = utcnow().replace(tzinfo=None)
+
+    with Session(engine) as session:
+        book = MoneyBook(session)
+        customers = session.exec(select(Customer)).all()
+
+        overdue: list[dict] = []
+        for c in customers:
+            posted = book.customer_posted(c)
+            if posted <= 0:
+                continue
+            entries = _customer_ledger_scope(session, c)
+            age_days = _debt_age_days(entries, now)
+            if age_days is None or age_days < DEBT_NUDGE_MIN_DAYS:
+                continue
+            overdue.append({"name": c.name, "amount": posted, "days": round(age_days)})
+
+    if not overdue:
+        log.info("Debt nudge: nothing overdue past %.0f days", DEBT_NUDGE_MIN_DAYS)
+        return {"sent": False, "count": 0}
+
+    overdue.sort(key=lambda r: -r["days"])
+    lines = [f"⏳ بدهی‌های قدیمی (بیش از {DEBT_NUDGE_MIN_DAYS:.0f} روز)", ""]
+    lines += [f"• {r['name']}: {_format_toman(r['amount'])} تومان — {r['days']} روزه" for r in overdue]
+    message = "\n".join(lines)
+
+    try:
+        await notify_admin(message)
+    except Exception as exc:
+        log.warning("Debt nudge failed to send (will retry next week's scheduled run): %s", exc)
+        return {"sent": False, "count": len(overdue), "error": str(exc)}
+
+    return {"sent": True, "count": len(overdue)}

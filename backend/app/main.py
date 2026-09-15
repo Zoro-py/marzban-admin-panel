@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from app.backup_job import run_backup
 from app.config import settings
 from app.db import init_db
+from app.debt_nudge_job import run_debt_nudge
 from app.payg_monthly_job import maybe_run_monthly_payg_settlement
 from app.routers import accounts, auth, backup, customers, groups, ledger, payg_monthly, reports, settings as settings_router, shop, sync
 from app.sync_job import run_sync
@@ -84,6 +85,19 @@ async def _scheduled_shop_renewal_warnings() -> None:
         logger.exception("Shop renewal-warning pass failed")
 
 
+async def _scheduled_debt_nudge() -> None:
+    # Purely informational (see debt_nudge_job's own docstring) — a failure
+    # here just means this week is silent; next week's run tries again on
+    # its own, no retry/self-healing state needed the way the money-moving
+    # jobs above require.
+    try:
+        result = await run_debt_nudge()
+        if result.get("sent"):
+            logger.info("Debt nudge sent: %s", result)
+    except Exception:
+        logger.exception("Debt nudge failed (will try again next week)")
+
+
 async def _scheduled_payg_monthly_settlement() -> None:
     # Same reasoning as _scheduled_backup. Also: a raised exception here is
     # expected and routine, not exceptional — it's exactly how
@@ -137,6 +151,14 @@ async def lifespan(app: FastAPI):
         _scheduled_payg_monthly_settlement, "cron",
         hour=settings.payg_monthly_settle_hour, minute=settings.payg_monthly_settle_minute,
         id="payg_monthly_settlement",
+    )
+    # Once a week, not more — see debt_nudge_job's own docstring for why this
+    # is a duration check, not an amount one, and why "once a week" is the
+    # whole noise-control mechanism (no per-customer cooldown tracking).
+    scheduler.add_job(
+        _scheduled_debt_nudge, "cron",
+        day_of_week=settings.debt_nudge_day_of_week, hour=settings.debt_nudge_hour, minute=settings.debt_nudge_minute,
+        id="debt_nudge",
     )
     scheduler.start()
     yield

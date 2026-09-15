@@ -67,6 +67,14 @@ class Settings(BaseSettings):
     payg_monthly_settle_hour: int = 23
     payg_monthly_settle_minute: int = 30
 
+    # debt_nudge_job's weekly overdue-debt summary (see its own docstring for
+    # why once-a-week is the whole noise-control mechanism). "mon" = Monday,
+    # a normal start-of-week check-in time; APScheduler's own day_of_week
+    # names (mon/tue/.../sun).
+    debt_nudge_day_of_week: str = "mon"
+    debt_nudge_hour: int = 9
+    debt_nudge_minute: int = 0
+
     # Applied to a new Marzban user when the caller doesn't specify proxies/inbounds.
     # Adjust these to match this panel's real inbound tags before creating users from
     # the dashboard — Marzban applies a protocol to every inbound that supports it when
