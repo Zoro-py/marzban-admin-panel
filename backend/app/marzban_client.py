@@ -164,6 +164,19 @@ class MarzbanClient:
             raise ValueError(f"Marzban modify_user failed ({resp.status_code}): {resp.text}")
         return resp.json()
 
+    async def delete_user(self, username: str) -> None:
+        """Permanently removes a user from Marzban. Irreversible — there is no
+        undo endpoint, so callers must be certain before reaching this (see
+        routers/delegate.py's mandatory confirm step). A 404 is treated as
+        success: the goal state ("this username no longer exists on the
+        panel") already holds, and raising on it would turn a harmless retry
+        of an already-completed delete into a hard failure."""
+        resp = await self._request("DELETE", f"/api/user/{username}")
+        if resp.status_code == 404:
+            return
+        if resp.status_code >= 400:
+            raise ValueError(f"Marzban delete_user failed ({resp.status_code}): {resp.text}")
+
     async def reset_user(self, username: str) -> dict:
         """Resets used_traffic to 0 for a new cycle. Marzban does not reset
         lifetime_used_traffic here — that field is specifically the monotonic

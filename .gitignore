@@ -2,6 +2,7 @@
 backend/venv/
 bot/venv/
 shopbot/venv/
+delegate_bot/venv/
 __pycache__/
 *.pyc
 
@@ -11,6 +12,7 @@ backend/.env
 bot/.env
 frontend/.env
 shopbot/.env
+delegate_bot/.env
 
 # Backend local dev DB + auto-generated JWT signing secret
 backend/vpn.db

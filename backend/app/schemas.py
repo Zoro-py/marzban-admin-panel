@@ -742,3 +742,88 @@ class ShopBotAccountRow(BaseModel):
     status: Optional[str]
     subscription_url: Optional[str]
     created_at: datetime
+
+
+# ══════════════════════════════════════════════════ delegated self-service
+# See models.py's Delegate docstring for the trust-boundary reasoning.
+
+
+class DelegateCreateRequest(BaseModel):
+    """Operator-only (POST /api/delegate). Exactly one of customer_id/
+    group_id — enforced in the router, not here, so the 400 can name which
+    rule was broken rather than pydantic's generic validation error.
+    Upserts by telegram_id: calling this again for an id that already has a
+    Delegate row updates its scope/label/credit_limit rather than erroring,
+    since the operator's own bot command (/delegate_add) is meant to be
+    safely re-runnable to edit an existing grant."""
+    customer_id: Optional[int] = None
+    group_id: Optional[int] = None
+    telegram_id: int
+    label: Optional[str] = Field(default=None, max_length=100)
+    credit_limit: Optional[float] = Field(default=None, ge=0)
+    daily_create_cap: int = Field(default=20, ge=1, le=500)
+    username_prefix: str = Field(default="d", min_length=1, max_length=12, pattern=r"^[a-zA-Z0-9_]+$")
+    default_duration_days: int = Field(default=30, ge=1, le=3650)
+
+
+class DelegateRead(BaseModel):
+    id: int
+    customer_id: Optional[int]
+    group_id: Optional[int]
+    scope_name: str
+    telegram_id: int
+    label: Optional[str]
+    is_active: bool
+    credit_limit: Optional[float]
+    daily_create_cap: int
+    username_prefix: str
+    default_duration_days: int
+    created_at: datetime
+
+
+class DelegateSessionRequest(BaseModel):
+    telegram_id: int
+
+
+class DelegateSession(BaseModel):
+    """Everything delegate_bot needs to draw its menu for one delegate, in
+    one call — same reasoning as ShopBotSession: splitting this into several
+    round-trips would make one tap depend on all of them succeeding."""
+    delegate_id: int
+    label: Optional[str]
+    scope_name: str  # the customer's or group's display name, for the menu header
+    default_duration_days: int
+    # Quick-pick GB presets shown as buttons — mirrors the shop bot's
+    # QUICK_VOLUMES, purely a UI convenience computed server-side so the
+    # bot doesn't hardcode a list that can drift from what's sane for this
+    # delegate's own typical package sizes.
+    quick_volumes_gb: list[int]
+
+
+class DelegateAccountRow(BaseModel):
+    id: int
+    marzban_username: str
+    used_traffic: int
+    data_limit: Optional[int]
+    expire: Optional[int]
+    status: Optional[str]
+    subscription_url: Optional[str]
+    created_at: datetime
+
+
+class DelegateAccountCreateRequest(BaseModel):
+    telegram_id: int
+    data_limit_gb: float = Field(gt=0, le=10240)
+
+
+class DelegateAccountRenewRequest(BaseModel):
+    telegram_id: int
+    extend_gb: float = Field(gt=0, le=10240)
+    # None = the delegate's own default_duration_days (the common case —
+    # renewing is "give it more of the usual"); explicit only if a future
+    # UI ever wants to offer a different length.
+    extend_days: Optional[int] = Field(default=None, gt=0, le=3650)
+
+
+class DelegateAccountDeleteRequest(BaseModel):
+    telegram_id: int

@@ -80,7 +80,12 @@ def list_accounts(
     Returns:
         list[AccountRow]: A list of enriched account records.
     """
-    stmt = select(Account)
+    # Soft-deleted (see models.py's Account.deleted_at) accounts never show
+    # here — this is the operator's live fleet view, not a history browser.
+    # Ledger drill-down still works: get_account and every ledger query
+    # below look up by id directly, unfiltered, so a deleted account's past
+    # charges remain reachable from wherever they're referenced.
+    stmt = select(Account).where(Account.deleted_at.is_(None))
     if unassigned_only:
         stmt = stmt.where(Account.customer_id.is_(None), Account.group_id.is_(None))
     if customer_id is not None:

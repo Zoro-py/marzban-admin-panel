@@ -28,6 +28,11 @@ class LedgerSource(str, Enum):
     web = "web"
     bot = "bot"
     sync = "sync"
+    # A charge posted by a Delegate's own self-service action (create/renew),
+    # not by the operator — kept distinct from `bot` (the operator's own bot)
+    # so the audit trail can tell "I charged this" from "they triggered a
+    # charge themselves" at a glance. See Delegate below.
+    delegate = "delegate"
 
 
 class Customer(SQLModel, table=True):
@@ -136,6 +141,21 @@ class Account(SQLModel, table=True):
     auto_renew_enabled: bool = True
 
     created_at: datetime = Field(default_factory=utcnow)
+
+    # SOFT delete only — never a real DELETE. LedgerEntry/AccountEvent/
+    # QueuedPlan rows keep pointing at this account_id, and the whole point
+    # of the append-only ledger is that history is never destroyed just
+    # because the thing it was about is gone. NULL = alive. Set the moment a
+    # Delegate deletes it (see routers/delegate.py) — the Marzban user is
+    # ALREADY gone by then, so this is a local record-keeping flag, not
+    # something that ever gets undone.
+    #
+    # sync_job.py needs no special-casing for this: it reconciles from
+    # Marzban's own user list outward, so an account with no Marzban user
+    # left simply stops appearing there and is never touched again —
+    # identical to what already happens if an operator deletes a user
+    # directly in the Marzban panel, outside this dashboard entirely.
+    deleted_at: Optional[datetime] = None
 
 
 class LedgerEntry(SQLModel, table=True):
@@ -573,3 +593,75 @@ class ShopSettings(SQLModel, table=True):
     provisional_hours: int = 24
     trial_gb: float = 1.0
     trial_hours: int = 24
+
+
+# ══════════════════════════════════════════════════ delegated self-service
+#
+# A THIRD trust boundary, alongside the operator's own bot (money + full
+# Marzban control, one chat id) and the shop bot (the anonymous public,
+# wallet-funded, no ledger access at all). A Delegate is neither: a known,
+# already-billed reseller customer who is trusted to make and manage their
+# OWN Marzban accounts directly, but who must never see or move money — the
+# operator's own words were "حساب‌کتاب مالی‌اش سمت من، مدیریت اکانت‌ها سمت
+# اون" (the accounting stays with me, account management is comfortable on
+# theirs).
+#
+# Served by delegate_bot/ — its own process and its own Telegram token, on
+# the same reasoning as shopbot/ vs bot/ (see shopbot/api_client.py's
+# docstring): the process most likely to be pointed at by someone outside
+# the operator holds only a narrow key that reaches exactly this router,
+# never the Marzban admin credentials or the wallet/charge endpoints.
+class Delegate(SQLModel, table=True):
+    """One grant of self-service account management, scoped to exactly one
+    existing customer or group. Not every customer gets this — it's an
+    explicit, per-customer opt-in the operator creates (see bot/handlers/
+    delegate_admin.py's /delegate_add), never something a customer can
+    request for themselves."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    # Exactly one of these — same "customer XOR group" ownership shape used
+    # throughout (LedgerEntry, AccountEvent's implicit scope, etc). A group
+    # delegate can self-manage every member account under that group; a
+    # customer delegate only accounts owned directly by that customer (not
+    # grouped) — see delegate_service.py's scoped queries.
+    customer_id: Optional[int] = Field(default=None, foreign_key="customer.id", index=True)
+    group_id: Optional[int] = Field(default=None, foreign_key="group.id", index=True)
+
+    # Telegram's own numeric id — the identity delegate_bot authenticates
+    # by, exact match only (see delegate_bot's docstring for why this is
+    # never a fuzzy name lookup, same reasoning as bot/handlers/wallet.py).
+    telegram_id: int = Field(unique=True, index=True)
+    label: Optional[str] = None
+    # Revokes access without losing the row's history (credit_limit, past
+    # AccountEvents still point here). The operator's own off-switch.
+    is_active: bool = True
+
+    # HARD stop, financial: total posted debt (MoneyBook.customer_posted /
+    # group_posted — the real, billed figure, not pending/unbilled usage)
+    # at or above this blocks further self-service creates/renews until the
+    # customer pays down. None = no cap, i.e. the operator trusts this
+    # customer's running tab completely — a deliberate choice the operator
+    # makes per delegate, not a default left unexamined.
+    credit_limit: Optional[float] = None
+
+    # SOFT stop, operational: not a money guard (that's credit_limit above)
+    # — just a backstop on the raw COUNT of creates in a rolling 24h window,
+    # so a stuck client or a fat-fingered loop can't mint dozens of Marzban
+    # users before anyone notices. Deliberately generous by default; this is
+    # a seatbelt, not a rate limit meant to be felt in normal use.
+    daily_create_cap: int = 20
+
+    # New accounts are auto-named "{username_prefix}{n}" (see
+    # delegate_service.next_delegate_username) rather than letting the
+    # delegate type a raw Marzban username: it removes an entire class of
+    # input to validate/sanitise, and collisions are resolved the same
+    # taken-username-scan bulk_accounts.py already uses for family batches.
+    username_prefix: str = "d"
+    # Every self-service create uses this many days; asking the delegate to
+    # type a duration on every purchase is exactly the friction "راحت باشه"
+    # was about. Change it here (operator only) if this customer's plans
+    # should run a different length.
+    default_duration_days: int = 30
+
+    created_at: datetime = Field(default_factory=utcnow)

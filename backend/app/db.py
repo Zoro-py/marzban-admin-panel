@@ -71,6 +71,11 @@ def _run_lightweight_migrations() -> None:
             # until they explicitly flip one off.
             conn.execute(text("ALTER TABLE account ADD COLUMN auto_renew_enabled BOOLEAN NOT NULL DEFAULT 1"))
 
+        if existing and "deleted_at" not in existing:
+            # Soft-delete marker for Delegate self-service (see models.py's
+            # Account.deleted_at docstring) — NULL for every existing account.
+            conn.execute(text("ALTER TABLE account ADD COLUMN deleted_at DATETIME"))
+
         if existing and "first_seen_traffic" not in existing:
             conn.execute(text("ALTER TABLE account ADD COLUMN first_seen_traffic INTEGER NOT NULL DEFAULT 0"))
             conn.execute(text("ALTER TABLE account ADD COLUMN first_seen_traffic_at DATETIME"))

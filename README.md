@@ -6,13 +6,15 @@ pay-as-you-go groups (e.g. a company owner paying for employee accounts) — all
 Marzban's own API for usage/status, plus a local database for the business data Marzban has
 no concept of (customers, ownership, money).
 
-Three pieces, one shared backend:
+Four pieces, one shared backend:
 
 ```
-backend/   FastAPI + SQLite (swap to Postgres later) — the source of truth, talks to Marzban
-frontend/  Vite + React + Tailwind dashboard — full CRUD, live balances, invoices, charts
-bot/       Telegram bot — YOUR bot: quick mobile checks + the same actions as the dashboard
-shopbot/   Telegram bot — YOUR CUSTOMERS' bot: self-serve wallet + buy an account (optional)
+backend/       FastAPI + SQLite (swap to Postgres later) — the source of truth, talks to Marzban
+frontend/      Vite + React + Tailwind dashboard — full CRUD, live balances, invoices, charts
+bot/           Telegram bot — YOUR bot: quick mobile checks + the same actions as the dashboard
+shopbot/       Telegram bot — YOUR CUSTOMERS' bot: self-serve wallet + buy an account (optional)
+delegate_bot/  Telegram bot — a TRUSTED reseller customer's own bot: create/renew/delete their
+               OWN accounts directly, granted per-customer via bot/'s /delegate_add (optional)
 ```
 
 Public repo: `github.com/Zoro-py/marzban-admin-panel`. See `AGENTS.md` before making changes
@@ -246,6 +248,57 @@ The shop bot accepts messages from anyone, so it holds only
 `SHOP_BOT_API_KEY`, which reaches `/api/shop/bot/*` and nothing else. If the
 public-facing bot is ever compromised, settlements, backups and the reseller
 ledger are not on the other side of it.
+
+## Delegated self-service (optional)
+
+A third bot, for a specific trusted reseller customer — someone who creates
+several accounts a day and would rather not message you for each one. They
+get a bot of their own that lets them create, renew and delete their OWN
+accounts directly. What they can never do: see their balance, see the
+ledger, or touch anyone else's account. Every create/renew they trigger
+posts a real charge to their ledger automatically, at whatever rate is
+already configured for them — so your accounting stays accurate without you
+being in the loop for each action, and every action also pushes you a
+Telegram notification.
+
+```bash
+cd delegate_bot
+python -m venv venv
+venv/Scripts/pip install -r requirements.txt
+cp .env.example .env      # DELEGATE_BOT_TOKEN, API_BASE_URL, DELEGATE_BOT_API_KEY
+venv/Scripts/python bot.py
+```
+
+`DELEGATE_BOT_API_KEY` must be the same random string in `delegate_bot/.env`
+and `backend/.env`, generated the same way as `SHOP_BOT_API_KEY` above.
+
+Then, from your own bot (`bot/`), grant access:
+
+```
+/delegate_add <their telegram_id> <customer name> [credit_limit]
+/delegate_list
+/delegate_off <telegram_id>
+```
+
+`credit_limit` (optional) is a hard stop: once their posted debt reaches it,
+delegate_bot refuses further creates/renews until they pay down. Leaving it
+blank means unlimited trust — a deliberate choice, not a default left
+unexamined. There's also a daily creation cap (20/day by default, editable
+only via the `/api/delegate` endpoint for now) as a pure anti-fat-finger
+backstop, separate from the money guard above.
+
+**A third privilege level, same reasoning as the shop bot.** delegate_bot
+holds only `DELEGATE_BOT_API_KEY`, which reaches `/api/delegate/bot/*` and
+nothing else — never the Marzban admin credentials, never the wallet/charge
+endpoints. Every request is also re-scoped server-side to exactly that
+delegate's own customer or group, by database foreign key, never by name —
+so even a compromised delegate_bot process can only ever reach the accounts
+it was already allowed to touch.
+
+Account deletion has no undo — there is no "restore" anywhere in this
+system. delegate_bot asks for an explicit confirm tap before deleting
+anything; there is deliberately no automatic refund for a deleted account's
+unused package, since that is a judgment call this system leaves to you.
 
 ## How ownership/billing works (short version)
 

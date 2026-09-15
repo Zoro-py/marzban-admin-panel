@@ -114,6 +114,16 @@ class Settings(BaseSettings):
     # buyer, without routing it back through the bot process.
     shop_bot_token: str = ""
 
+    # Shared secret delegate_bot/ presents on /api/delegate/bot/*. Same
+    # fail-closed reasoning as shop_bot_api_key above: a Delegate is a
+    # trusted customer, but the PROCESS talking to this key still runs on
+    # infrastructure the operator doesn't control, so it gets a key that
+    # reaches nothing but this router — not the ledger, not Marzban admin
+    # credentials, not any other customer's accounts (that last part is
+    # enforced per-request by delegate_service's exact customer/group scope
+    # check, not by this key).
+    delegate_bot_api_key: str = ""
+
 
 DEFAULT_JWT_SECRET_PATH = Path(__file__).resolve().parent.parent / ".jwt_secret"
 

@@ -41,6 +41,23 @@ services:
       - backend
     restart: unless-stopped
 
+  # Delegate self-service bot — a trusted reseller customer's own bot for
+  # creating/renewing/deleting THEIR OWN accounts directly. A SEPARATE
+  # process and a separate Telegram token from both `bot` (holds the
+  # Marzban admin credentials) and `shopbot` (the public shop), on the same
+  # reasoning as shopbot's own compose comment: it holds only
+  # DELEGATE_BOT_API_KEY, never anything that can move money or touch
+  # Marzban directly. Remove this service if no delegate has been granted
+  # access via /delegate_add; nothing else depends on it.
+  delegate_bot:
+    build: ./delegate_bot
+    env_file: ./delegate_bot/.env
+    environment:
+      API_BASE_URL: http://backend:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
   frontend:
     build:
       context: ./frontend
