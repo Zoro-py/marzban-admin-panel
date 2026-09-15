@@ -137,14 +137,22 @@ pending, a plan is auto-computed from `monthly_avg_usage()` and queued:
   written. A failed send means nothing gets queued — the next sync cycle (60s later) retries.
 - Never triggers for `disabled` or `deleted_from_marzban` accounts (`_EXCLUDED_STATUSES`,
   shared with every other automatic action in this file) — an operator turned it off on
-  purpose, or there's nothing left to renew.
+  purpose, or there's nothing left to renew. Same for any account with
+  `Account.auto_renew_enabled = False` — an explicit per-account (or whole bulk-created batch,
+  set once at creation) opt-out for accounts the operator always wants to renew by hand
+  (comp/staff/family accounts). Default `True`; existing accounts were unaffected when this
+  field was introduced.
 - **Standing decision (do not silently re-introduce)**: there is deliberately **no review
   delay** between auto-queue and auto-activation — the operator explicitly chose to keep this
   zero-delay after a real incident (five accounts auto-activated within ~1 minute of being
   queued, totaling 950,000 Toman, some priced off near-zero usage averages for churned
   customers). The fix that shipped instead was the rounding fix above plus activation
   success/failure notifications (below) — not a review window. Existing charges from that
-  incident were deliberately left untouched (operator reviewed them by hand).
+  incident were deliberately left untouched (operator reviewed them by hand). The dashboard's
+  **Upcoming renewals** card (`GET /api/reports/upcoming-renewals`) is the visibility half of
+  that same tradeoff: every pending `QueuedPlan` with its estimated charge, so it can be
+  checked between being queued and actually activating instead of only found out about
+  afterward.
 
 When Marzban later reports the account as `limited`/`expired`, the pending plan
 auto-activates: the old plan is auto-settled (unbilled amount charged), the new
@@ -195,8 +203,34 @@ clicking "Settle" would (it *is* `settle_group`/`settle_account`, called directl
 - `POST /api/payg-monthly/run` lets an operator trigger the same check manually (e.g. to
   verify the whole pipeline works) — most days it's a no-op (nothing unsettled yet).
 
+### 4.5 Weekly overdue-debt nudge (informational only, not on the sync cycle)
+
+`app/debt_nudge_job.py`, on its own weekly cron (`debt_nudge_day_of_week`/`hour`/`minute`,
+default Monday 09:00 server time) — not part of the 60-second sync cycle, since it reads
+already-posted ledger history rather than anything from Marzban. Sends one Telegram summary
+of every customer whose **posted** (real, already-charged — never the pending/unbilled
+estimate) debt has been continuously outstanding for at least `DEBT_NUDGE_MIN_DAYS` (14).
+
+Explicitly a **duration** gate, not an amount one, per the operator's own framing: a customer
+charged five minutes ago isn't overdue in any useful sense; one who's owed the same amount for
+six weeks is. Debt age is computed by replaying that customer's own ledger scope (their
+accounts, every group they represent, entries posted directly to them) in date order and
+finding when the running balance most recently crossed from zero-or-below into positive and
+*stayed* there — a customer paid off a month ago and charged again yesterday has 1-day-old
+debt, not 30-day-old, because every crossing back to positive resets the start point. A
+group's debt is always attributed to its **representative customer** here, never the group
+itself (a group carries no wallet of its own to be nudged about).
+
+Purely informational — no charge, no Marzban call — so unlike the money-moving jobs above it
+has no self-healing "did this week already run" state: a failed send is logged and the next
+week's scheduled run simply tries again. Sends nothing most weeks by design (no customer
+matches); that's the "without creating noise" requirement working as intended, not a bug.
+
 ## 5. Dashboard-specific live widgets
 
+- **Upcoming renewals card** (Dashboard): every pending `QueuedPlan` with its estimated charge
+  and days until activation — see §4.2's closing note. Read-only, changes nothing; exists so
+  a queued auto-renewal can be checked before it activates, not just after.
 - **Online accounts chart** (Dashboard): trend of currently-connected accounts, sourced from
   `OnlineSnapshot` rows written as a side effect of the regular sync cycle (granularity =
   `SYNC_INTERVAL_SECONDS`, not real-time). Includes a computed **"quietest window"**
