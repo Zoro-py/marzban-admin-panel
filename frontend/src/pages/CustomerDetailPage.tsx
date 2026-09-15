@@ -1,15 +1,13 @@
-import * as React from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, Building2, CalendarClock } from 'lucide-react'
+import { ArrowLeft, Building2 } from 'lucide-react'
 import { customersApi, ledgerApi } from '@/lib/api'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
+import { BalanceSinceControl } from '@/components/BalanceSinceControl'
 import { UsageBar } from '@/components/UsageBar'
 import { Money } from '@/components/Money'
 import { StatusDot } from '@/components/StatusDot'
@@ -19,19 +17,10 @@ export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>()
   const customerId = Number(id)
   const openAccount = useOpenAccountInspector()
-  // Empty = "all-time" (the header figure). Set = "what do they owe FROM
-  // this date forward" — e.g. the date of their last payment, so a running
-  // balance never quietly drifts out of sight between reconciliations.
-  const [balanceSince, setBalanceSince] = React.useState('')
 
   const customerQuery = useQuery({ queryKey: ['customers', customerId], queryFn: () => customersApi.get(customerId) })
   const accountsQuery = useQuery({ queryKey: ['accounts', { customerId }], queryFn: () => customersApi.accounts(customerId) })
   const ledgerQuery = useQuery({ queryKey: ['ledger', { customerId }], queryFn: () => ledgerApi.list({ customer_id: customerId }) })
-  const balanceSinceQuery = useQuery({
-    queryKey: ['ledger', 'balance', { customerId, balanceSince }],
-    queryFn: () => ledgerApi.balance({ customer_id: customerId, since: balanceSince }),
-    enabled: balanceSince !== '',
-  })
 
   if (customerQuery.isLoading || !customerQuery.data) {
     return <p className="text-xs text-muted-foreground">Loading…</p>
@@ -69,40 +58,7 @@ export function CustomerDetailPage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card px-4 py-2.5 text-xs">
-        <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        <Label htmlFor="balance-since" className="whitespace-nowrap text-muted-foreground">
-          Balance since
-        </Label>
-        <Input
-          id="balance-since"
-          type="date"
-          value={balanceSince}
-          onChange={(e) => setBalanceSince(e.target.value)}
-          className="h-7 w-auto text-xs"
-        />
-        {balanceSince !== '' && (
-          <>
-            {balanceSinceQuery.isFetching ? (
-              <span className="text-muted-foreground">Loading…</span>
-            ) : (
-              <Money amount={balanceSinceQuery.data?.balance ?? 0} zero="settled" className="text-sm" />
-            )}
-            <button
-              type="button"
-              onClick={() => setBalanceSince('')}
-              className="text-muted-foreground hover:text-foreground hover:underline"
-            >
-              clear
-            </button>
-          </>
-        )}
-        {balanceSince === '' && (
-          <span className="text-muted-foreground">
-            Pick a date — e.g. their last payment — to see what's accrued since then, instead of the all-time total above.
-          </span>
-        )}
-      </div>
+      <BalanceSinceControl scope={{ customer_id: customerId }} />
 
       {customer.represented_group_names.length > 0 && (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5 text-xs">

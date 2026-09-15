@@ -20,6 +20,7 @@ import {
 import { accountsApi, customersApi, groupsApi, ledgerApi, apiErrorMessage } from '@/lib/api'
 import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
 import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
+import { BalanceSinceControl } from '@/components/BalanceSinceControl'
 import type { AccountRow, AccountRole, BillingMode, LedgerType } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -245,6 +246,10 @@ function InspectorBody({ account, onClose }: { account: AccountRow; onClose: () 
               </div>
             </div>
           )}
+        </div>
+
+        <div className="border-b border-border px-4 py-3">
+          <BalanceSinceControl scope={{ account_id: account.id }} />
         </div>
 
         <AdjustSection account={account} canBill={canBill} />

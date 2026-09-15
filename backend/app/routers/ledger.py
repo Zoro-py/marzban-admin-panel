@@ -56,6 +56,7 @@ def create_ledger_entry(body: LedgerCreate, session: Session = Depends(get_sessi
 def get_balance(
     customer_id: Optional[int] = None,
     group_id: Optional[int] = None,
+    account_id: Optional[int] = None,
     # "What do they owe FROM this date forward" — e.g. the date of their
     # last payment, so a running balance doesn't quietly drift out of sight
     # between manual reconciliations. Date-only (no time) is deliberately
@@ -65,8 +66,9 @@ def get_balance(
     since: Optional[datetime] = None,
     session: Session = Depends(get_session),
 ):
-    if (customer_id is None) == (group_id is None):
-        raise HTTPException(400, "Provide exactly one of customer_id or group_id")
+    provided = [x is not None for x in (customer_id, group_id, account_id)]
+    if sum(provided) != 1:
+        raise HTTPException(400, "Provide exactly one of customer_id, group_id or account_id")
 
     # Roll-ups, not a raw scan of rows carrying this id — see
     # services.MoneyBook for why those two are not the same thing.
@@ -76,18 +78,26 @@ def get_balance(
         if not customer:
             raise HTTPException(404, "customer_id not found")
         balance = book.customer_posted(customer)
-    else:
+        entity_type, entity_id = "customer", customer_id
+    elif group_id is not None:
         group = session.get(Group, group_id)
         if not group:
             raise HTTPException(404, "group_id not found")
         balance = book.group_posted(group)
+        entity_type, entity_id = "group", group_id
+    else:
+        account = session.get(Account, account_id)
+        if not account:
+            raise HTTPException(404, "account_id not found")
+        balance = book.account_posted(account)
+        entity_type, entity_id = "account", account_id
 
     # total_charge/total_credit are reported as the netted balance split into
     # its sign, rather than gross sums: a roll-up has no single meaningful
     # gross figure once it spans several accounts and groups.
     return BalanceRead(
-        entity_type="customer" if customer_id is not None else "group",
-        entity_id=customer_id if customer_id is not None else group_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
         total_charge=max(0.0, balance),
         total_credit=max(0.0, -balance),
         balance=balance,

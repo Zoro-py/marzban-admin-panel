@@ -32,7 +32,7 @@ from sqlmodel import Session  # noqa: E402
 from app.auth import require_auth  # noqa: E402
 from app.db import engine, init_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Customer, Group, LedgerEntry, LedgerType, utcnow  # noqa: E402
+from app.models import Account, Customer, Group, LedgerEntry, LedgerType, utcnow  # noqa: E402
 
 init_db()
 
@@ -113,6 +113,32 @@ r = client.get("/api/ledger/balance", params={"group_id": group_id, "since": las
 check("group balance since a date only counts entries after it", r.json()["balance"] == 30_000.0)
 r = client.get("/api/ledger/balance", params={"group_id": group_id})
 check("group balance without since is the full 50k", r.json()["balance"] == 50_000.0)
+
+# ---- account-level balance respects since too (same code path, account scope) ----
+with Session(engine) as session:
+    acct_customer = Customer(name="Since Account Customer")
+    session.add(acct_customer)
+    session.commit()
+    session.refresh(acct_customer)
+    account = Account(marzban_username="since-acct", customer_id=acct_customer.id)
+    session.add(account)
+    session.commit()
+    session.refresh(account)
+    account_id = account.id
+    session.add(LedgerEntry(type=LedgerType.charge, amount=15_000, account_id=account_id, date=long_ago))
+    session.add(LedgerEntry(type=LedgerType.charge, amount=25_000, account_id=account_id, date=recent))
+    session.commit()
+r = client.get("/api/ledger/balance", params={"account_id": account_id, "since": last_payment.isoformat()})
+check("account balance since a date only counts entries after it", r.status_code == 200 and r.json()["balance"] == 25_000.0)
+check("account balance response echoes entity_type='account'", r.json()["entity_type"] == "account")
+r = client.get("/api/ledger/balance", params={"account_id": account_id})
+check("account balance without since is the full 40k", r.json()["balance"] == 40_000.0)
+
+# ---- providing more than one, or none, of customer/group/account is refused ----
+r = client.get("/api/ledger/balance", params={"customer_id": customer_id, "account_id": account_id})
+check("providing both customer_id and account_id is refused (400)", r.status_code == 400)
+r = client.get("/api/ledger/balance")
+check("providing none of the three is refused (400)", r.status_code == 400)
 
 # ---- no since param: unaffected, still works exactly as before ----
 r = client.get("/api/ledger/balance", params={"customer_id": customer_id})

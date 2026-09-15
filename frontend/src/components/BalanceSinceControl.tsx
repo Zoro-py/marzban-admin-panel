@@ -1,0 +1,75 @@
+import * as React from 'react'
+import DatePicker from 'react-multi-date-picker'
+import type { DateObject } from 'react-multi-date-picker'
+import persian from 'react-date-object/calendars/persian'
+import persian_fa from 'react-date-object/locales/persian_fa'
+import { useQuery } from '@tanstack/react-query'
+import { CalendarClock } from 'lucide-react'
+import { ledgerApi } from '@/lib/api'
+import { Label } from '@/components/ui/label'
+import { Money } from '@/components/Money'
+
+type Scope = { customer_id: number } | { group_id: number } | { account_id: number }
+
+/**
+ * "What do they owe FROM this date forward" — e.g. the date of their last
+ * payment, so a running balance doesn't quietly drift out of sight between
+ * manual reconciliations. One control, reused on the customer detail page
+ * and the account inspector — same scope shape the backend's
+ * GET /api/ledger/balance already accepts (customer_id XOR group_id XOR
+ * account_id), just picking which one this instance sends.
+ *
+ * The calendar shown for picking is Jalali (react-multi-date-picker's
+ * `persian` calendar + `persian_fa` locale) since that's the calendar this
+ * market actually uses day to day — but the VALUE sent to the backend is a
+ * plain Gregorian ISO string either way (`DateObject.toDate().toISOString()`
+ * converts regardless of which calendar was used to pick it), so nothing
+ * about the API or the stored ledger dates needs to know Jalali exists.
+ */
+export function BalanceSinceControl({ scope }: { scope: Scope }) {
+  const [since, setSince] = React.useState('')
+
+  const query = useQuery({
+    queryKey: ['ledger', 'balance', scope, since],
+    queryFn: () => ledgerApi.balance({ ...scope, since }),
+    enabled: since !== '',
+  })
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5 text-xs">
+      <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+      <Label className="whitespace-nowrap text-muted-foreground">Balance since</Label>
+      <DatePicker
+        calendar={persian}
+        locale={persian_fa}
+        calendarPosition="bottom-right"
+        value={since ? new Date(since) : null}
+        onChange={(dateObject: DateObject | null) => setSince(dateObject ? dateObject.toDate().toISOString() : '')}
+        inputClass="h-7 rounded-md border border-input bg-background px-2 text-xs w-28 outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        containerClassName="inline-block"
+        editable={false}
+      />
+      {since !== '' && (
+        <>
+          {query.isFetching ? (
+            <span className="text-muted-foreground">Loading…</span>
+          ) : (
+            <Money amount={query.data?.balance ?? 0} zero="settled" className="text-sm" />
+          )}
+          <button
+            type="button"
+            onClick={() => setSince('')}
+            className="text-muted-foreground hover:text-foreground hover:underline"
+          >
+            clear
+          </button>
+        </>
+      )}
+      {since === '' && (
+        <span className="text-muted-foreground">
+          Pick a date — e.g. the last payment — to see what's accrued since then, instead of the all-time total.
+        </span>
+      )}
+    </div>
+  )
+}

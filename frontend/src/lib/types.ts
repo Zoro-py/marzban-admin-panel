@@ -197,7 +197,7 @@ export interface LedgerEntry {
 }
 
 export interface Balance {
-  entity_type: 'customer' | 'group'
+  entity_type: 'customer' | 'group' | 'account'
   entity_id: number
   total_charge: number
   total_credit: number

@@ -340,7 +340,7 @@ class LedgerRead(BaseModel):
 
 
 class BalanceRead(BaseModel):
-    entity_type: Literal["customer", "group"]
+    entity_type: Literal["customer", "group", "account"]
     entity_id: int
     total_charge: float
     total_credit: float
