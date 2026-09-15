@@ -1,16 +1,23 @@
 """The delegate self-service conversation.
 
-Stateless by design: every callback_data string carries everything the next
-step needs (account_id, gb) directly, rather than stashing it in
-context.user_data/chat_data between messages. bot/handlers/wallet.py needs
-module-level pending state because ITS confirm step guards a money-moving
-action against a double-tap; here a double-tap on "confirm delete" is
-already handled by Marzban's own delete being idempotent (see
-marzban_client.delete_user's 404-is-success comment), and create/renew are
-each a single tap with no separate confirm step at all — see the design
-note in backend/app/delegate_service.py's module docstring for why that's
-safe here (fixed-preset volumes, scoped to the delegate's own accounts,
-no stranger-targeting risk the way wallet.py's /wallet has).
+Stateless by design (no context.user_data/chat_data between messages) —
+every callback_data string carries everything the next step needs
+(account_id, gb) directly. delete needs no double-tap guard: Marzban's
+delete is idempotent on a second call (see marzban_client.delete_user's
+404-is-success comment) and delete posts no ledger charge, so a duplicate
+is at worst a harmless extra AccountEvent + notification.
+
+renew is the one action that genuinely needs a guard, and _IN_FLIGHT below
+is it: Marzban's modify_user is an absolute-value PUT, not a delta — two
+concurrent renew calls for the same account both read the same pre-renew
+data_limit/expire, both compute and send the SAME target, so Marzban only
+ends up extended ONCE, but backend/app/delegate_service.py posts a ledger
+charge unconditionally on every call that doesn't raise — meaning a plain
+double-tap would charge the customer twice for one real extension. create
+doesn't need this: Marzban's own username-uniqueness check rejects the
+second concurrent create before any local row or charge is written (see
+_next_username's docstring), so a double-tap there fails clean instead of
+double-charging.
 """
 
 from __future__ import annotations
@@ -20,6 +27,13 @@ from telegram.ext import ContextTypes
 
 import texts
 from api_client import DelegateApiError, backend
+
+# In-memory, per-process — guards ONLY "renew" (see the module docstring
+# for why create/delete don't need this). Keyed by (telegram_id,
+# callback_data) so a different renew (a different account, a different gb)
+# is never blocked by one still in flight; only an exact repeat of the same
+# tap is.
+_RENEW_IN_FLIGHT: set[tuple[int, str]] = set()
 
 
 async def _session(update: Update) -> dict | None:
@@ -158,19 +172,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if action == "renew":
-        account_id, gb = int(parts[2]), float(parts[3])
-        try:
-            account = await backend.post(
-                f"/api/delegate/bot/accounts/{account_id}/renew",
-                json={"telegram_id": update.effective_user.id, "extend_gb": gb},
-            )
-        except DelegateApiError as exc:
-            await query.edit_message_text(str(exc) if exc.status == 400 else texts.GENERIC_ERROR)
+        # See the module docstring / _RENEW_IN_FLIGHT's own comment: Marzban's
+        # modify_user is an absolute-value SET, so a second concurrent tap on
+        # this exact button before the first one's response lands would post
+        # a SECOND real ledger charge for an extension Marzban only applies
+        # once. Popped in `finally`, not on the happy path only, so a genuine
+        # failure (network error, DelegateError) doesn't permanently wedge
+        # this account+volume combination.
+        guard_key = (update.effective_user.id, query.data)
+        if guard_key in _RENEW_IN_FLIGHT:
             return
-        session = await _session(update)
-        duration = session["default_duration_days"] if session else 30
-        await query.edit_message_text(texts.renewed(account["marzban_username"], gb, duration))
-        return
+        _RENEW_IN_FLIGHT.add(guard_key)
+        try:
+            account_id, gb = int(parts[2]), float(parts[3])
+            try:
+                account = await backend.post(
+                    f"/api/delegate/bot/accounts/{account_id}/renew",
+                    json={"telegram_id": update.effective_user.id, "extend_gb": gb},
+                )
+            except DelegateApiError as exc:
+                await query.edit_message_text(str(exc) if exc.status == 400 else texts.GENERIC_ERROR)
+                return
+            session = await _session(update)
+            duration = session["default_duration_days"] if session else 30
+            await query.edit_message_text(texts.renewed(account["marzban_username"], gb, duration))
+            return
+        finally:
+            _RENEW_IN_FLIGHT.discard(guard_key)
 
     if action == "del_ask":
         account_id = int(parts[2])

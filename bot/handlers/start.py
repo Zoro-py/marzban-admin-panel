@@ -14,7 +14,8 @@ HELP_TEXT = """*VPN reseller bot*
 /topups — payment receipts from shop customers waiting for your approval (you also get each one pushed here with approve/reject buttons the moment it arrives)
 /wallet_find <name> — look up a shop customer's telegram_id + balance by name/username
 /wallet <telegram_id> <amount> <note> — manually credit (+) or debit (-) a shop customer's wallet; asks you to confirm before it moves anything
-/delegate_add <telegram_id> <customer> [credit_limit] — let a trusted customer self-manage their own accounts (create/renew/delete) via delegate_bot, no wallet/ledger access
+/delegate_add <telegram_id> <customer> — let a trusted customer self-manage their own accounts (create/renew/delete) via delegate_bot, no wallet/ledger access; shows who matched and asks you to confirm before granting
+/delegate_cap <telegram_id> <amount|none> — set or clear an existing delegate's credit limit
 /delegate_list — see who has delegate access
 /delegate_off <telegram_id> — revoke a delegate's access
 /sync — pull the latest usage/status from Marzban now

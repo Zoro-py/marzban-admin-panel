@@ -119,23 +119,48 @@ def list_delegates(session: Session = Depends(get_session)):
 
 @router.post("", response_model=DelegateRead)
 def create_or_update_delegate(body: DelegateCreateRequest, session: Session = Depends(get_session)):
-    if (body.customer_id is None) == (body.group_id is None):
-        raise HTTPException(400, "Provide exactly one of customer_id or group_id")
-    if body.customer_id is not None and not session.get(Customer, body.customer_id):
-        raise HTTPException(404, "customer_id not found")
-    if body.group_id is not None and not session.get(Group, body.group_id):
-        raise HTTPException(404, "group_id not found")
-
+    """Create on a new telegram_id; PATCH-like partial edit on an existing
+    one — only fields actually present in the request body are touched
+    (`exclude_unset`), everything else on the row is left exactly as it
+    was. This matters because /delegate_add is documented as safely
+    re-runnable to edit a grant: a blind "overwrite every field with the
+    request, defaults included" would silently reset credit_limit to
+    unlimited, daily_create_cap to 20, etc. every time the operator re-ran
+    it just to fix a typo or bump one setting."""
+    provided = body.model_dump(exclude_unset=True)
     delegate = session.exec(select(Delegate).where(Delegate.telegram_id == body.telegram_id)).first()
+
     if delegate is None:
+        if (body.customer_id is None) == (body.group_id is None):
+            raise HTTPException(400, "Provide exactly one of customer_id or group_id")
+        if body.customer_id is not None and not session.get(Customer, body.customer_id):
+            raise HTTPException(404, "customer_id not found")
+        if body.group_id is not None and not session.get(Group, body.group_id):
+            raise HTTPException(404, "group_id not found")
         delegate = Delegate(telegram_id=body.telegram_id)
-    delegate.customer_id = body.customer_id
-    delegate.group_id = body.group_id
-    delegate.label = body.label
-    delegate.credit_limit = body.credit_limit
-    delegate.daily_create_cap = body.daily_create_cap
-    delegate.username_prefix = body.username_prefix
-    delegate.default_duration_days = body.default_duration_days
+        delegate.customer_id = body.customer_id
+        delegate.group_id = body.group_id
+        delegate.label = body.label
+        delegate.credit_limit = body.credit_limit
+        delegate.daily_create_cap = body.daily_create_cap
+        delegate.username_prefix = body.username_prefix
+        delegate.default_duration_days = body.default_duration_days
+    else:
+        if "customer_id" in provided or "group_id" in provided:
+            new_customer_id = body.customer_id if "customer_id" in provided else delegate.customer_id
+            new_group_id = body.group_id if "group_id" in provided else delegate.group_id
+            if (new_customer_id is None) == (new_group_id is None):
+                raise HTTPException(400, "Provide exactly one of customer_id or group_id")
+            if new_customer_id is not None and not session.get(Customer, new_customer_id):
+                raise HTTPException(404, "customer_id not found")
+            if new_group_id is not None and not session.get(Group, new_group_id):
+                raise HTTPException(404, "group_id not found")
+            delegate.customer_id = new_customer_id
+            delegate.group_id = new_group_id
+        for field in ("label", "credit_limit", "daily_create_cap", "username_prefix", "default_duration_days"):
+            if field in provided:
+                setattr(delegate, field, getattr(body, field))
+
     delegate.is_active = True
     session.add(delegate)
     session.commit()

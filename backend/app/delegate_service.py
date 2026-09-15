@@ -22,6 +22,7 @@ from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_cli
 from app.models import (
     Account,
     AccountEvent,
+    BillingMode,
     Customer,
     Delegate,
     Group,
@@ -31,7 +32,7 @@ from app.models import (
     utcnow,
 )
 from app.notify import notify_admin
-from app.services import MoneyBook, bytes_from_gb, effective_rate
+from app.services import GB, MoneyBook, billable_bytes, bytes_from_gb, effective_billing_mode, effective_rate
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,16 @@ def _posted_debt(session: Session, delegate: Delegate) -> float:
 
 
 def _check_credit_limit(session: Session, delegate: Delegate) -> None:
+    """KNOWN LIMITATION: this reads current posted debt with no row lock, so
+    two truly concurrent requests (a genuine race, not the sequential
+    double-tap _RENEW_IN_FLIGHT in delegate_bot/handlers/delegate.py guards
+    against) could both pass this check before either commits, overshooting
+    the limit by one increment. Not fixed here because the exposure is
+    bounded (one extra create/renew, not unbounded) and the daily cap below
+    independently bounds raw volume — accepted for a single human tapping
+    buttons, not a target worth `with_for_update()`-style locking against
+    yet. Revisit if this ever needs to hold against a scripted/automated
+    delegate client instead of a person."""
     if delegate.credit_limit is None:
         return
     posted = _posted_debt(session, delegate)
@@ -118,8 +129,11 @@ def _check_daily_cap(session: Session, delegate: Delegate) -> None:
     stmt = select(Account).where(_scope_filter(delegate), Account.created_at >= since)
     count = len(session.exec(stmt).all())
     if count >= delegate.daily_create_cap:
+        # "در ۲۴ ساعت گذشته", not "امروز": the window is rolling from NOW,
+        # not the calendar day — someone who hits the cap at 11pm is not
+        # free again at midnight, only ~24h after their oldest create in it.
         raise DelegateError(
-            f"امروز به سقف ساخت اکانت رسیدید ({delegate.daily_create_cap} تا). فردا دوباره امتحان کنید."
+            f"در ۲۴ ساعت گذشته به سقف ساخت اکانت رسیدید ({delegate.daily_create_cap} تا). کمی بعد دوباره امتحان کنید."
         )
 
 
@@ -212,6 +226,13 @@ async def create_delegate_account(session: Session, delegate: Delegate, data_lim
             type=LedgerType.charge,
             amount=amount,
             customer_id=delegate.customer_id,
+            # Set even though account_id (below) already makes MoneyBook
+            # bucket this correctly on its own (account_id-set entries never
+            # fall into the group/customer-only buckets — see MoneyBook's
+            # own WHERE clauses) — this is purely so the ledger FEED
+            # (reports.py) can show which group a group-delegate's charge
+            # belongs to, instead of rendering it as an anonymous row.
+            group_id=delegate.group_id,
             account_id=account.id,
             note=f"Delegate self-service: created {data_limit_gb:g}GB / {delegate.default_duration_days}d",
             source=LedgerSource.delegate,
@@ -241,7 +262,13 @@ async def renew_delegate_account(
     account = _get_owned_account(session, delegate, account_id)
 
     days = extend_days if extend_days is not None else delegate.default_duration_days
-    base_expire = account.expire if account.expire else int(utcnow().timestamp())
+    # max(), not "account.expire if account.expire else now": account.expire
+    # is truthy even when it's a PAST timestamp, so a plain truthiness check
+    # extends from an already-expired date and can hand back an account
+    # that's still expired after paying full price for the renewal. Extend
+    # from whichever is later — the current expiry if it's still ahead, "now"
+    # if the account already ran out.
+    base_expire = max(account.expire or 0, int(utcnow().timestamp()))
     new_expire = base_expire + days * SECONDS_IN_DAY
     base_data_limit = account.data_limit or 0
     new_data_limit = base_data_limit + bytes_from_gb(extend_gb)
@@ -270,6 +297,7 @@ async def renew_delegate_account(
             type=LedgerType.charge,
             amount=amount,
             customer_id=delegate.customer_id,
+            group_id=delegate.group_id,
             account_id=account.id,
             note=f"Delegate self-service: renewed +{extend_gb:g}GB / +{days}d",
             source=LedgerSource.delegate,
@@ -295,6 +323,35 @@ async def delete_delegate_account(session: Session, delegate: Delegate, account_
         raise DelegateError("دسترسی شما غیرفعال شده — با تیم فروش تماس بگیرید.")
     account = _get_owned_account(session, delegate, account_id)
 
+    # Every account THIS service creates is prepay, fully billed at create
+    # time (see create_delegate_account's billed_data_limit comment), so
+    # there's nothing outstanding to catch for those. But a delegate's scope
+    # can also include a PRE-EXISTING account the operator already put on
+    # payg — for that mode specifically, usage since the last settle is a
+    # real meter reading that only exists locally; deleting the Marzban user
+    # without billing it first would lose that usage forever (unlike prepay,
+    # where the package size is already fixed data, not a live reading).
+    # Computed BEFORE the Marzban call so it reflects the account's real
+    # state right up to the moment it's destroyed; written to the DB only
+    # AFTER Marzban confirms the delete, same "Marzban call before any DB
+    # write" ordering settle_account uses.
+    mode = effective_billing_mode(session, account)
+    final_charge: Optional[LedgerEntry] = None
+    if mode == BillingMode.payg:
+        billable_gb = billable_bytes(account, mode) / GB
+        rate = effective_rate(session, account)
+        final_amount = round(billable_gb * rate, 2)
+        if final_amount > 0:
+            final_charge = LedgerEntry(
+                type=LedgerType.charge,
+                amount=final_amount,
+                customer_id=delegate.customer_id,
+                group_id=delegate.group_id,
+                account_id=account.id,
+                note=f"Delegate self-service: final payg usage before delete ({billable_gb:.2f}GB)",
+                source=LedgerSource.delegate,
+            )
+
     try:
         await marzban_client.delete_user(account.marzban_username)
     except ValueError as exc:
@@ -302,6 +359,8 @@ async def delete_delegate_account(session: Session, delegate: Delegate, account_
     except (MarzbanUnavailable, MarzbanAuthError) as exc:
         raise DelegateError("سرور موقتاً در دسترس نیست، چند دقیقه دیگر دوباره امتحان کنید.") from exc
 
+    if final_charge is not None:
+        session.add(final_charge)
     account.deleted_at = utcnow()
     session.add(account)
     session.add(AccountEvent(

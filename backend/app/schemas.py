@@ -750,17 +750,25 @@ class ShopBotAccountRow(BaseModel):
 
 class DelegateCreateRequest(BaseModel):
     """Operator-only (POST /api/delegate). Exactly one of customer_id/
-    group_id — enforced in the router, not here, so the 400 can name which
-    rule was broken rather than pydantic's generic validation error.
-    Upserts by telegram_id: calling this again for an id that already has a
-    Delegate row updates its scope/label/credit_limit rather than erroring,
-    since the operator's own bot command (/delegate_add) is meant to be
-    safely re-runnable to edit an existing grant."""
+    group_id when CREATING — enforced in the router, not here, so the 400
+    can name which rule was broken rather than pydantic's generic
+    validation error.
+
+    Upserts by telegram_id, but PARTIALLY on an existing row: the router
+    only touches fields actually present in the request
+    (`exclude_unset=True`), so a caller that sends just {telegram_id,
+    credit_limit} — see bot/handlers/delegate_admin.py's /delegate_cap —
+    leaves every other field on the existing row untouched. Do not rely on
+    "the field has a default" to mean "omitting it is safe" on an update;
+    it is safe only because the router checks presence, not value."""
     customer_id: Optional[int] = None
     group_id: Optional[int] = None
     telegram_id: int
     label: Optional[str] = Field(default=None, max_length=100)
-    credit_limit: Optional[float] = Field(default=None, ge=0)
+    # allow_inf_nan=False: float("inf") passes a plain ge=0 check (inf >= 0
+    # is True) and would silently mean "no limit" while looking like a real
+    # bounded number everywhere it's displayed.
+    credit_limit: Optional[float] = Field(default=None, ge=0, le=1_000_000_000, allow_inf_nan=False)
     daily_create_cap: int = Field(default=20, ge=1, le=500)
     username_prefix: str = Field(default="d", min_length=1, max_length=12, pattern=r"^[a-zA-Z0-9_]+$")
     default_duration_days: int = Field(default=30, ge=1, le=3650)

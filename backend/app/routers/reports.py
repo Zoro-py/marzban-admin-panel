@@ -43,7 +43,10 @@ def summary(
             overdue_customers.append({"customer_id": c.id, "name": c.name, "balance": balance})
     overdue_customers.sort(key=lambda x: -x["balance"])
 
-    accounts = session.exec(select(Account)).all()
+    # Soft-deleted (see models.py's Account.deleted_at) accounts never show
+    # in this operator-facing report — same reasoning as accounts.py's own
+    # list_accounts.
+    accounts = session.exec(select(Account).where(Account.deleted_at.is_(None))).all()
     groups = {g.id: g for g in session.exec(select(Group)).all()}
     now_ts = int(time.time())
 
@@ -296,7 +299,7 @@ def finance(session: Session = Depends(get_session)):
         for e in recent
     ]
 
-    accounts = session.exec(select(Account)).all()
+    accounts = session.exec(select(Account).where(Account.deleted_at.is_(None))).all()
     rate_overview = [
         {
             "account_id": a.id,

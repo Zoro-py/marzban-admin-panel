@@ -119,7 +119,13 @@ async def _run_monthly_payg_settlement(month_key: str, year: int, month: int) ->
         # ── Compute everything first — pure read, no writes yet ──────────
         group_rows: list[dict] = []
         for g in session.exec(select(Group).where(Group.billing_mode == BillingMode.payg)).all():
-            accounts = session.exec(select(Account).where(Account.group_id == g.id)).all()
+            # Soft-deleted (see models.py's Account.deleted_at) member
+            # accounts excluded — a delegate-deleted account has no live
+            # Marzban user left to settle/reset, which would otherwise fail
+            # this same group EVERY month, forever.
+            accounts = session.exec(
+                select(Account).where(Account.group_id == g.id, Account.deleted_at.is_(None))
+            ).all()
             if not accounts:
                 continue
             lines = _invoice_lines(session, accounts, g)
@@ -141,6 +147,8 @@ async def _run_monthly_payg_settlement(month_key: str, year: int, month: int) ->
                 Account.group_id.is_(None),
                 Account.billing_mode == BillingMode.payg,
                 Account.customer_id.is_not(None),
+                # Same reasoning as the group query above.
+                Account.deleted_at.is_(None),
             )
         ).all()
         for a in standalone:

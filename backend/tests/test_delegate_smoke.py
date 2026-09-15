@@ -34,7 +34,7 @@ from app import marzban_client as marzban_module  # noqa: E402
 from app.auth import require_auth  # noqa: E402
 from app.db import engine, init_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Account, AppSettings, Customer, Delegate, LedgerEntry  # noqa: E402
+from app.models import Account, AppSettings, BillingMode, Customer, Delegate, Group, LedgerEntry  # noqa: E402
 
 init_db()
 
@@ -176,6 +176,116 @@ check("deactivated delegate is refused (403)", r.status_code == 403)
 # Dashboard's own account list excludes soft-deleted accounts.
 r = client.get("/api/accounts")
 check("dashboard account list excludes the deleted one", account_id not in [a["id"] for a in r.json()])
+
+# ── credit_limit is actually enforced by real posted debt, not just the
+# daily count cap (delegate 9001's daily cap of 2 was already hit above, so
+# use a fresh delegate/customer with a high daily cap and a tight credit
+# limit to isolate this check). ─────────────────────────────────────────
+with Session(engine) as session:
+    capped_customer = Customer(name="Capped Customer")
+    session.add(capped_customer)
+    session.commit()
+    session.refresh(capped_customer)
+    capped_customer_id = capped_customer.id
+client.post("/api/delegate", json={"customer_id": capped_customer_id, "telegram_id": 9003,
+                                   "credit_limit": 5000, "daily_create_cap": 50})
+r = client.post("/api/delegate/bot/accounts", headers=BOT_HEADERS, json={"telegram_id": 9003, "data_limit_gb": 10})
+check("first create under the credit limit succeeds (10GB*1000=10000 > 5000 cap not yet checked before this one)",
+      r.status_code == 200)
+r2 = client.post("/api/delegate/bot/accounts", headers=BOT_HEADERS, json={"telegram_id": 9003, "data_limit_gb": 1})
+check("a second create is refused once posted debt >= credit_limit", r2.status_code == 400 and "بدهی" in r2.json()["detail"])
+
+# ── partial upsert: re-running /delegate_add-style (telegram_id + only
+# customer_id) must NOT wipe the credit_limit just set above. ───────────
+r = client.post("/api/delegate", json={"customer_id": capped_customer_id, "telegram_id": 9003})
+check("partial re-post (no credit_limit key) preserves the existing credit_limit",
+      r.status_code == 200 and r.json()["credit_limit"] == 5000)
+# And /delegate_cap-style (telegram_id + only credit_limit) must not touch
+# customer_id/daily_create_cap.
+r = client.post("/api/delegate", json={"telegram_id": 9003, "credit_limit": None})
+check("partial re-post (credit_limit=None explicitly) clears just that field",
+      r.status_code == 200 and r.json()["credit_limit"] is None and r.json()["daily_create_cap"] == 50)
+
+# ── renewing an account that's already expired extends from NOW, not from
+# the stale past expire (the old `if account.expire else now` bug). ─────
+with Session(engine) as session:
+    expired_customer = Customer(name="Expired Renew Customer")
+    session.add(expired_customer)
+    session.commit()
+    session.refresh(expired_customer)
+    expired_customer_id = expired_customer.id
+client.post("/api/delegate", json={"customer_id": expired_customer_id, "telegram_id": 9004, "daily_create_cap": 10})
+r = client.post("/api/delegate/bot/accounts", headers=BOT_HEADERS, json={"telegram_id": 9004, "data_limit_gb": 5})
+expired_account_id = r.json()["id"]
+import time as _time
+with Session(engine) as session:
+    acc = session.get(Account, expired_account_id)
+    acc.expire = int(_time.time()) - 60 * 86400  # expired 60 days ago
+    session.add(acc)
+    session.commit()
+r = client.post(f"/api/delegate/bot/accounts/{expired_account_id}/renew", headers=BOT_HEADERS,
+                json={"telegram_id": 9004, "extend_gb": 5, "extend_days": 10})
+check("renewing an expired account succeeds", r.status_code == 200)
+check("the renewed expiry is in the future (extended from now, not the stale past expire)",
+      r.json()["expire"] > int(_time.time()))
+
+# ── group delegates: scope isolation + ledger entries carry group_id so
+# reports.py can show WHICH group a charge belongs to. ──────────────────
+with Session(engine) as session:
+    group_rep = Customer(name="Group Rep")
+    session.add(group_rep)
+    session.commit()
+    session.refresh(group_rep)
+    group = Group(name="Test Group", representative_customer_id=group_rep.id, billing_mode=BillingMode.prepay)
+    session.add(group)
+    session.commit()
+    session.refresh(group)
+    group_id = group.id
+client.post("/api/delegate", json={"group_id": group_id, "telegram_id": 9005, "daily_create_cap": 10})
+r = client.post("/api/delegate/bot/accounts", headers=BOT_HEADERS, json={"telegram_id": 9005, "data_limit_gb": 10})
+check("group delegate can create", r.status_code == 200)
+group_account_id = r.json()["id"]
+with Session(engine) as session:
+    acc = session.get(Account, group_account_id)
+    check("the created account is attached to the GROUP, not a customer", acc.group_id == group_id and acc.customer_id is None)
+    entry = session.exec(select(LedgerEntry).where(LedgerEntry.account_id == group_account_id)).first()
+    check("the ledger entry for a group delegate's charge carries group_id", entry.group_id == group_id)
+# A customer delegate must never reach a group account, and vice versa.
+r = client.post(f"/api/delegate/bot/accounts/{group_account_id}/renew", headers=BOT_HEADERS,
+                json={"telegram_id": 9003, "extend_gb": 1})
+check("a customer delegate cannot renew a group account", r.status_code == 400)
+
+# ── deleting a PAYG account bills its outstanding usage first (the "final
+# usage before delete" safety net) — everything this service creates is
+# prepay, so build a payg account directly to exercise this path. ───────
+with Session(engine) as session:
+    payg_customer = Customer(name="Payg Delete Customer")
+    session.add(payg_customer)
+    session.commit()
+    session.refresh(payg_customer)
+    payg_account = Account(marzban_username="payg-acct", customer_id=payg_customer.id,
+                           billing_mode=BillingMode.payg, used_traffic=5 * 1024**3, usage_baseline=0)
+    session.add(payg_account)
+    session.commit()
+    session.refresh(payg_account)
+    payg_account_id = payg_account.id
+    payg_customer_id = payg_customer.id
+fake.panel["payg-acct"] = {"username": "payg-acct"}  # so delete_user has something to remove
+client.post("/api/delegate", json={"customer_id": payg_customer_id, "telegram_id": 9006, "daily_create_cap": 10})
+r = client.post(f"/api/delegate/bot/accounts/{payg_account_id}/delete", headers=BOT_HEADERS, json={"telegram_id": 9006})
+check("deleting a payg account with unbilled usage succeeds", r.status_code == 200)
+with Session(engine) as session:
+    entries = session.exec(select(LedgerEntry).where(LedgerEntry.account_id == payg_account_id)).all()
+    check("a final charge for the 5GB unbilled payg usage was posted before delete",
+          len(entries) == 1 and entries[0].amount == 5000.0)  # 5GB * 1000 rate
+
+# ── a deleted GROUP member is excluded from settle_group, so it doesn't
+# fail that group's settlement forever. ──────────────────────────────────
+r = client.post(f"/api/delegate/bot/accounts/{group_account_id}/delete", headers=BOT_HEADERS, json={"telegram_id": 9005})
+check("group member delete ok", r.status_code == 200)
+r = client.post(f"/api/groups/{group_id}/settle", json={"mark_paid": False})
+check("settling the group after its only member was deleted doesn't error",
+      r.status_code == 200 and "payg-acct" not in str(r.json().get("failed_resets", [])))
 
 print()
 if failures:

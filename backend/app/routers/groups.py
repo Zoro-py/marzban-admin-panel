@@ -176,7 +176,7 @@ def update_group(group_id: int, body: GroupUpdate, session: Session = Depends(ge
 def get_group_accounts(group_id: int, session: Session = Depends(get_session)):
     if not session.get(Group, group_id):
         raise HTTPException(404, "Group not found")
-    accounts = session.exec(select(Account).where(Account.group_id == group_id)).all()
+    accounts = session.exec(select(Account).where(Account.group_id == group_id, Account.deleted_at.is_(None))).all()
     return enrich_accounts(session, accounts)
 
 
@@ -192,7 +192,7 @@ def get_group_invoice(group_id: int, session: Session = Depends(get_session)):
     if not group:
         raise HTTPException(404, "Group not found")
 
-    accounts = session.exec(select(Account).where(Account.group_id == group_id)).all()
+    accounts = session.exec(select(Account).where(Account.group_id == group_id, Account.deleted_at.is_(None))).all()
     lines = _invoice_lines(session, accounts, group)
     return {
         "group_id": group_id,
@@ -255,7 +255,12 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
     if not group:
         raise HTTPException(404, "Group not found")
 
-    accounts = session.exec(select(Account).with_for_update().where(Account.group_id == group_id)).all()
+    # Soft-deleted (see models.py's Account.deleted_at) member accounts are
+    # excluded — a delegate-deleted account no longer has a live Marzban
+    # user to reset, so settling it would fail every cycle forever otherwise.
+    accounts = session.exec(
+        select(Account).with_for_update().where(Account.group_id == group_id, Account.deleted_at.is_(None))
+    ).all()
     lines = _invoice_lines(session, accounts, group)
     total_amount = round(sum(line.amount for line in lines), 2)
 
@@ -520,7 +525,7 @@ async def reset_group_cycle(group_id: int, session: Session = Depends(get_sessio
     if not group:
         raise HTTPException(404, "Group not found")
 
-    accounts = session.exec(select(Account).where(Account.group_id == group_id)).all()
+    accounts = session.exec(select(Account).where(Account.group_id == group_id, Account.deleted_at.is_(None))).all()
     lines = _invoice_lines(session, accounts, group)
 
     now = utcnow()

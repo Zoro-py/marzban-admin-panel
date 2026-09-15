@@ -19,7 +19,13 @@ from handlers.account import extend_command  # noqa: E402
 from handlers.backup import backup_command  # noqa: E402
 from handlers.bulk import bulk_callback, bulk_command  # noqa: E402
 from handlers.customer import charge_command, credit_command, customer_command  # noqa: E402
-from handlers.delegate_admin import delegate_add_command, delegate_list_command, delegate_off_command  # noqa: E402
+from handlers.delegate_admin import (  # noqa: E402
+    delegate_add_callback,
+    delegate_add_command,
+    delegate_cap_command,
+    delegate_list_command,
+    delegate_off_command,
+)
 from handlers.report import report_command  # noqa: E402
 from handlers.start import help_command, start_command  # noqa: E402
 from handlers.sync import sync_command  # noqa: E402
@@ -61,6 +67,8 @@ def main() -> None:
     app.add_handler(CommandHandler("wallet_find", wallet_find_command))
     app.add_handler(CallbackQueryHandler(wallet_callback, pattern=r"^wallet:"))
     app.add_handler(CommandHandler("delegate_add", delegate_add_command))
+    app.add_handler(CallbackQueryHandler(delegate_add_callback, pattern=r"^delegate:"))
+    app.add_handler(CommandHandler("delegate_cap", delegate_cap_command))
     app.add_handler(CommandHandler("delegate_list", delegate_list_command))
     app.add_handler(CommandHandler("delegate_off", delegate_off_command))
     app.add_handler(CommandHandler("sync", sync_command))
