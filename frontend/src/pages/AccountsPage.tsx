@@ -4,12 +4,14 @@ import { useQuery } from '@tanstack/react-query'
 import { accountsApi, groupsApi } from '@/lib/api'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { SortableHeader, nextSort, type SortState } from '@/components/ui/sortable-header'
 import { BulkAccountDialog } from '@/components/accounts/BulkAccountDialog'
+import { BulkSettleBar } from '@/components/accounts/BulkSettleBar'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
 import { AccountsBoard } from '@/components/accounts/AccountsBoard'
@@ -115,6 +117,7 @@ export function AccountsPage() {
   const [autoRenewFilter, setAutoRenewFilter] = React.useState<AutoRenewFilter>('all')
   const [sort, setSort] = React.useState<SortState | null>(null)
   const filtersActive = statusFilter !== 'all' || modeFilter !== 'all' || autoRenewFilter !== 'all'
+  const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set())
 
   // Back-compat: old deep links used ?highlight=<id> — same intent, new surface.
   React.useEffect(() => {
@@ -157,6 +160,33 @@ export function AccountsPage() {
     }
     return rows
   }, [accountsQuery.data, search, view, statusFilter, modeFilter, autoRenewFilter, sort])
+
+  // Only rows with something owed are selectable at all — selection exists
+  // purely to drive bulk settle, so an account with nothing to charge has no
+  // meaningful role in it.
+  const settleableInView = React.useMemo(() => filtered.filter((a) => a.pending_amount > 0), [filtered])
+  const selectedRows = React.useMemo(() => filtered.filter((a) => selectedIds.has(a.id)), [filtered, selectedIds])
+  const allSelectableSelected = settleableInView.length > 0 && settleableInView.every((a) => selectedIds.has(a.id))
+
+  function toggleOne(id: number, checked: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+
+  function toggleAllInView(checked: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      for (const a of settleableInView) {
+        if (checked) next.add(a.id)
+        else next.delete(a.id)
+      }
+      return next
+    })
+  }
 
   const viewCounts = React.useMemo(() => {
     const counts = new Map<View, number>()
@@ -273,10 +303,23 @@ export function AccountsPage() {
             </span>
           </div>
 
+          {selectedRows.length > 0 && (
+            <BulkSettleBar selected={selectedRows} onClear={() => setSelectedIds(new Set())} />
+          )}
+
           <div className="overflow-hidden rounded-lg border border-border bg-card">
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-8">
+                    {settleableInView.length > 0 && (
+                      <Checkbox
+                        checked={allSelectableSelected}
+                        onCheckedChange={(v) => toggleAllInView(v === true)}
+                        aria-label="Select all with something owed"
+                      />
+                    )}
+                  </TableHead>
                   {/* Account, usage and what they owe survive at every width —
                       the rest drop out progressively rather than forcing a
                       seven-column table to be side-scrolled on a phone. The
@@ -294,6 +337,7 @@ export function AccountsPage() {
                 {accountsQuery.isLoading && (
                   Array.from({ length: 5 }).map((_, i) => (
                     <TableRow key={i}>
+                      <TableCell><Skeleton className="h-4 w-4" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                       <TableCell className="hidden md:table-cell"><Skeleton className="h-4 w-20" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-full" /></TableCell>
@@ -306,7 +350,7 @@ export function AccountsPage() {
                 )}
                 {!accountsQuery.isLoading && filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-8">
+                    <TableCell colSpan={8} className="py-8">
                       <EmptyState title="No accounts match this view." />
                     </TableCell>
                   </TableRow>
@@ -318,6 +362,8 @@ export function AccountsPage() {
                     groupName={a.group_id ? groupById.get(a.group_id)?.name ?? a.group_name : null}
                     selected={String(a.id) === selectedId}
                     onOpen={() => openAccount(a.id)}
+                    checked={selectedIds.has(a.id)}
+                    onToggleCheck={(v) => toggleOne(a.id, v)}
                   />
                 ))}
               </TableBody>
@@ -338,11 +384,15 @@ function AccountTableRow({
   groupName,
   selected,
   onOpen,
+  checked,
+  onToggleCheck,
 }: {
   account: AccountRow
   groupName: string | null
   selected: boolean
   onOpen: () => void
+  checked: boolean
+  onToggleCheck: (checked: boolean) => void
 }) {
   const days = daysUntil(a.expire)
   return (
@@ -351,6 +401,11 @@ function AccountTableRow({
       onClick={onOpen}
       className="cursor-pointer"
     >
+      <TableCell onClick={(e) => e.stopPropagation()}>
+        {a.pending_amount > 0 && (
+          <Checkbox checked={checked} onCheckedChange={(v) => onToggleCheck(v === true)} aria-label={`Select ${a.marzban_username}`} />
+        )}
+      </TableCell>
       <TableCell>
         <span className="flex items-center gap-2">
           <StatusDot status={a.status} />
