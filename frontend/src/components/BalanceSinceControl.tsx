@@ -1,5 +1,5 @@
 import * as React from 'react'
-import DatePicker from 'react-multi-date-picker'
+import RawDatePicker from 'react-multi-date-picker'
 import type { DateObject } from 'react-multi-date-picker'
 import persian from 'react-date-object/calendars/persian'
 import persian_fa from 'react-date-object/locales/persian_fa'
@@ -8,6 +8,23 @@ import { CalendarClock } from 'lucide-react'
 import { ledgerApi } from '@/lib/api'
 import { Label } from '@/components/ui/label'
 import { Money } from '@/components/Money'
+
+// react-multi-date-picker ships CJS with BOTH `exports.__esModule = true`
+// and its own `exports.default`. Vite 8's Rolldown bundler compiles a
+// default import from a CJS package in unconditional "Node mode" — which
+// wraps the WHOLE module as `.default`, ignoring the package's own
+// `.default`, because @rollup/plugin-commonjs-style `__esModule` detection
+// isn't what Rolldown's interop checks. The result: `RawDatePicker` above
+// is the *module object*, not the component, so `<RawDatePicker />` threw
+// React error #130 ("Element type is invalid... got: object") — only in
+// the production build; dev's separate esbuild pre-bundling path resolves
+// the same import correctly, which is why this wasn't caught until it
+// shipped. Confirmed by replaying the bundler's own __toESM/__copyProps
+// helpers (extracted from an unminified prod build) against the installed
+// package directly: `wrapped.default === mod` (the whole module), and the
+// real component — a React.forwardRef object — is one level deeper, at
+// `mod.default`. Unwrap it explicitly rather than trusting the interop.
+const DatePicker = (RawDatePicker as unknown as { default: typeof RawDatePicker }).default
 
 type Scope = { customer_id: number } | { group_id: number } | { account_id: number }
 
