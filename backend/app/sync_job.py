@@ -602,6 +602,7 @@ async def _run_sync_impl() -> dict:
             prev_data_limit = account.data_limit
             prev_expire = account.expire
             prev_used_traffic = account.used_traffic
+            prev_lifetime_used_traffic = account.lifetime_used_traffic
 
             account.used_traffic = mu.get("used_traffic", 0)
             account.lifetime_used_traffic = mu.get("lifetime_used_traffic", 0)
@@ -680,6 +681,47 @@ async def _run_sync_impl() -> dict:
                     )
                     account.usage_baseline = account.used_traffic
                     account.usage_baseline_at = now
+
+                # The monthly-average-usage estimate (services.monthly_avg_usage)
+                # is anchored to first_seen_traffic — a snapshot of
+                # lifetime_used_traffic taken ONCE, the moment this dashboard
+                # first saw the account, on the assumption that
+                # lifetime_used_traffic is a truly monotonic counter forever
+                # (see marzban_client.reset_user's own docstring — reset_user
+                # is documented as NOT touching it, but that's a claim about
+                # Marzban's behavior this code doesn't control and can't fully
+                # verify). If it ever drops anyway — a reset made directly in
+                # Marzban, an auto-activated next plan, a panel upgrade that
+                # changes this, anything — the frozen first_seen_traffic
+                # baseline ends up LARGER than the new lifetime_used_traffic,
+                # so max(0, lifetime_used_traffic - first_seen_traffic) clamps
+                # to 0 and STAYS there: the average reads as near-zero forever
+                # after, no matter how much real usage happens next, because
+                # observed_days keeps growing while observed_bytes never
+                # recovers. This is exactly the "heavily, repeatedly
+                # auto-renewed account shows an implausibly tiny monthly
+                # average" bug reported 2026-09-16. Re-baseline the same way
+                # usage_baseline does above: snap first_seen_traffic forward
+                # so the average measures from here instead of collapsing
+                # permanently. No note about "unbilled usage" here (unlike
+                # the used_traffic case above) — this baseline is purely
+                # informational display, not billing.
+                if prev_lifetime_used_traffic > account.lifetime_used_traffic:
+                    session.add(
+                        AccountEvent(
+                            account_id=account.id,
+                            action="lifetime_traffic_counter_dropped",
+                            detail=(
+                                "Lifetime traffic counter dropped — the monthly-average "
+                                "usage estimate was re-anchored from this point so it doesn't "
+                                "permanently read near-zero."
+                            ),
+                            date=now,
+                            source=LedgerSource.sync,
+                        )
+                    )
+                    account.first_seen_traffic = account.lifetime_used_traffic
+                    account.first_seen_traffic_at = now
 
                 # ── Next-plan auto-activation ──────────────────────────────
                 # If the account just ended (limited or expired) and has a

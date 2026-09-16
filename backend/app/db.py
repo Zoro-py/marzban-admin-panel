@@ -268,6 +268,35 @@ def _run_lightweight_migrations() -> None:
                     {"cid": result.lastrowid, "aid": account_id},
                 )
 
+        # first_seen_traffic (the baseline the monthly-average-usage estimate
+        # in services.monthly_avg_usage is measured from) is meant to be
+        # frozen forever once set — but if lifetime_used_traffic ever drops
+        # below it (a reset made directly in Marzban, an auto-activated next
+        # plan, or anything else — see sync_job.py's own comment on the
+        # matching going-forward fix), the baseline stays stuck ABOVE the
+        # current counter, and max(0, lifetime_used_traffic -
+        # first_seen_traffic) clamps to 0 and never recovers: the account
+        # reads as using almost nothing no matter how much it actually uses,
+        # forever. sync_job.py now detects and re-baselines this the moment
+        # it happens going forward, but that only fires on a NEW drop — an
+        # account already stuck in this state (bug reported 2026-09-16) needs
+        # a one-time nudge to un-stick, since no further drop will ever be
+        # detected for it while it's already sitting above the counter.
+        # Self-limiting by construction: once re-baselined, first_seen_traffic
+        # is no longer above lifetime_used_traffic, so this stops matching
+        # that account on every later startup — no _migration_marker needed.
+        conn.execute(
+            text(
+                """
+                UPDATE account
+                SET first_seen_traffic = lifetime_used_traffic,
+                    first_seen_traffic_at = :now
+                WHERE first_seen_traffic > lifetime_used_traffic
+                """
+            ),
+            {"now": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(sep=" ")},
+        )
+
         # index=True on a model column only becomes a real index via
         # create_all()'s CREATE TABLE — which is skipped entirely for a table
         # that already exists (same reason schema changes need the ALTER TABLE
