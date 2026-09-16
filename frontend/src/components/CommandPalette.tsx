@@ -11,6 +11,7 @@ import {
   Search,
   Sun,
   User,
+  UserCog,
   Users,
   Wallet,
 } from 'lucide-react'
@@ -98,6 +99,7 @@ export function CommandPalette() {
       { id: 'p-grp', label: 'Groups', icon: Building2, keywords: 'groups companies', run: () => { navigate('/groups'); close() } },
       { id: 'p-acct', label: 'Accounts', icon: Network, keywords: 'accounts users marzban', run: () => { navigate('/accounts'); close() } },
       { id: 'p-fin', label: 'Finance', icon: Wallet, keywords: 'finance money revenue ledger rates', run: () => { navigate('/finance'); close() } },
+      { id: 'p-delegate', label: 'Delegates', icon: UserCog, keywords: 'delegates grants self-service delegate_bot telegram resellers', run: () => { navigate('/delegates'); close() } },
     ]
     const actions: Item[] = [
       {

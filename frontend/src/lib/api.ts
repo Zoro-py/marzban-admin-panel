@@ -11,6 +11,8 @@ import type {
   BulkAccountResult,
   Customer,
   CustomerWithBalance,
+  Delegate,
+  DelegateUpsert,
   FinanceSummary,
   Group,
   GroupInvoice,
@@ -245,6 +247,27 @@ export const settingsApi = {
   get: async () => (await api.get<{ default_rate_per_gb: number | null }>('/api/settings')).data,
   update: async (body: { default_rate_per_gb: number | null }) =>
     (await api.patch<{ default_rate_per_gb: number | null }>('/api/settings', body)).data,
+}
+
+// ---- delegates (operator-only grant management) ----
+export const delegatesApi = {
+  list: async () => (await api.get<Delegate[]>('/api/delegate')).data,
+  // POST /api/delegate is a PARTIAL upsert keyed by telegram_id: the backend
+  // only writes fields actually present in the body (pydantic exclude_unset).
+  // A create sends the full shape; an edit must send ONLY the changed fields
+  // (plus telegram_id) — re-sending untouched fields with their defaults
+  // would silently reset the delegate's stored values (exactly the bug the
+  // bot's /delegate_cap was split out of /delegate_add to avoid). When
+  // changing scope, send BOTH customer_id and group_id explicitly (one of
+  // them null) — the backend requires exactly one non-null across the
+  // provided fields, and an omitted field keeps its old value.
+  upsert: async (body: DelegateUpsert) => (await api.post<Delegate>('/api/delegate', body)).data,
+  deactivate: async (id: number) => (await api.post<Delegate>(`/api/delegate/${id}/deactivate`)).data,
+}
+
+// ---- database backup (same pipeline as the nightly schedule) ----
+export const backupApi = {
+  run: async () => (await api.post<{ sent_at: string; filename: string; size_bytes: number }>('/api/backup/run')).data,
 }
 
 // ---- self-serve shop ----

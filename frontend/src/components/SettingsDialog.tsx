@@ -1,11 +1,13 @@
 import * as React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Settings } from 'lucide-react'
-import { settingsApi, apiErrorMessage } from '@/lib/api'
+import { DatabaseBackup, Settings } from 'lucide-react'
+import { settingsApi, backupApi, apiErrorMessage } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Separator } from '@/components/ui/separator'
+import { formatBytes } from '@/lib/utils'
 import {
   Dialog,
   DialogContent,
@@ -45,6 +47,17 @@ export function SettingsDialog() {
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
+  // Same pipeline as the nightly schedule — here so the operator can verify
+  // the whole chain (DB copy, zip, Telegram delivery) works right after
+  // setting BOT_TOKEN up, instead of discovering a silent failure at 3:30am.
+  const backupMutation = useMutation({
+    mutationFn: backupApi.run,
+    onSuccess: (result) => {
+      toast.success(`Backup sent to the admin chat: ${result.filename} (${formatBytes(result.size_bytes)})`)
+    },
+    onError: (err) => toast.error(apiErrorMessage(err)),
+  })
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -74,6 +87,28 @@ export function SettingsDialog() {
             onChange={(e) => setRate(e.target.value)}
             placeholder="e.g. 15000"
           />
+        </div>
+
+        <Separator />
+
+        <div className="flex flex-col gap-1.5">
+          <Label>Database backup</Label>
+          <p className="text-xs text-muted-foreground">
+            Runs the same backup the nightly schedule runs — a zip of the live database delivered to the admin Telegram
+            chat. Use it to confirm the pipeline works now, not at 3:30am.
+          </p>
+          <div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-1.5"
+              onClick={() => backupMutation.mutate()}
+              disabled={backupMutation.isPending}
+            >
+              <DatabaseBackup className="h-3.5 w-3.5" />
+              {backupMutation.isPending ? 'Backing up…' : 'Back up now'}
+            </Button>
+          </div>
         </div>
 
         <DialogFooter>

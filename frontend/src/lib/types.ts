@@ -457,3 +457,35 @@ export interface ShopOrder {
   telegram_id: number | null
   display_name: string | null
 }
+
+// ---- delegates (operator-granted self-service via delegate_bot) ----
+// Mirrors schemas.DelegateRead: exactly one of customer_id/group_id is set —
+// the delegate's scope. See backend models.Delegate for the trust-boundary
+// reasoning behind what a grant actually allows.
+export interface Delegate {
+  id: number
+  customer_id: number | null
+  group_id: number | null
+  scope_name: string
+  telegram_id: number
+  label: string | null
+  is_active: boolean
+  credit_limit: number | null
+  daily_create_cap: number
+  username_prefix: string
+  default_duration_days: number
+  created_at: string
+}
+
+// Body for POST /api/delegate (partial upsert — see delegatesApi.upsert):
+// every field except telegram_id is optional and only written when present.
+export interface DelegateUpsert {
+  telegram_id: number
+  customer_id?: number | null
+  group_id?: number | null
+  label?: string | null
+  credit_limit?: number | null
+  daily_create_cap?: number
+  username_prefix?: string
+  default_duration_days?: number
+}
