@@ -375,6 +375,11 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
                     a.usage_baseline_at = now
             else:
                 a.billed_data_limit = a.data_limit or 0
+                session.add(AccountEvent(
+                    account_id=a.id,
+                    action="settle_reset",
+                    detail="Package marked billed via group settle",
+                ))
             session.add(a)
 
         group.last_settled_at = now
@@ -490,6 +495,11 @@ async def settle_group_member(
             ))
         else:
             account.billed_data_limit = account.data_limit or 0
+            session.add(AccountEvent(
+                account_id=account.id,
+                action="settle_reset",
+                detail=f"Package marked billed via member settle (charged {line.amount:g})",
+            ))
         session.add(account)
         session.commit()
     except Exception:
@@ -557,6 +567,11 @@ async def reset_group_cycle(group_id: int, session: Session = Depends(get_sessio
                 a.usage_baseline_at = now
             else:
                 a.billed_data_limit = a.data_limit or 0
+                session.add(AccountEvent(
+                    account_id=a.id,
+                    action="settle_reset",
+                    detail="Package marked billed via group cycle reset (no charge posted)",
+                ))
             session.add(a)
 
         group.last_settled_at = now
