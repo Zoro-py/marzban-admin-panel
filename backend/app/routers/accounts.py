@@ -773,6 +773,11 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
             ))
         else:
             account.billed_data_limit = account.data_limit or 0
+            session.add(AccountEvent(
+                account_id=account.id,
+                action="settle_reset",
+                detail=f"Package marked billed via settle (charged {amount:g})",
+            ))
         session.add(account)
         session.commit()
     except Exception:
