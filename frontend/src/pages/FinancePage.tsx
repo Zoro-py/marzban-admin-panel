@@ -5,6 +5,7 @@ import { StatCard } from '@/components/StatCard'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { RevenueChart } from '@/components/finance/RevenueChart'
+import { BalanceLookup } from '@/components/finance/BalanceLookup'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
 import { cn, formatDate, formatToman } from '@/lib/utils'
 
@@ -46,6 +47,8 @@ export function FinancePage() {
         <h2 className="mb-2 text-[13px] font-semibold">Money flow — last 30 days</h2>
         <RevenueChart collected={data.revenue_by_day} charged={data.charged_by_day} />
       </div>
+
+      <BalanceLookup />
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="overflow-hidden rounded-lg border border-border bg-card">
