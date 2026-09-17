@@ -355,18 +355,6 @@ class LedgerRead(BaseModel):
     created_by: Optional[str] = None
 
 
-class RateChangeRead(BaseModel):
-    """One structured rate-change audit row (see models.RateChange)."""
-    id: int
-    scope: Literal["account", "group", "default"]
-    account_id: Optional[int] = None
-    group_id: Optional[int] = None
-    old_rate: Optional[float] = None  # NULL = was unset (inherited), not zero
-    new_rate: Optional[float] = None  # NULL = cleared (inherited from now on)
-    created_by: Optional[str] = None
-    created_at: datetime
-
-
 class BalanceRead(BaseModel):
     entity_type: Literal["customer", "group", "account"]
     entity_id: int
