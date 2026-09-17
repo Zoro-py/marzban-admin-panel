@@ -504,6 +504,7 @@ def attributable_consumed_gb(session: Session, account: Account) -> float:
 
 def close_out_payg_usage_before_delete(
     session: Session, account: Account, *, source: LedgerSource, note: str,
+    created_by: Optional[str] = None,
 ) -> Optional[LedgerEntry]:
     """Before permanently removing an account, any UNBILLED payg usage since
     the last settle is a real meter reading that only exists locally —
@@ -543,6 +544,7 @@ def close_out_payg_usage_before_delete(
         gb_amount=round(billable_gb, 3),
         consumed_gb=round(billable_gb, 3),
         consumed_amount=amount,
+        created_by=created_by,
     )
     account.usage_baseline = account.used_traffic
     account.usage_baseline_at = utcnow()

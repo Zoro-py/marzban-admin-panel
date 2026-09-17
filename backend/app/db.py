@@ -330,6 +330,16 @@ def _run_lightweight_migrations() -> None:
             conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN consumed_gb FLOAT"))
         if existing_ledger and "consumed_amount" not in existing_ledger:
             conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN consumed_amount FLOAT"))
+        if existing_ledger and "created_by" not in existing_ledger:
+            # Operator attribution (see models.LedgerEntry.created_by) — NULL
+            # on rows predating it: we cannot reconstruct who posted what
+            # before this column existed, and a guessed username would be
+            # worse than an honest blank.
+            conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN created_by VARCHAR"))
+
+        existing_event = {row[1] for row in conn.execute(text("PRAGMA table_info(accountevent)"))}
+        if existing_event and "created_by" not in existing_event:
+            conn.execute(text("ALTER TABLE accountevent ADD COLUMN created_by VARCHAR"))
 
         # queuedplan itself is a genuinely new table (created by create_all on
         # any DB that doesn't have it yet), but billing_mode was added to the

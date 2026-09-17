@@ -111,7 +111,7 @@ def get_account(account_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("", response_model=AccountRead)
-async def create_account(body: AccountCreateRequest, session: Session = Depends(get_session)):
+async def create_account(body: AccountCreateRequest, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     """
     Create a new account locally and in Marzban.
 
@@ -183,7 +183,7 @@ async def create_account(body: AccountCreateRequest, session: Session = Depends(
         session.commit()
         session.refresh(account)
 
-        session.add(AccountEvent(account_id=account.id, action="create", detail="Created via dashboard"))
+        session.add(AccountEvent(account_id=account.id, action="create", detail="Created via dashboard", created_by=operator))
         session.commit()
     except IntegrityError:
         session.rollback()
@@ -289,6 +289,7 @@ async def create_bulk_accounts(
     body: BulkAccountCreateRequest,
     background_tasks: BackgroundTasks,
     session: Session = Depends(get_session),
+    operator: str = Depends(require_auth),
 ):
     """Creates `count` accounts named base1, base2, … and sends the operator
     one Telegram message per account (QR + subscription link + username).
@@ -395,6 +396,7 @@ async def create_bulk_accounts(
                 account_id=account.id,
                 action="create",
                 detail=f"Created via bulk batch '{body.base_name}' ({plan_line})",
+                created_by=operator,
             ))
             session.commit()
             session.refresh(account)
@@ -472,7 +474,7 @@ async def create_bulk_accounts(
 
 
 @router.patch("/{account_id}/relationship", response_model=AccountRead)
-def update_relationship(account_id: int, body: AccountRelationshipUpdate, session: Session = Depends(get_session)):
+def update_relationship(account_id: int, body: AccountRelationshipUpdate, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "Account not found")
@@ -495,6 +497,7 @@ def update_relationship(account_id: int, body: AccountRelationshipUpdate, sessio
                 account_id=account.id,
                 action="relationship_change",
                 detail=str(changes),
+                created_by=operator,
             )
         )
         session.commit()
@@ -506,7 +509,7 @@ def update_relationship(account_id: int, body: AccountRelationshipUpdate, sessio
 
 
 @router.patch("/{account_id}/billing", response_model=AccountRead)
-def update_billing(account_id: int, body: AccountBillingUpdate, session: Session = Depends(get_session)):
+def update_billing(account_id: int, body: AccountBillingUpdate, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "Account not found")
@@ -529,6 +532,7 @@ def update_billing(account_id: int, body: AccountBillingUpdate, session: Session
                 account_id=account.id,
                 action="billing_change",
                 detail=f"rate_per_gb={account.rate_per_gb}, billing_mode={account.billing_mode}, auto_renew_enabled={account.auto_renew_enabled}",
+                created_by=operator,
             )
         )
         session.commit()
@@ -540,7 +544,7 @@ def update_billing(account_id: int, body: AccountBillingUpdate, session: Session
 
 
 @router.post("/{account_id}/adjust", response_model=AccountRead)
-async def adjust_account(account_id: int, body: AccountAdjustRequest, session: Session = Depends(get_session)):
+async def adjust_account(account_id: int, body: AccountAdjustRequest, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     """
     Adjust an account's data limit or expiration date.
 
@@ -609,6 +613,7 @@ async def adjust_account(account_id: int, body: AccountAdjustRequest, session: S
                 account_id=account.id,
                 action="adjust",
                 detail=", ".join(detail_parts) + (f" | note={body.note}" if body.note else ""),
+                created_by=operator,
             )
         )
         session.commit()
@@ -657,7 +662,7 @@ def get_account_invoice(account_id: int, session: Session = Depends(get_session)
 
 @router.post("/{account_id}/settle")
 @serialise_billing
-async def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRequest(), session: Session = Depends(get_session)):
+async def settle_account(account_id: int, body: AccountSettleRequest = AccountSettleRequest(), session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     """Charges this standalone account for whatever it currently owes — usage
     since the last settle for payg, or the package (data_limit) itself for
     prepay (see services.billable_bytes) — and rolls the matching baseline
@@ -742,6 +747,7 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
                     gb_amount=round(billable_gb, 3),
                     consumed_gb=consumed_gb,
                     consumed_amount=round(consumed_gb * rate, 2),
+                    created_by=operator,
                 )
             )
         if body.mark_paid:
@@ -771,6 +777,7 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
                         account_id=account.id,
                         note=f"Payment received at settlement ({now.date().isoformat()})",
                         source=LedgerSource.web,
+                        created_by=operator,
                     )
                 )
 
@@ -782,6 +789,7 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
                 account_id=account.id,
                 action="settle_reset",
                 detail=f"Usage reset via settle (charged {amount:g})",
+                created_by=operator,
             ))
         else:
             account.billed_data_limit = account.data_limit or 0
@@ -789,6 +797,7 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
                 account_id=account.id,
                 action="settle_reset",
                 detail=f"Package marked billed via settle (charged {amount:g})",
+                created_by=operator,
             ))
         session.add(account)
         session.commit()
@@ -801,7 +810,7 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
 
 @router.post("/{account_id}/reset", response_model=AccountRead)
 @serialise_billing
-async def reset_account(account_id: int, body: AccountResetRequest, session: Session = Depends(get_session)):
+async def reset_account(account_id: int, body: AccountResetRequest, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     """Starts a new usage cycle in Marzban. If `charge_amount` is explicitly
     given (including 0, to deliberately skip charging e.g. a comp reset), that
     exact value is posted. Otherwise, for a payg account, the accrued usage is
@@ -862,6 +871,7 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
                     note=body.note or f"Usage reset for cycle ending {now.date().isoformat()}",
                     source=LedgerSource.web,
                     date=now,
+                    created_by=operator,
                     # GB is only known when the money was derived from the
                     # account's own billing math (charge_amount omitted). An
                     # operator-entered amount maps to no honest GB figure.
@@ -896,6 +906,7 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
                 account_id=account.id,
                 action="reset",
                 detail=f"charge_amount={charge_amount}" + (f" | note={body.note}" if body.note else ""),
+                created_by=operator,
             )
         )
         session.commit()
@@ -907,7 +918,7 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
 
 
 @router.post("/{account_id}/next-plan", response_model=NextPlanRead)
-def set_next_plan(account_id: int, body: NextPlanRequest, session: Session = Depends(get_session)):
+def set_next_plan(account_id: int, body: NextPlanRequest, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     """Queue a plan to auto-activate when this account's current plan ends.
 
     Replaces any existing pending plan for this account (there can only be
@@ -946,6 +957,7 @@ def set_next_plan(account_id: int, body: NextPlanRequest, session: Session = Dep
                 action="next_plan_queued",
                 detail=f"{body.data_limit_gb} GB / {body.duration_days} days"
                 + (f" | switches to {body.billing_mode.value}" if body.billing_mode else ""),
+                created_by=operator,
             )
         )
         session.commit()
@@ -973,7 +985,7 @@ def get_next_plan(account_id: int, session: Session = Depends(get_session)):
 
 
 @router.delete("/{account_id}/next-plan")
-def cancel_next_plan(account_id: int, session: Session = Depends(get_session)):
+def cancel_next_plan(account_id: int, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     """Cancel the pending next plan for this account."""
     if not session.get(Account, account_id):
         raise HTTPException(404, "Account not found")
@@ -993,6 +1005,7 @@ def cancel_next_plan(account_id: int, session: Session = Depends(get_session)):
                 account_id=account_id,
                 action="next_plan_cancelled",
                 detail=f"Cancelled: {plan.data_limit_gb} GB / {plan.duration_days} days",
+                created_by=operator,
             )
         )
         session.commit()
@@ -1003,7 +1016,7 @@ def cancel_next_plan(account_id: int, session: Session = Depends(get_session)):
 
 
 @router.post("/{account_id}/delete")
-async def delete_account(account_id: int, session: Session = Depends(get_session)):
+async def delete_account(account_id: int, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     """Permanently removes this Marzban user and marks the local account
     deleted (soft delete — see models.py's Account.deleted_at; every
     ledger/history row about it stays intact and reachable). Irreversible
@@ -1024,7 +1037,7 @@ async def delete_account(account_id: int, session: Session = Depends(get_session
         raise HTTPException(400, "This account is already deleted")
 
     final_charge = close_out_payg_usage_before_delete(
-        session, account, source=LedgerSource.web, note="Final payg usage before delete",
+        session, account, source=LedgerSource.web, note="Final payg usage before delete", created_by=operator,
     )
 
     try:
@@ -1039,6 +1052,6 @@ async def delete_account(account_id: int, session: Session = Depends(get_session
     account.deleted_at = utcnow()
     session.add(account)
     cancel_pending_queued_plan(session, account.id)
-    session.add(AccountEvent(account_id=account.id, action="delete", detail="Deleted via dashboard"))
+    session.add(AccountEvent(account_id=account.id, action="delete", detail="Deleted via dashboard", created_by=operator))
     session.commit()
     return {"ok": True}

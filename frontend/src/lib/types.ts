@@ -1,6 +1,6 @@
 export type AccountRole = 'primary' | 'sub'
 export type LedgerType = 'charge' | 'credit'
-export type LedgerSource = 'web' | 'bot' | 'sync'
+export type LedgerSource = 'web' | 'bot' | 'sync' | 'delegate'
 export type BillingMode = 'prepay' | 'payg'
 
 export interface Customer {
@@ -194,6 +194,8 @@ export interface LedgerEntry {
   account_id: number | null
   note: string | null
   source: LedgerSource
+  // Raw login username of the operator — web-sourced rows only.
+  created_by: string | null
 }
 
 export interface Balance {
@@ -271,6 +273,8 @@ export interface AccountEvent {
   detail: string
   date: string
   source: LedgerSource
+  // Raw login username of the operator — web-sourced events only.
+  created_by: string | null
 }
 
 export interface SyncStatus {

@@ -239,6 +239,9 @@ class AccountEventRead(BaseModel):
     detail: str
     date: datetime
     source: LedgerSource
+    # Raw login username of the operator — web-sourced events only (see
+    # LedgerRead.created_by).
+    created_by: Optional[str] = None
 
 
 class AccountRow(AccountRead):
@@ -346,6 +349,10 @@ class LedgerRead(BaseModel):
     source: LedgerSource
     gb_amount: Optional[float] = None
     consumed_gb: Optional[float] = None
+    consumed_amount: Optional[float] = None
+    # Raw login username of the operator who posted it — set on web-sourced
+    # rows only (sync/bot/shop/delegate carry their own source label).
+    created_by: Optional[str] = None
 
 
 class BalanceRead(BaseModel):

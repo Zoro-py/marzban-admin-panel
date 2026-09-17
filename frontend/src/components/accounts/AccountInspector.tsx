@@ -21,7 +21,7 @@ import { accountsApi, customersApi, groupsApi, ledgerApi, apiErrorMessage } from
 import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
 import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import { BalanceSinceControl } from '@/components/BalanceSinceControl'
-import type { AccountRow, AccountRole, BillingMode, LedgerType } from '@/lib/types'
+import type { AccountRow, AccountRole, BillingMode, LedgerSource, LedgerType } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
@@ -988,13 +988,23 @@ function HistorySection({ account }: { account: AccountRow }) {
     queryFn: () => ledgerApi.list({ account_id: account.id }),
   })
 
-  type HistoryRow = { key: string; date: string; label: string; detail: string | null; money?: { type: LedgerType; amount: number } }
+  type HistoryRow = {
+    key: string
+    date: string
+    label: string
+    detail: string | null
+    money?: { type: LedgerType; amount: number }
+    source?: LedgerSource
+    created_by?: string | null
+  }
   const rows: HistoryRow[] = React.useMemo(() => {
     const evts: HistoryRow[] = (eventsQuery.data ?? []).map((e) => ({
       key: `e${e.id}`,
       date: e.date,
       label: e.action.replace(/_/g, ' '),
       detail: e.detail,
+      source: e.source,
+      created_by: e.created_by,
     }))
     const money: HistoryRow[] = (ledgerQuery.data ?? []).map((l) => ({
       key: `l${l.id}`,
@@ -1002,6 +1012,8 @@ function HistorySection({ account }: { account: AccountRow }) {
       label: l.type === 'charge' ? 'debt recorded' : 'payment received',
       detail: l.note,
       money: { type: l.type, amount: l.amount },
+      source: l.source,
+      created_by: l.created_by,
     }))
     return [...evts, ...money].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 30)
   }, [eventsQuery.data, ledgerQuery.data])
@@ -1014,7 +1026,23 @@ function HistorySection({ account }: { account: AccountRow }) {
           <li key={r.key} className="flex gap-2.5 border-l border-border py-1.5 pl-3 text-xs [&:first-child]:pt-0">
             <div className="min-w-0 flex-1">
               <div className="flex items-baseline justify-between gap-2">
-                <span className="font-medium capitalize">{r.label}</span>
+                <span className="font-medium capitalize">
+                  {r.label}
+                  {/* Attribution: which operator / which channel made this
+                      happen. Web rows name the operator; sync/bot/delegate
+                      rows carry their own channel label instead. Old rows
+                      (created_by NULL) show nothing rather than a guess. */}
+                  {r.source && r.source !== 'web' && (
+                    <span className="ml-1.5 rounded bg-muted px-1 py-px text-[10px] font-normal normal-case text-muted-foreground">
+                      {r.source}
+                    </span>
+                  )}
+                  {r.source === 'web' && r.created_by && (
+                    <span className="ml-1.5 rounded bg-muted px-1 py-px text-[10px] font-normal text-muted-foreground">
+                      {r.created_by}
+                    </span>
+                  )}
+                </span>
                 <span className="shrink-0 text-[11px] text-muted-foreground">{formatAgo(r.date)}</span>
               </div>
               {r.money ? (

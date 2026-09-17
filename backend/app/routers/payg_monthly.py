@@ -52,7 +52,7 @@ def list_batches(period: str | None = None, session: Session = Depends(get_sessi
 
 
 @router.post("/batches/{batch_id}/mark-paid")
-def mark_batch_paid(batch_id: int, session: Session = Depends(get_session)):
+def mark_batch_paid(batch_id: int, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     """Posts a credit for exactly this settlement's amount — not the
     entity's whole current balance, which could include unrelated debt from
     something else entirely. Lets the operator record "this month's bill got
@@ -90,6 +90,7 @@ def mark_batch_paid(batch_id: int, session: Session = Depends(get_session)):
             account_id=batch.account_id,
             note=f"Monthly settlement paid — {batch.jalali_period}",
             source=LedgerSource.web,
+            created_by=operator,
         ))
         batch.marked_paid_at = now
         session.add(batch)

@@ -202,6 +202,14 @@ class LedgerEntry(SQLModel, table=True):
     # consumed_gb is NULL (nothing consumed to value).
     consumed_amount: Optional[float] = None
 
+    # Which operator posted this entry — the raw login username from the JWT
+    # (the same string require_auth returns). Set ONLY on web-sourced rows:
+    # sync/bot/shop/delegate entries already carry their own `source` label
+    # and no per-operator identity applies to them. NULL on those, on manual
+    # entries posted outside the app (honest blank over a guess), and on
+    # rows predating the column — same convention as gb_amount.
+    created_by: Optional[str] = None
+
 
 class AppSettings(SQLModel, table=True):
     """Single-row table (id is always 1) for dashboard-wide settings — currently
@@ -229,6 +237,11 @@ class AccountEvent(SQLModel, table=True):
     detail: str
     date: datetime = Field(default_factory=utcnow, index=True)
     source: LedgerSource = LedgerSource.web
+
+    # Which operator made this happen — raw login username from the JWT, set
+    # only on web-sourced events (same rules as LedgerEntry.created_by).
+    # Sync/bot/delegate events carry their own `source` label instead.
+    created_by: Optional[str] = None
 
 
 class MonthlySettlementBatch(SQLModel, table=True):

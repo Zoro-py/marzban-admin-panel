@@ -33,7 +33,11 @@ def list_ledger(
 
 
 @router.post("", response_model=LedgerRead)
-def create_ledger_entry(body: LedgerCreate, session: Session = Depends(get_session)):
+def create_ledger_entry(
+    body: LedgerCreate,
+    session: Session = Depends(get_session),
+    operator: str = Depends(require_auth),
+):
     if body.customer_id is None and body.group_id is None:
         raise HTTPException(400, "Provide customer_id and/or group_id for this ledger entry")
     if body.customer_id is not None and not session.get(Customer, body.customer_id):
@@ -45,7 +49,7 @@ def create_ledger_entry(body: LedgerCreate, session: Session = Depends(get_sessi
     if body.amount <= 0:
         raise HTTPException(400, "amount must be positive; use `type` to indicate charge vs credit")
 
-    entry = LedgerEntry(**body.model_dump())
+    entry = LedgerEntry(**body.model_dump(), created_by=operator)
     session.add(entry)
     session.commit()
     session.refresh(entry)

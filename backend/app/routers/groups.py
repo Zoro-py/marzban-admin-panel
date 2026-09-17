@@ -206,7 +206,7 @@ def get_group_invoice(group_id: int, session: Session = Depends(get_session)):
 
 @router.post("/{group_id}/settle")
 @serialise_billing
-async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(), session: Session = Depends(get_session)):
+async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequest(), session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     """
     Settle the group's current billing cycle.
 
@@ -328,6 +328,7 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
                         gb_amount=gb_by_account[line.account_id][0],
                         consumed_gb=gb_by_account[line.account_id][1],
                         consumed_amount=gb_by_account[line.account_id][2],
+                        created_by=operator,
                     )
                 )
             if body.mark_paid:
@@ -354,6 +355,7 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
                             account_id=line.account_id,
                             note=paid_note,
                             source=LedgerSource.web,
+                            created_by=operator,
                         )
                     )
 
@@ -372,6 +374,7 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
                     group_id=group.id,
                     note=paid_note,
                     source=LedgerSource.web,
+                    created_by=operator,
                 )
             )
 
@@ -386,6 +389,7 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
                         account_id=a.id,
                         action="settle_reset",
                         detail="Usage reset via group settle",
+                        created_by=operator,
                     ))
                 else:
                     # Marzban reset failed for this member (see
@@ -401,6 +405,7 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
                     account_id=a.id,
                     action="settle_reset",
                     detail="Package marked billed via group settle",
+                    created_by=operator,
                 ))
             session.add(a)
 
@@ -421,6 +426,7 @@ async def settle_group_member(
     account_id: int,
     body: GroupSettleRequest = GroupSettleRequest(),
     session: Session = Depends(get_session),
+    operator: str = Depends(require_auth),
 ):
     """Same billing math as /settle, scoped to exactly one member — for
     recording that THIS member paid without waiting for (or forcing) the
@@ -500,6 +506,7 @@ async def settle_group_member(
                     gb_amount=round(line.billable_gb, 3),
                     consumed_gb=consumed_gb,
                     consumed_amount=round(consumed_gb * line.rate_per_gb, 2),
+                    created_by=operator,
                 )
             )
         if body.mark_paid:
@@ -515,6 +522,7 @@ async def settle_group_member(
                         account_id=account.id,
                         note=f"Payment received at settlement ({now.date().isoformat()})",
                         source=LedgerSource.web,
+                        created_by=operator,
                     )
                 )
 
@@ -526,6 +534,7 @@ async def settle_group_member(
                 account_id=account.id,
                 action="settle_reset",
                 detail=f"Usage reset via member settle (charged {line.amount:g})",
+                created_by=operator,
             ))
         else:
             account.billed_data_limit = account.data_limit or 0
@@ -533,6 +542,7 @@ async def settle_group_member(
                 account_id=account.id,
                 action="settle_reset",
                 detail=f"Package marked billed via member settle (charged {line.amount:g})",
+                created_by=operator,
             ))
         session.add(account)
         session.commit()
@@ -545,7 +555,7 @@ async def settle_group_member(
 
 @router.post("/{group_id}/reset-cycle")
 @serialise_billing
-async def reset_group_cycle(group_id: int, session: Session = Depends(get_session)):
+async def reset_group_cycle(group_id: int, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     """Same as /settle EXCEPT it never posts a ledger charge — rolls every
     member's usage_baseline forward and starts a new cycle as if payment was
     already collected some other way (cash, a manual "New debt/credit" entry
@@ -605,6 +615,7 @@ async def reset_group_cycle(group_id: int, session: Session = Depends(get_sessio
                     account_id=a.id,
                     action="settle_reset",
                     detail="Package marked billed via group cycle reset (no charge posted)",
+                    created_by=operator,
                 ))
             session.add(a)
 
