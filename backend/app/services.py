@@ -68,7 +68,8 @@ class MoneyBook:
         without each needing its own date-filtering logic. `*_pending` is
         deliberately UNAFFECTED — it's a live "right now" figure read off
         Marzban's current usage snapshot, not ledger history, so "since" has
-        no meaning for it."""
+        no meaning for it. The same split applies to the GB totals: gb
+        posted figures respect `since`, gb_pending does not."""
         self.session = session
         self._accounts = session.exec(select(Account)).all()
         self._groups = {g.id: g for g in session.exec(select(Group)).all()}
@@ -96,6 +97,71 @@ class MoneyBook:
             self._posted_group_only[grp_id] += total if l_type == LedgerType.charge else -total
         for cust_id, l_type, total in session.exec(stmt_cust).all():
             self._posted_customer_only[cust_id] += total if l_type == LedgerType.charge else -total
+
+        # GB totals ride the same three buckets and the same `since` filter
+        # as the money above — but only CHARGE rows carry GB (a payment
+        # zeroes debt, it doesn't un-sell data), and NULL gb_amount /
+        # consumed_gb (rows predating GB tracking, or money-only manual
+        # entries) are EXCLUDED from the sum rather than counted as zero: a
+        # window whose charges all predate the field must read "unknown",
+        # not a lying 0. A scope with no known-GB rows at all reports None.
+        self._gb_by_account: dict[int, tuple[Optional[float], Optional[float]]] = {}
+        self._gb_group_only: dict[int, tuple[Optional[float], Optional[float]]] = {}
+        self._gb_customer_only: dict[int, tuple[Optional[float], Optional[float]]] = {}
+        gb_specs = (
+            (
+                select(LedgerEntry.account_id, func.sum(LedgerEntry.gb_amount), func.sum(LedgerEntry.consumed_gb))
+                .where(LedgerEntry.account_id.is_not(None), LedgerEntry.type == LedgerType.charge)
+                .group_by(LedgerEntry.account_id),
+                self._gb_by_account,
+            ),
+            (
+                select(LedgerEntry.group_id, func.sum(LedgerEntry.gb_amount), func.sum(LedgerEntry.consumed_gb))
+                .where(LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_not(None), LedgerEntry.type == LedgerType.charge)
+                .group_by(LedgerEntry.group_id),
+                self._gb_group_only,
+            ),
+            (
+                select(LedgerEntry.customer_id, func.sum(LedgerEntry.gb_amount), func.sum(LedgerEntry.consumed_gb))
+                .where(LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_(None), LedgerEntry.customer_id.is_not(None), LedgerEntry.type == LedgerType.charge)
+                .group_by(LedgerEntry.customer_id),
+                self._gb_customer_only,
+            ),
+        )
+        for stmt, bucket in gb_specs:
+            if since is not None:
+                stmt = stmt.where(LedgerEntry.date >= since)
+            for scope_id, charged, consumed in session.exec(stmt).all():
+                bucket[scope_id] = (charged, consumed)
+
+        # How much of each account's current meter epoch its charges have
+        # ALREADY attributed as consumed (see attributable_consumed_gb) —
+        # accrued usage minus this is the live "in progress" figure
+        # gb_pending reports. Entries dated at or before the epoch's start
+        # belong to the previous epoch (closure charges are dated exactly at
+        # it — every charge site stamps date=now and the same `now` becomes
+        # the new usage_baseline_at) and are excluded by the strict compare.
+        self._epoch_consumed: dict[int, float] = defaultdict(float)
+        accounts_by_id = {a.id: a for a in self._accounts}
+        consumed_rows = session.exec(
+            select(LedgerEntry.account_id, LedgerEntry.consumed_gb, LedgerEntry.date)
+            .where(LedgerEntry.account_id.is_not(None), LedgerEntry.consumed_gb.is_not(None))
+        ).all()
+        for acc_id, c_gb, entry_date in consumed_rows:
+            account = accounts_by_id.get(acc_id)
+            if account is None or c_gb is None:
+                continue
+            epoch_start = account.usage_baseline_at
+            if epoch_start is not None and entry_date is not None:
+                # Both round-trip through SQLite as naive — normalise anyway
+                # so an in-session aware value can't raise on comparison.
+                if epoch_start.tzinfo is not None:
+                    epoch_start = epoch_start.replace(tzinfo=None)
+                if entry_date.tzinfo is not None:
+                    entry_date = entry_date.replace(tzinfo=None)
+                if entry_date <= epoch_start:
+                    continue
+            self._epoch_consumed[acc_id] += c_gb
 
         self._members: dict[int, list[Account]] = defaultdict(list)
         self._owned_directly: dict[int, list[Account]] = defaultdict(list)
@@ -126,6 +192,18 @@ class MoneyBook:
     def account_net(self, account: Account) -> float:
         return round(self.account_posted(account) + self.account_pending(account), 2)
 
+    def account_gb(self, account: Account) -> tuple[Optional[float], Optional[float]]:
+        """(gb_charged, gb_consumed) posted against this account — either may
+        be None when no charge row in scope carries a known figure."""
+        return self._gb_by_account.get(account.id, (None, None))
+
+    def account_gb_pending(self, account: Account) -> float:
+        """Usage accrued since the account's current meter epoch started that
+        no charge has attributed yet — the GB sibling of account_pending
+        (live, "right now", deliberately unaffected by `since`)."""
+        accrued_gb = max(0, account.used_traffic - account.usage_baseline) / GB
+        return round(max(0.0, accrued_gb - self._epoch_consumed.get(account.id, 0.0)), 3)
+
     # --------------------------------------------------------------- groups
     def group_members(self, group: Group) -> list[Account]:
         return self._members.get(group.id, [])
@@ -139,6 +217,20 @@ class MoneyBook:
 
     def group_net(self, group: Group) -> float:
         return round(self.group_posted(group) + self.group_pending(group), 2)
+
+    def group_gb(self, group: Group) -> tuple[Optional[float], Optional[float]]:
+        charged = consumed = None
+        for a in self.group_members(group):
+            c2, u2 = self._gb_by_account.get(a.id, (None, None))
+            charged = c2 if charged is None else (charged if c2 is None else charged + c2)
+            consumed = u2 if consumed is None else (consumed if u2 is None else consumed + u2)
+        g_only = self._gb_group_only.get(group.id, (None, None))
+        charged = g_only[0] if charged is None else (charged if g_only[0] is None else charged + g_only[0])
+        consumed = g_only[1] if consumed is None else (consumed if g_only[1] is None else consumed + g_only[1])
+        return charged, consumed
+
+    def group_gb_pending(self, group: Group) -> float:
+        return round(sum(self.account_gb_pending(a) for a in self.group_members(group)), 3)
 
     # ------------------------------------------------------------ customers
     def customer_accounts(self, customer: Customer) -> list[Account]:
@@ -161,6 +253,30 @@ class MoneyBook:
 
     def customer_net(self, customer: Customer) -> float:
         return round(self.customer_posted(customer) + self.customer_pending(customer), 2)
+
+    def customer_gb(self, customer: Customer) -> tuple[Optional[float], Optional[float]]:
+        """Same roll-up shape as customer_posted: directly-owned accounts +
+        represented groups + customer-only entries — never both paths for a
+        grouped account."""
+        charged = consumed = None
+
+        def _merge(pair: tuple[Optional[float], Optional[float]]) -> None:
+            nonlocal charged, consumed
+            c2, u2 = pair
+            charged = c2 if charged is None else (charged if c2 is None else charged + c2)
+            consumed = u2 if consumed is None else (consumed if u2 is None else consumed + u2)
+
+        for a in self.customer_accounts(customer):
+            _merge(self._gb_by_account.get(a.id, (None, None)))
+        for g in self.represented_groups(customer):
+            _merge(self.group_gb(g))
+        _merge(self._gb_customer_only.get(customer.id, (None, None)))
+        return charged, consumed
+
+    def customer_gb_pending(self, customer: Customer) -> float:
+        total = sum(self.account_gb_pending(a) for a in self.customer_accounts(customer))
+        total += sum(self.group_gb_pending(g) for g in self.represented_groups(customer))
+        return round(total, 3)
 
 
 def account_posted_balance(session: Session, account_id: int) -> float:
@@ -305,6 +421,51 @@ def effective_billing_mode(session: Session, account: Account, group: Optional[G
     return account.billing_mode
 
 
+def attributable_consumed_gb(session: Session, account: Account) -> float:
+    """The slice of this account's accrued usage (used_traffic - usage_baseline)
+    that NO earlier charge has already attributed, in GB — the consumed_gb a
+    charge posted RIGHT NOW should carry.
+
+    Charges within one meter epoch (the span since usage_baseline was last
+    set — an activation, a payg settle/reset, or a detected external reset)
+    split the epoch's consumption between them without overlap: the first
+    charge in the epoch attributes everything accrued so far, the next one
+    only what accrued since. That's what makes the operator's "40 GB charged,
+    33 GB consumed" come out right when two packages are billed once each at
+    the end of their life — and keeps it right when one package is billed
+    piecemeal (settle, then a top-up, then settling the top-up).
+
+    Only meaningful for prepay-mode charge sites: payg's baseline rolls
+    forward at every settle, so its accrued figure IS the cycle's whole
+    consumption (sites there pass billable_gb directly). Call BEFORE any
+    code path overwrites used_traffic/usage_baseline (sync_marzban_fields,
+    activation resets) — those callers document that ordering locally."""
+    from sqlmodel import func
+
+    accrued_gb = max(0, account.used_traffic - account.usage_baseline) / GB
+    stmt = (
+        select(func.sum(LedgerEntry.consumed_gb))
+        .where(
+            LedgerEntry.account_id == account.id,
+            LedgerEntry.consumed_gb.is_not(None),
+        )
+    )
+    epoch_start = account.usage_baseline_at
+    if epoch_start is not None:
+        if epoch_start.tzinfo is not None:
+            epoch_start = epoch_start.replace(tzinfo=None)
+        # Strictly after: an entry dated exactly at the epoch start is that
+        # epoch's own CLOSURE charge (every charge site stamps date=now and
+        # the same `now` becomes the new usage_baseline_at), not a member of
+        # this one.
+        stmt = stmt.where(LedgerEntry.date > epoch_start)
+    # Single-aggregate select: .one() yields the scalar directly (same shape
+    # as ledger.py's func.max/func.count reads). SUM over an all-NULL or
+    # empty set is None — meaning "nothing attributed yet", i.e. zero.
+    recorded_total = session.exec(stmt).one() or 0.0
+    return round(max(0.0, accrued_gb - recorded_total), 3)
+
+
 def close_out_payg_usage_before_delete(
     session: Session, account: Account, *, source: LedgerSource, note: str,
 ) -> Optional[LedgerEntry]:
@@ -340,6 +501,11 @@ def close_out_payg_usage_before_delete(
         account_id=account.id,
         note=note,
         source=source,
+        # Payg close-out: the bill IS the meter's final reading — both GB
+        # figures are the same here, and the baseline roll below starts a
+        # fresh epoch so nothing double-counts later.
+        gb_amount=round(billable_gb, 3),
+        consumed_gb=round(billable_gb, 3),
     )
     account.usage_baseline = account.used_traffic
     account.usage_baseline_at = utcnow()

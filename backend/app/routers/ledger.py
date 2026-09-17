@@ -78,18 +78,24 @@ def get_balance(
         if not customer:
             raise HTTPException(404, "customer_id not found")
         balance = book.customer_posted(customer)
+        gb_charged, gb_consumed = book.customer_gb(customer)
+        gb_pending = book.customer_gb_pending(customer)
         entity_type, entity_id = "customer", customer_id
     elif group_id is not None:
         group = session.get(Group, group_id)
         if not group:
             raise HTTPException(404, "group_id not found")
         balance = book.group_posted(group)
+        gb_charged, gb_consumed = book.group_gb(group)
+        gb_pending = book.group_gb_pending(group)
         entity_type, entity_id = "group", group_id
     else:
         account = session.get(Account, account_id)
         if not account:
             raise HTTPException(404, "account_id not found")
         balance = book.account_posted(account)
+        gb_charged, gb_consumed = book.account_gb(account)
+        gb_pending = book.account_gb_pending(account)
         entity_type, entity_id = "account", account_id
 
     # total_charge/total_credit are reported as the netted balance split into
@@ -101,4 +107,10 @@ def get_balance(
         total_charge=max(0.0, balance),
         total_credit=max(0.0, -balance),
         balance=balance,
+        # NULL (rendered "—") means no known-GB charge row in this window —
+        # never re-interpreted as zero. gb_pending is live/open-cycle usage
+        # and, like the money pending figure, deliberately window-blind.
+        gb_charged=round(gb_charged, 3) if gb_charged is not None else None,
+        gb_consumed=round(gb_consumed, 3) if gb_consumed is not None else None,
+        gb_pending=gb_pending,
     )

@@ -39,6 +39,7 @@ from app.schemas import (
 )
 from app.services import (
     account_posted_balance,
+    attributable_consumed_gb,
     billable_bytes,
     bytes_from_gb,
     cancel_pending_queued_plan,
@@ -722,6 +723,12 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
     )
     try:
         if amount > 0:
+            # gb_amount: what this charge bills for — billable_gb is the very
+            # figure `amount` was computed from. consumed_gb: for payg the
+            # metered usage IS the bill; for prepay the package is billed
+            # whether or not it's been burned down, so attribute only the
+            # accrued-usage slice no earlier charge in this meter epoch
+            # already took (see attributable_consumed_gb).
             session.add(
                 LedgerEntry(
                     type=LedgerType.charge,
@@ -730,6 +737,11 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
                     account_id=account.id,
                     note=cycle_note,
                     source=LedgerSource.web,
+                    date=now,
+                    gb_amount=round(billable_gb, 3),
+                    consumed_gb=round(billable_gb, 3)
+                    if mode == BillingMode.payg
+                    else attributable_consumed_gb(session, account),
                 )
             )
         if body.mark_paid:
@@ -810,6 +822,13 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
 
     mode = effective_billing_mode(session, account)
     charge_amount = body.charge_amount
+    # Read from the PRE-reset state, before sync_marzban_fields below
+    # overwrites used_traffic with the post-reset reading — this is the last
+    # chance to attribute the cycle's consumption to the charge posted here.
+    billable_gb = billable_bytes(account, mode) / (1024**3)
+    pre_reset_consumed_gb = (
+        round(billable_gb, 3) if mode == BillingMode.payg else attributable_consumed_gb(session, account)
+    )
     if charge_amount is None:
         # Both modes, not just payg. A prepay reset used to post nothing and
         # STILL roll billed_data_limit up to data_limit below — which wrote
@@ -817,7 +836,6 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
         # amount gone for good. Charging what is actually pending keeps the
         # rule the docstring states ("resetting never loses billing data");
         # an operator who means to comp it passes charge_amount=0 explicitly.
-        billable_gb = billable_bytes(account, mode) / (1024**3)
         charge_amount = round(billable_gb * effective_rate(session, account), 2)
 
     if charge_amount and charge_amount > 0 and not account.customer_id and not account.group_id:
@@ -842,6 +860,16 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
                     account_id=account.id,
                     note=body.note or f"Usage reset for cycle ending {now.date().isoformat()}",
                     source=LedgerSource.web,
+                    date=now,
+                    # GB is only known when the money was derived from the
+                    # account's own billing math (charge_amount omitted). An
+                    # operator-entered amount maps to no honest GB figure.
+                    gb_amount=round(billable_gb, 3) if body.charge_amount is None else None,
+                    # The reset zeroes the meter either way, so the accrued
+                    # consumption is attributed even when the operator chose
+                    # the amount themselves — otherwise it would vanish
+                    # from the consumed sums entirely.
+                    consumed_gb=pre_reset_consumed_gb,
                 )
             )
 

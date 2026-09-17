@@ -174,6 +174,27 @@ class LedgerEntry(SQLModel, table=True):
     note: Optional[str] = None
     source: LedgerSource = LedgerSource.web
 
+    # How many GB this charge BILLS for — the package/remainder/top-up size
+    # sold (prepay) or the metered usage billed (payg). A structured column,
+    # NOT parsed back out of `note` text: same reasoning as
+    # MonthlySettlementBatch's docstring — notes are written for humans and
+    # drift; a column is queryable and sum-able (MoneyBook's gb totals).
+    # Deliberately left NULL on rows that predate it, with NO note-parsing
+    # backfill: a wrong number reconstructed from prose is worse than an
+    # honest blank. NULL means "unknown", never zero.
+    gb_amount: Optional[float] = None
+
+    # How many GB of actual usage this charge ATTRIBUTES to itself — the
+    # meter's reading at the charge's checkpoint minus what earlier charges
+    # in the same meter epoch already took (see
+    # services.attributable_consumed_gb). For payg this equals gb_amount
+    # (payg bills exactly what was consumed); for prepay they differ — a
+    # 20GB package billed up front that the customer burned 18GB of carries
+    # gb_amount=20, consumed_gb=18. Computed from live meter state at charge
+    # time, never user-inputtable. NULL on manual entries and on rows
+    # predating the column.
+    consumed_gb: Optional[float] = None
+
 
 class AppSettings(SQLModel, table=True):
     """Single-row table (id is always 1) for dashboard-wide settings — currently

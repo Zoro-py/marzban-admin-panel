@@ -32,6 +32,33 @@ const DatePicker = (RawDatePicker as unknown as { default: typeof RawDatePicker 
 type Scope = { customer_id: number } | { group_id: number } | { account_id: number }
 type CalendarKind = 'jalali' | 'gregorian'
 
+// GB figures read like the operator talks about them: "40 GB charged,
+// 33 GB consumed". Trim trailing zeros (18.00 -> 18, 2.50 -> 2.5) so the
+// widget stays compact; "—" when the backend reports null (charges that
+// predate GB tracking carry no honest GB figure — never rendered as 0).
+function fmtGb(gb: number): string {
+  return String(Number(gb.toFixed(2)))
+}
+
+function GbSummary({ balance }: { balance: { gb_charged: number | null; gb_consumed: number | null; gb_pending: number | null } | undefined }) {
+  if (!balance) return null
+  const { gb_charged, gb_consumed, gb_pending } = balance
+  if (gb_charged == null && gb_consumed == null && !gb_pending) return null
+  return (
+    <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+      <span className="text-foreground">{gb_charged != null ? `${fmtGb(gb_charged)} GB` : '—'}</span> charged
+      <span className="mx-1 text-border">·</span>
+      <span className="text-foreground">{gb_consumed != null ? `${fmtGb(gb_consumed)} GB` : '—'}</span> consumed
+      {gb_pending != null && gb_pending > 0.001 && (
+        <>
+          <span className="mx-1 text-border">·</span>
+          {fmtGb(gb_pending)} GB accruing
+        </>
+      )}
+    </span>
+  )
+}
+
 const CALENDARS: Record<CalendarKind, { calendar: typeof persian; locale: typeof persian_fa; label: string }> = {
   jalali: { calendar: persian, locale: persian_fa, label: 'شمسی' },
   gregorian: { calendar: gregorian, locale: gregorian_en, label: 'Gregorian' },
@@ -102,7 +129,10 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
           {query.isFetching ? (
             <span className="text-muted-foreground">Loading…</span>
           ) : (
-            <Money amount={query.data?.balance ?? 0} zero="settled" className="text-sm" />
+            <>
+              <Money amount={query.data?.balance ?? 0} zero="settled" className="text-sm" />
+              <GbSummary balance={query.data} />
+            </>
           )}
           <button
             type="button"

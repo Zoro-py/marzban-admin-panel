@@ -12,6 +12,7 @@ from app.schemas import AccountRow, GroupCreate, GroupRead, GroupSettleRequest, 
 from app.services import (
     MoneyBook,
     account_posted_balance,
+    attributable_consumed_gb,
     billable_bytes,
     effective_rate,
     enrich_accounts,
@@ -294,6 +295,19 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
                 failed_resets.append(f"{a.marzban_username}: {exc}")
 
     paid_note = f"Payment received at settlement ({now.date().isoformat()})"
+    # GB attribution per member, computed BEFORE any state changes (the payg
+    # branch rolls baselines further down, and prepay's helper reads the
+    # meter's current accrual — see attributable_consumed_gb). Keyed by the
+    # line's account so the charge loop below stays a plain add.
+    gb_by_account: dict[int, tuple[float, float]] = {}
+    for line in lines:
+        member = next(a for a in accounts if a.id == line.account_id)
+        gb_by_account[line.account_id] = (
+            round(line.billable_gb, 3),
+            round(line.billable_gb, 3)
+            if group.billing_mode == BillingMode.payg
+            else attributable_consumed_gb(session, member),
+        )
     try:
         for line in lines:
             if line.amount > 0:
@@ -306,6 +320,9 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
                         account_id=line.account_id,
                         note=cycle_note,
                         source=LedgerSource.web,
+                        date=now,
+                        gb_amount=gb_by_account[line.account_id][0],
+                        consumed_gb=gb_by_account[line.account_id][1],
                     )
                 )
             if body.mark_paid:
@@ -466,6 +483,14 @@ async def settle_group_member(
                     account_id=account.id,
                     note=cycle_note,
                     source=LedgerSource.web,
+                    date=now,
+                    # Same GB attribution as the whole-group settle above:
+                    # payg's bill IS its consumption; prepay attributes only
+                    # the accrued slice no earlier charge already took.
+                    gb_amount=round(line.billable_gb, 3),
+                    consumed_gb=round(line.billable_gb, 3)
+                    if group.billing_mode == BillingMode.payg
+                    else attributable_consumed_gb(session, account),
                 )
             )
         if body.mark_paid:

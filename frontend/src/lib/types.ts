@@ -202,6 +202,14 @@ export interface Balance {
   total_charge: number
   total_credit: number
   balance: number
+  // GB billed (sold) and GB of actual usage attributed to charges within the
+  // same window/scope. null = no known-GB charge in the window (entries
+  // predating GB tracking / manual money-only rows) — shown as "—", never 0.
+  gb_charged: number | null
+  gb_consumed: number | null
+  // Live open-cycle usage no charge has attributed yet (like the money
+  // "pending" figure, deliberately unaffected by the since date).
+  gb_pending: number | null
 }
 
 export interface InvoiceLine {

@@ -325,6 +325,13 @@ class LedgerCreate(BaseModel):
     account_id: Optional[int] = None
     note: Optional[str] = None
     source: LedgerSource = LedgerSource.web
+    # Optional, caller-supplied GB for manual CHARGE entries (e.g. a recovery
+    # charge for a known package size posted by hand). Only meaningful on
+    # charges; a credit carrying GB would be nonsense. consumed_gb is
+    # deliberately NOT inputtable — it is derived from live meter state by
+    # the codebase's own billing flows, never declared (see
+    # models.LedgerEntry.consumed_gb).
+    gb_amount: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 class LedgerRead(BaseModel):
@@ -337,6 +344,8 @@ class LedgerRead(BaseModel):
     account_id: Optional[int]
     note: Optional[str]
     source: LedgerSource
+    gb_amount: Optional[float] = None
+    consumed_gb: Optional[float] = None
 
 
 class BalanceRead(BaseModel):
@@ -345,6 +354,16 @@ class BalanceRead(BaseModel):
     total_charge: float
     total_credit: float
     balance: float  # total_charge - total_credit; positive = they owe us
+    # GB billed (sold) and GB of actual usage attributed to charges within
+    # the same window/scope as `balance`. NULL means "no charge in this
+    # window carries a known GB figure" (entries predating GB tracking, or
+    # manual money-only entries) — displayed as "—", never as 0.
+    gb_charged: Optional[float] = None
+    gb_consumed: Optional[float] = None
+    # Live, window-independent (exactly like the money pending figure):
+    # usage accrued since each account's current meter epoch started that no
+    # charge has attributed yet. The GB sibling of "not invoiced yet".
+    gb_pending: Optional[float] = None
 
 
 # ---- Bulk ("family") account creation ----------------------------------

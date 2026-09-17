@@ -318,6 +318,17 @@ def _run_lightweight_migrations() -> None:
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_accountevent_date ON accountevent (date)"))
         conn.execute(text("CREATE INDEX IF NOT EXISTS ix_onlinesnapshot_recorded_at ON onlinesnapshot (recorded_at)"))
 
+        # GB figures on charge rows (see models.LedgerEntry.gb_amount /
+        # consumed_gb). Nullable, no backfill: rows predating these columns
+        # keep NULL, which every reader treats as "unknown" — never as zero.
+        # A best-effort parse of the note text would put wrong numbers on old
+        # financial rows; an honest blank can't.
+        existing_ledger = {row[1] for row in conn.execute(text("PRAGMA table_info(ledgerentry)"))}
+        if existing_ledger and "gb_amount" not in existing_ledger:
+            conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN gb_amount FLOAT"))
+        if existing_ledger and "consumed_gb" not in existing_ledger:
+            conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN consumed_gb FLOAT"))
+
         # queuedplan itself is a genuinely new table (created by create_all on
         # any DB that doesn't have it yet), but billing_mode was added to the
         # model AFTER that table first shipped — same "existing table, new

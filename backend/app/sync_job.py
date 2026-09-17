@@ -10,7 +10,7 @@ from app.db import engine
 from app.marzban_client import marzban_client
 from app.models import Account, AccountEvent, BillingMode, Customer, LedgerEntry, LedgerSource, LedgerType, OnlineSnapshot, QueuedPlan, QueuedPlanStatus, utcnow
 from app.notify import notify_admin as _notify_admin
-from app.services import GB, billable_bytes, effective_billing_mode, effective_rate, monthly_avg_usage
+from app.services import GB, attributable_consumed_gb, billable_bytes, effective_billing_mode, effective_rate, monthly_avg_usage
 
 PAGE_SIZE = 200
 
@@ -301,6 +301,11 @@ async def _maybe_settle_payg_cap_hit(session: Session, account: Account, now: da
             account_id=account.id,
             note=f"Payg cap hit — usage reset ({now.date().isoformat()})",
             source=LedgerSource.sync,
+            date=now,
+            # Payg bills exactly what was consumed — the two GB figures are
+            # the same by definition here.
+            gb_amount=round(billable_gb, 3),
+            consumed_gb=round(billable_gb, 3),
         ))
 
     account.used_traffic = marzban_user.get("used_traffic", 0)
@@ -430,6 +435,14 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
             account_id=account.id,
             note=f"Auto-settled: plan ended ({now.date().isoformat()}), next plan activating",
             source=LedgerSource.sync,
+            date=now,
+            gb_amount=round(old_billable / GB, 3),
+            # Attribute the ended plan's consumption — usage accrued since
+            # the meter's current epoch started, minus what mid-plan
+            # settles already attributed — captured BEFORE the reset below
+            # zeroes the meter. (attributable_consumed_gb call order matters:
+            # account.used_traffic is still the pre-reset reading here.)
+            consumed_gb=attributable_consumed_gb(session, account),
         ))
         log.info("Auto-settled %s: charged %.2f for ended plan", account.marzban_username, old_amount)
 

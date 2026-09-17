@@ -31,7 +31,7 @@ from app.models import (
     utcnow,
 )
 from app.notify import notify_admin
-from app.services import MoneyBook, bytes_from_gb, cancel_pending_queued_plan, close_out_payg_usage_before_delete, effective_rate
+from app.services import MoneyBook, attributable_consumed_gb, bytes_from_gb, cancel_pending_queued_plan, close_out_payg_usage_before_delete, effective_rate
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +235,12 @@ async def create_delegate_account(session: Session, delegate: Delegate, data_lim
             account_id=account.id,
             note=f"Delegate self-service: created {data_limit_gb:g}GB / {delegate.default_duration_days}d",
             source=LedgerSource.delegate,
+            gb_amount=round(data_limit_gb, 3),
+            # A freshly created account has not consumed anything yet — the
+            # package's consumption gets attributed when its life closes
+            # (renewal/adjustment charges split it, see
+            # attributable_consumed_gb).
+            consumed_gb=0.0,
         ))
     session.add(AccountEvent(
         account_id=account.id,
@@ -300,6 +306,11 @@ async def renew_delegate_account(
             account_id=account.id,
             note=f"Delegate self-service: renewed +{extend_gb:g}GB / +{days}d",
             source=LedgerSource.delegate,
+            gb_amount=round(extend_gb, 3),
+            # Renewal extends a running account — the meter keeps going, so
+            # attribute only the accrued slice no earlier charge in this
+            # meter epoch already took, exactly like a prepay settle.
+            consumed_gb=attributable_consumed_gb(session, account),
         ))
     session.add(AccountEvent(
         account_id=account.id,
