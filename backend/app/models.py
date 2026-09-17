@@ -227,6 +227,39 @@ class AppSettings(SQLModel, table=True):
     last_payg_monthly_settlement: Optional[str] = None
 
 
+class RateChange(SQLModel, table=True):
+    """Structured audit record for every billing-rate change across all three
+    scopes of the effective_rate chain (account rate → group rate →
+    dashboard-wide default). Born from a real investigation blocker: "was
+    this customer's rate ever temporarily 0?" was unanswerable, because all
+    three rate fields are overwrite-in-place — with this table the answer is
+    one query.
+
+    A dedicated table, not AccountEvent rows, for two deliberate reasons:
+    AccountEvent.account_id is NOT nullable (a global default-rate change has
+    no account to attach to, and relaxing it would mean rebuilding the
+    accountevent table on the live SQLite DB), and prose details aren't
+    queryable — only a human reading history is, which is exactly when this
+    question gets asked.
+
+    old_rate/new_rate are Optional on purpose: NULL means "unset", which has
+    real meaning in the fallback chain (an unset account rate falls through
+    to the group's, an unset group rate to the default) — never rewritten to
+    0, which would read as "free" rather than "inherited".
+
+    created_by follows the operator-attribution convention
+    (LedgerEntry.created_by): web-sourced changes only, NULL otherwise."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    scope: str  # "account" | "group" | "default"
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id", index=True)
+    group_id: Optional[int] = Field(default=None, foreign_key="group.id", index=True)
+    old_rate: Optional[float] = None
+    new_rate: Optional[float] = None
+    created_by: Optional[str] = None
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
 class AccountEvent(SQLModel, table=True):
     """Audit trail for direct Marzban actions (time/quota changes), since the
     field itself lives in Marzban and isn't duplicated here as an editable value."""

@@ -18,7 +18,7 @@ from app.bulk_accounts import (
 from app.config import settings
 from app.db import get_session
 from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_client
-from app.models import Account, AccountEvent, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, QueuedPlan, QueuedPlanStatus, utcnow
+from app.models import Account, AccountEvent, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, QueuedPlan, QueuedPlanStatus, RateChange, utcnow
 from app.schemas import (
     AccountAdjustRequest,
     AccountBillingUpdate,
@@ -514,6 +514,7 @@ def update_billing(account_id: int, body: AccountBillingUpdate, session: Session
     if not account:
         raise HTTPException(404, "Account not found")
 
+    old_rate = account.rate_per_gb
     if body.clear_rate:
         account.rate_per_gb = None
     elif body.rate_per_gb is not None:
@@ -527,6 +528,17 @@ def update_billing(account_id: int, body: AccountBillingUpdate, session: Session
 
     try:
         session.add(account)
+        if old_rate != account.rate_per_gb:
+            # Structured audit trail for the rate — the overwrite-in-place
+            # field alone left "was this rate ever 0?" unanswerable (see
+            # models.RateChange). Recorded only when the value actually moved.
+            session.add(RateChange(
+                scope="account",
+                account_id=account.id,
+                old_rate=old_rate,
+                new_rate=account.rate_per_gb,
+                created_by=operator,
+            ))
         session.add(
             AccountEvent(
                 account_id=account.id,

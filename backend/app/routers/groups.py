@@ -7,7 +7,7 @@ from sqlmodel import Session, select
 from app.auth import require_auth
 from app.db import get_session
 from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_client
-from app.models import Account, AccountEvent, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, utcnow
+from app.models import Account, AccountEvent, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, RateChange, utcnow
 from app.schemas import AccountRow, GroupCreate, GroupRead, GroupSettleRequest, GroupUpdate, GroupWithBalance, InvoiceLine
 from app.services import (
     MoneyBook,
@@ -157,13 +157,26 @@ def get_group(group_id: int, session: Session = Depends(get_session)):
 
 
 @router.patch("/{group_id}", response_model=GroupRead)
-def update_group(group_id: int, body: GroupUpdate, session: Session = Depends(get_session)):
+def update_group(group_id: int, body: GroupUpdate, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     group = session.get(Group, group_id)
     if not group:
         raise HTTPException(404, "Group not found")
+    old_rate = group.rate_per_gb
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(group, field, value)
     try:
+        session.add(group)
+        if "rate_per_gb" in body.model_dump(exclude_unset=True) and old_rate != group.rate_per_gb:
+            # Structured audit trail for the rate (see models.RateChange) —
+            # a group rate change affects every member's next invoice, so
+            # "what was it before?" has to be answerable.
+            session.add(RateChange(
+                scope="group",
+                group_id=group.id,
+                old_rate=old_rate,
+                new_rate=group.rate_per_gb,
+                created_by=operator,
+            ))
         session.add(group)
         session.commit()
         session.refresh(group)

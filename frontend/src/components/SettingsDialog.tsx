@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
-import { formatBytes } from '@/lib/utils'
+import { formatBytes, formatToman } from '@/lib/utils'
 import {
   Dialog,
   DialogContent,
@@ -28,6 +28,13 @@ export function SettingsDialog() {
   const queryClient = useQueryClient()
 
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: settingsApi.get, enabled: open })
+  // Audit trail for THIS dialog's own field: the dashboard-wide default's
+  // change history, so "what was it before?" never needs the database.
+  const rateHistoryQuery = useQuery({
+    queryKey: ['settings', 'rate-changes', 'default'],
+    queryFn: () => settingsApi.rateChanges(),
+    enabled: open,
+  })
 
   React.useEffect(() => {
     if (settingsQuery.data) {
@@ -87,6 +94,19 @@ export function SettingsDialog() {
             onChange={(e) => setRate(e.target.value)}
             placeholder="e.g. 15000"
           />
+          {(rateHistoryQuery.data?.length ?? 0) > 0 && (
+            <div className="rounded-md border border-border bg-background/50 p-2">
+              <p className="text-[11px] font-medium text-muted-foreground">Change history</p>
+              <ul className="mt-1 flex flex-col gap-0.5 text-[11px] text-muted-foreground">
+                {rateHistoryQuery.data!.slice(0, 5).map((rc) => (
+                  <li key={rc.id} className="tabular-nums">
+                    {rc.old_rate != null ? formatToman(rc.old_rate) : 'unset'} → {rc.new_rate != null ? formatToman(rc.new_rate) : 'unset'}
+                    {rc.created_by && <span className="ml-1">· {rc.created_by}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
 
         <Separator />

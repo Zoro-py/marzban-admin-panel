@@ -184,6 +184,18 @@ export interface AccountInvoice {
   amount: number
 }
 
+export interface RateChange {
+  id: number
+  scope: 'account' | 'group' | 'default'
+  account_id: number | null
+  group_id: number | null
+  // null = "unset" (inherited via the effective-rate chain), never zero.
+  old_rate: number | null
+  new_rate: number | null
+  created_by: string | null
+  created_at: string
+}
+
 export interface LedgerEntry {
   id: number
   type: LedgerType

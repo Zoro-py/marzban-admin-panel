@@ -23,6 +23,7 @@ import type {
   NextPlan,
   OnlineHistory,
   OnlineHistoryRange,
+  RateChange,
   ReportSummary,
   ShopOrder,
   ShopSettings,
@@ -247,6 +248,10 @@ export const settingsApi = {
   get: async () => (await api.get<{ default_rate_per_gb: number | null }>('/api/settings')).data,
   update: async (body: { default_rate_per_gb: number | null }) =>
     (await api.patch<{ default_rate_per_gb: number | null }>('/api/settings', body)).data,
+  // Rate-change audit rows for one scope: an account's own rate changes, a
+  // group's, or (no params) the dashboard-wide default's.
+  rateChanges: async (params?: { account_id?: number; group_id?: number }) =>
+    (await api.get<RateChange[]>('/api/settings/rate-changes', { params })).data,
 }
 
 // ---- delegates (operator-only grant management) ----

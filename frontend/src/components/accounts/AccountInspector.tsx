@@ -17,7 +17,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { accountsApi, customersApi, groupsApi, ledgerApi, apiErrorMessage } from '@/lib/api'
+import { accountsApi, settingsApi, customersApi, groupsApi, ledgerApi, apiErrorMessage } from '@/lib/api'
 import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
 import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import { BalanceSinceControl } from '@/components/BalanceSinceControl'
@@ -987,6 +987,13 @@ function HistorySection({ account }: { account: AccountRow }) {
     queryKey: ['ledger', { accountId: account.id }],
     queryFn: () => ledgerApi.list({ account_id: account.id }),
   })
+  // This account's OWN rate changes only — what it INHERITS (group rate,
+  // then dashboard default) reads from the effective-rate chain and is shown
+  // on the group/settings surfaces, not here.
+  const rateChangesQuery = useQuery({
+    queryKey: ['settings', 'rate-changes', { account_id: account.id }],
+    queryFn: () => settingsApi.rateChanges({ account_id: account.id }),
+  })
 
   type HistoryRow = {
     key: string
@@ -1015,8 +1022,16 @@ function HistorySection({ account }: { account: AccountRow }) {
       source: l.source,
       created_by: l.created_by,
     }))
-    return [...evts, ...money].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 30)
-  }, [eventsQuery.data, ledgerQuery.data])
+    const rates: HistoryRow[] = (rateChangesQuery.data ?? []).map((rc) => ({
+      key: `r${rc.id}`,
+      date: rc.created_at,
+      label: 'rate change',
+      detail: `${rc.old_rate != null ? formatToman(rc.old_rate) : 'unset'} → ${rc.new_rate != null ? formatToman(rc.new_rate) : 'unset'} /GB`,
+      source: 'web' as LedgerSource,
+      created_by: rc.created_by,
+    }))
+    return [...evts, ...money, ...rates].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).slice(0, 30)
+  }, [eventsQuery.data, ledgerQuery.data, rateChangesQuery.data])
 
   return (
     <Section icon={History} title="History">

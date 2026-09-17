@@ -3,7 +3,8 @@ import { Link, useParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { ArrowLeft, Clock, Copy, Info } from 'lucide-react'
-import { groupsApi, ledgerApi, apiErrorMessage } from '@/lib/api'
+import { groupsApi, ledgerApi, settingsApi, apiErrorMessage } from '@/lib/api'
+import type { RateChange } from '@/lib/types'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -42,6 +43,12 @@ export function GroupDetailPage() {
   const groupQuery = useQuery({ queryKey: ['groups', groupId], queryFn: () => groupsApi.get(groupId) })
   const accountsQuery = useQuery({ queryKey: ['accounts', { groupId }], queryFn: () => groupsApi.accounts(groupId) })
   const ledgerQuery = useQuery({ queryKey: ['ledger', { groupId }], queryFn: () => ledgerApi.list({ group_id: groupId }) })
+  // This group's own rate changes (what members INHERIT is the chain's
+  // business, shown per-account in their inspectors).
+  const rateHistoryQuery = useQuery({
+    queryKey: ['settings', 'rate-changes', { group_id: groupId }],
+    queryFn: () => settingsApi.rateChanges({ group_id: groupId }),
+  })
   // Fetched eagerly so the member table shows the SAME billable-GB figure the
   // pending amount is computed from.
   const invoiceQuery = useQuery({ queryKey: ['groups', groupId, 'invoice'], queryFn: () => groupsApi.invoice(groupId) })
@@ -407,6 +414,28 @@ export function GroupDetailPage() {
           </TableBody>
         </Table>
       </div>
+
+      {(rateHistoryQuery.data?.length ?? 0) > 0 && (
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
+          <div className="border-b border-border px-4 py-2.5">
+            <h2 className="text-[13px] font-semibold">Rate changes</h2>
+          </div>
+          <ul className="flex flex-col gap-1 px-4 py-2.5 text-xs">
+            {rateHistoryQuery.data!.map((rc: RateChange) => (
+              <li key={rc.id} className="flex items-baseline justify-between gap-2">
+                <span className="tabular-nums">
+                  {rc.old_rate != null ? `${formatToman(rc.old_rate)}/GB` : 'unset'} →{' '}
+                  {rc.new_rate != null ? `${formatToman(rc.new_rate)}/GB` : 'unset'}
+                </span>
+                <span className="text-[11px] text-muted-foreground">
+                  {formatDate(rc.created_at)}
+                  {rc.created_by && ` · ${rc.created_by}`}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }
