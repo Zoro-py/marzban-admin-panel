@@ -195,6 +195,13 @@ class LedgerEntry(SQLModel, table=True):
     # predating the column.
     consumed_gb: Optional[float] = None
 
+    # The Toman value of consumed_gb at THIS charge's own rate — recorded
+    # next to it because rates change over time, and reconstructing a
+    # historical rate from amount/gb_amount would inherit both fields'
+    # rounding noise. For payg charges this equals `amount`. NULL whenever
+    # consumed_gb is NULL (nothing consumed to value).
+    consumed_amount: Optional[float] = None
+
 
 class AppSettings(SQLModel, table=True):
     """Single-row table (id is always 1) for dashboard-wide settings — currently

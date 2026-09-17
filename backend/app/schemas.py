@@ -360,6 +360,15 @@ class BalanceRead(BaseModel):
     # manual money-only entries) — displayed as "—", never as 0.
     gb_charged: Optional[float] = None
     gb_consumed: Optional[float] = None
+    # Toman equivalents, same window/scope:
+    #   charged_amount  — gross sum of charge amounts (NOT netted against
+    #                     credits; every charge counts, even GB-less legacy
+    #                     ones).
+    #   consumed_amount — the consumed GB valued at each charge's own rate,
+    #                     recorded at charge time. An estimate of what the
+    #                     consumed data was worth, NOT what they owe.
+    consumed_amount: Optional[float] = None
+    charged_amount: Optional[float] = None
     # Live, window-independent (exactly like the money pending figure):
     # usage accrued since each account's current meter epoch started that no
     # charge has attributed yet. The GB sibling of "not invoiced yet".

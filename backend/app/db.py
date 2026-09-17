@@ -328,6 +328,8 @@ def _run_lightweight_migrations() -> None:
             conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN gb_amount FLOAT"))
         if existing_ledger and "consumed_gb" not in existing_ledger:
             conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN consumed_gb FLOAT"))
+        if existing_ledger and "consumed_amount" not in existing_ledger:
+            conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN consumed_amount FLOAT"))
 
         # queuedplan itself is a genuinely new table (created by create_all on
         # any DB that doesn't have it yet), but billing_mode was added to the

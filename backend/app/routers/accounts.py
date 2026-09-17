@@ -729,6 +729,7 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
             # whether or not it's been burned down, so attribute only the
             # accrued-usage slice no earlier charge in this meter epoch
             # already took (see attributable_consumed_gb).
+            consumed_gb = round(billable_gb, 3) if mode == BillingMode.payg else attributable_consumed_gb(session, account)
             session.add(
                 LedgerEntry(
                     type=LedgerType.charge,
@@ -739,9 +740,8 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
                     source=LedgerSource.web,
                     date=now,
                     gb_amount=round(billable_gb, 3),
-                    consumed_gb=round(billable_gb, 3)
-                    if mode == BillingMode.payg
-                    else attributable_consumed_gb(session, account),
+                    consumed_gb=consumed_gb,
+                    consumed_amount=round(consumed_gb * rate, 2),
                 )
             )
         if body.mark_paid:
@@ -829,6 +829,7 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
     pre_reset_consumed_gb = (
         round(billable_gb, 3) if mode == BillingMode.payg else attributable_consumed_gb(session, account)
     )
+    pre_reset_rate = effective_rate(session, account)
     if charge_amount is None:
         # Both modes, not just payg. A prepay reset used to post nothing and
         # STILL roll billed_data_limit up to data_limit below — which wrote
@@ -870,6 +871,7 @@ async def reset_account(account_id: int, body: AccountResetRequest, session: Ses
                     # the amount themselves — otherwise it would vanish
                     # from the consumed sums entirely.
                     consumed_gb=pre_reset_consumed_gb,
+                    consumed_amount=round(pre_reset_consumed_gb * pre_reset_rate, 2),
                 )
             )
 

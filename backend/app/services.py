@@ -50,6 +50,33 @@ def _signed(entry: LedgerEntry) -> float:
     return entry.amount if entry.type == LedgerType.charge else -entry.amount
 
 
+GbTotals = tuple[Optional[float], Optional[float], Optional[float], Optional[float]]
+"""(gb_charged, gb_consumed, charged_amount, consumed_amount) for one scope:
+GB billed / GB consumed / gross Toman billed / Toman value of the consumed
+GB. Each component is None when no charge row in scope carries it — None
+means "unknown", never zero (rows predating GB tracking, or money-only
+manual entries, are excluded from the GB/derived sums but still count
+toward charged_amount, which is plain money)."""
+
+
+def _merge_opt(total: Optional[float], value: Optional[float]) -> Optional[float]:
+    """None-propagating addition for optional money/GB figures: unknown +
+    unknown stays unknown, but a known figure among unknowns is still worth
+    showing."""
+    if value is None:
+        return total
+    return value if total is None else total + value
+
+
+def _merge_gb(a: GbTotals, b: GbTotals) -> GbTotals:
+    return (
+        _merge_opt(a[0], b[0]),
+        _merge_opt(a[1], b[1]),
+        _merge_opt(a[2], b[2]),
+        _merge_opt(a[3], b[3]),
+    )
+
+
 class MoneyBook:
     """Answers "what does X owe right now" for accounts, groups and customers
     off a single consistent snapshot.
@@ -98,31 +125,50 @@ class MoneyBook:
         for cust_id, l_type, total in session.exec(stmt_cust).all():
             self._posted_customer_only[cust_id] += total if l_type == LedgerType.charge else -total
 
-        # GB totals ride the same three buckets and the same `since` filter
-        # as the money above — but only CHARGE rows carry GB (a payment
+        # GB + gross-charge totals ride the same three buckets and the same
+        # `since` filter as the money above — but only CHARGE rows (a payment
         # zeroes debt, it doesn't un-sell data), and NULL gb_amount /
         # consumed_gb (rows predating GB tracking, or money-only manual
-        # entries) are EXCLUDED from the sum rather than counted as zero: a
-        # window whose charges all predate the field must read "unknown",
-        # not a lying 0. A scope with no known-GB rows at all reports None.
-        self._gb_by_account: dict[int, tuple[Optional[float], Optional[float]]] = {}
-        self._gb_group_only: dict[int, tuple[Optional[float], Optional[float]]] = {}
-        self._gb_customer_only: dict[int, tuple[Optional[float], Optional[float]]] = {}
+        # entries) are EXCLUDED from the GB sums rather than counted as zero:
+        # a window whose charges all predate the field must read "unknown",
+        # not a lying 0. charged_amount is plain money — every charge counts
+        # toward it even when its GB is unknown.
+        self._gb_by_account: dict[int, GbTotals] = {}
+        self._gb_group_only: dict[int, GbTotals] = {}
+        self._gb_customer_only: dict[int, GbTotals] = {}
         gb_specs = (
             (
-                select(LedgerEntry.account_id, func.sum(LedgerEntry.gb_amount), func.sum(LedgerEntry.consumed_gb))
+                select(
+                    LedgerEntry.account_id,
+                    func.sum(LedgerEntry.gb_amount),
+                    func.sum(LedgerEntry.consumed_gb),
+                    func.sum(LedgerEntry.amount),
+                    func.sum(LedgerEntry.consumed_amount),
+                )
                 .where(LedgerEntry.account_id.is_not(None), LedgerEntry.type == LedgerType.charge)
                 .group_by(LedgerEntry.account_id),
                 self._gb_by_account,
             ),
             (
-                select(LedgerEntry.group_id, func.sum(LedgerEntry.gb_amount), func.sum(LedgerEntry.consumed_gb))
+                select(
+                    LedgerEntry.group_id,
+                    func.sum(LedgerEntry.gb_amount),
+                    func.sum(LedgerEntry.consumed_gb),
+                    func.sum(LedgerEntry.amount),
+                    func.sum(LedgerEntry.consumed_amount),
+                )
                 .where(LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_not(None), LedgerEntry.type == LedgerType.charge)
                 .group_by(LedgerEntry.group_id),
                 self._gb_group_only,
             ),
             (
-                select(LedgerEntry.customer_id, func.sum(LedgerEntry.gb_amount), func.sum(LedgerEntry.consumed_gb))
+                select(
+                    LedgerEntry.customer_id,
+                    func.sum(LedgerEntry.gb_amount),
+                    func.sum(LedgerEntry.consumed_gb),
+                    func.sum(LedgerEntry.amount),
+                    func.sum(LedgerEntry.consumed_amount),
+                )
                 .where(LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_(None), LedgerEntry.customer_id.is_not(None), LedgerEntry.type == LedgerType.charge)
                 .group_by(LedgerEntry.customer_id),
                 self._gb_customer_only,
@@ -131,8 +177,8 @@ class MoneyBook:
         for stmt, bucket in gb_specs:
             if since is not None:
                 stmt = stmt.where(LedgerEntry.date >= since)
-            for scope_id, charged, consumed in session.exec(stmt).all():
-                bucket[scope_id] = (charged, consumed)
+            for scope_id, gb_c, gb_u, amt, amt_u in session.exec(stmt).all():
+                bucket[scope_id] = (gb_c, gb_u, amt, amt_u)
 
         # How much of each account's current meter epoch its charges have
         # ALREADY attributed as consumed (see attributable_consumed_gb) —
@@ -192,10 +238,11 @@ class MoneyBook:
     def account_net(self, account: Account) -> float:
         return round(self.account_posted(account) + self.account_pending(account), 2)
 
-    def account_gb(self, account: Account) -> tuple[Optional[float], Optional[float]]:
-        """(gb_charged, gb_consumed) posted against this account — either may
-        be None when no charge row in scope carries a known figure."""
-        return self._gb_by_account.get(account.id, (None, None))
+    def account_gb(self, account: Account) -> GbTotals:
+        """(gb_charged, gb_consumed, charged_amount, consumed_amount) posted
+        against this account — components are None when no charge row in
+        scope carries them (see GbTotals)."""
+        return self._gb_by_account.get(account.id, (None, None, None, None))
 
     def account_gb_pending(self, account: Account) -> float:
         """Usage accrued since the account's current meter epoch started that
@@ -218,16 +265,12 @@ class MoneyBook:
     def group_net(self, group: Group) -> float:
         return round(self.group_posted(group) + self.group_pending(group), 2)
 
-    def group_gb(self, group: Group) -> tuple[Optional[float], Optional[float]]:
-        charged = consumed = None
+    def group_gb(self, group: Group) -> GbTotals:
+        totals: GbTotals = (None, None, None, None)
         for a in self.group_members(group):
-            c2, u2 = self._gb_by_account.get(a.id, (None, None))
-            charged = c2 if charged is None else (charged if c2 is None else charged + c2)
-            consumed = u2 if consumed is None else (consumed if u2 is None else consumed + u2)
-        g_only = self._gb_group_only.get(group.id, (None, None))
-        charged = g_only[0] if charged is None else (charged if g_only[0] is None else charged + g_only[0])
-        consumed = g_only[1] if consumed is None else (consumed if g_only[1] is None else consumed + g_only[1])
-        return charged, consumed
+            totals = _merge_gb(totals, self._gb_by_account.get(a.id, (None, None, None, None)))
+        totals = _merge_gb(totals, self._gb_group_only.get(group.id, (None, None, None, None)))
+        return totals
 
     def group_gb_pending(self, group: Group) -> float:
         return round(sum(self.account_gb_pending(a) for a in self.group_members(group)), 3)
@@ -254,24 +297,17 @@ class MoneyBook:
     def customer_net(self, customer: Customer) -> float:
         return round(self.customer_posted(customer) + self.customer_pending(customer), 2)
 
-    def customer_gb(self, customer: Customer) -> tuple[Optional[float], Optional[float]]:
+    def customer_gb(self, customer: Customer) -> GbTotals:
         """Same roll-up shape as customer_posted: directly-owned accounts +
         represented groups + customer-only entries — never both paths for a
         grouped account."""
-        charged = consumed = None
-
-        def _merge(pair: tuple[Optional[float], Optional[float]]) -> None:
-            nonlocal charged, consumed
-            c2, u2 = pair
-            charged = c2 if charged is None else (charged if c2 is None else charged + c2)
-            consumed = u2 if consumed is None else (consumed if u2 is None else consumed + u2)
-
+        totals: GbTotals = (None, None, None, None)
         for a in self.customer_accounts(customer):
-            _merge(self._gb_by_account.get(a.id, (None, None)))
+            totals = _merge_gb(totals, self._gb_by_account.get(a.id, (None, None, None, None)))
         for g in self.represented_groups(customer):
-            _merge(self.group_gb(g))
-        _merge(self._gb_customer_only.get(customer.id, (None, None)))
-        return charged, consumed
+            totals = _merge_gb(totals, self.group_gb(g))
+        totals = _merge_gb(totals, self._gb_customer_only.get(customer.id, (None, None, None, None)))
+        return totals
 
     def customer_gb_pending(self, customer: Customer) -> float:
         total = sum(self.account_gb_pending(a) for a in self.customer_accounts(customer))
@@ -506,6 +542,7 @@ def close_out_payg_usage_before_delete(
         # fresh epoch so nothing double-counts later.
         gb_amount=round(billable_gb, 3),
         consumed_gb=round(billable_gb, 3),
+        consumed_amount=amount,
     )
     account.usage_baseline = account.used_traffic
     account.usage_baseline_at = utcnow()

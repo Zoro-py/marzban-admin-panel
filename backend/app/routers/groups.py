@@ -299,14 +299,18 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
     # branch rolls baselines further down, and prepay's helper reads the
     # meter's current accrual — see attributable_consumed_gb). Keyed by the
     # line's account so the charge loop below stays a plain add.
-    gb_by_account: dict[int, tuple[float, float]] = {}
+    gb_by_account: dict[int, tuple[float, float, float]] = {}
     for line in lines:
         member = next(a for a in accounts if a.id == line.account_id)
-        gb_by_account[line.account_id] = (
-            round(line.billable_gb, 3),
+        consumed_gb = (
             round(line.billable_gb, 3)
             if group.billing_mode == BillingMode.payg
-            else attributable_consumed_gb(session, member),
+            else attributable_consumed_gb(session, member)
+        )
+        gb_by_account[line.account_id] = (
+            round(line.billable_gb, 3),
+            consumed_gb,
+            round(consumed_gb * line.rate_per_gb, 2),
         )
     try:
         for line in lines:
@@ -323,6 +327,7 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
                         date=now,
                         gb_amount=gb_by_account[line.account_id][0],
                         consumed_gb=gb_by_account[line.account_id][1],
+                        consumed_amount=gb_by_account[line.account_id][2],
                     )
                 )
             if body.mark_paid:
@@ -474,6 +479,11 @@ async def settle_group_member(
 
     try:
         if line.amount > 0:
+            consumed_gb = (
+                round(line.billable_gb, 3)
+                if group.billing_mode == BillingMode.payg
+                else attributable_consumed_gb(session, account)
+            )
             session.add(
                 LedgerEntry(
                     type=LedgerType.charge,
@@ -488,9 +498,8 @@ async def settle_group_member(
                     # payg's bill IS its consumption; prepay attributes only
                     # the accrued slice no earlier charge already took.
                     gb_amount=round(line.billable_gb, 3),
-                    consumed_gb=round(line.billable_gb, 3)
-                    if group.billing_mode == BillingMode.payg
-                    else attributable_consumed_gb(session, account),
+                    consumed_gb=consumed_gb,
+                    consumed_amount=round(consumed_gb * line.rate_per_gb, 2),
                 )
             )
         if body.mark_paid:

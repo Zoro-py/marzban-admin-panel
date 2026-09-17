@@ -241,6 +241,7 @@ async def create_delegate_account(session: Session, delegate: Delegate, data_lim
             # (renewal/adjustment charges split it, see
             # attributable_consumed_gb).
             consumed_gb=0.0,
+            consumed_amount=0.0,
         ))
     session.add(AccountEvent(
         account_id=account.id,
@@ -298,6 +299,7 @@ async def renew_delegate_account(
     rate = effective_rate(session, account)
     amount = round(extend_gb * rate, 2)
     if amount > 0:
+        consumed_gb = attributable_consumed_gb(session, account)
         session.add(LedgerEntry(
             type=LedgerType.charge,
             amount=amount,
@@ -310,7 +312,8 @@ async def renew_delegate_account(
             # Renewal extends a running account — the meter keeps going, so
             # attribute only the accrued slice no earlier charge in this
             # meter epoch already took, exactly like a prepay settle.
-            consumed_gb=attributable_consumed_gb(session, account),
+            consumed_gb=consumed_gb,
+            consumed_amount=round(consumed_gb * rate, 2),
         ))
     session.add(AccountEvent(
         account_id=account.id,

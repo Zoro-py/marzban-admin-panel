@@ -78,7 +78,7 @@ def get_balance(
         if not customer:
             raise HTTPException(404, "customer_id not found")
         balance = book.customer_posted(customer)
-        gb_charged, gb_consumed = book.customer_gb(customer)
+        gb_charged, gb_consumed, charged_amount, consumed_amount = book.customer_gb(customer)
         gb_pending = book.customer_gb_pending(customer)
         entity_type, entity_id = "customer", customer_id
     elif group_id is not None:
@@ -86,7 +86,7 @@ def get_balance(
         if not group:
             raise HTTPException(404, "group_id not found")
         balance = book.group_posted(group)
-        gb_charged, gb_consumed = book.group_gb(group)
+        gb_charged, gb_consumed, charged_amount, consumed_amount = book.group_gb(group)
         gb_pending = book.group_gb_pending(group)
         entity_type, entity_id = "group", group_id
     else:
@@ -94,7 +94,7 @@ def get_balance(
         if not account:
             raise HTTPException(404, "account_id not found")
         balance = book.account_posted(account)
-        gb_charged, gb_consumed = book.account_gb(account)
+        gb_charged, gb_consumed, charged_amount, consumed_amount = book.account_gb(account)
         gb_pending = book.account_gb_pending(account)
         entity_type, entity_id = "account", account_id
 
@@ -113,4 +113,6 @@ def get_balance(
         gb_charged=round(gb_charged, 3) if gb_charged is not None else None,
         gb_consumed=round(gb_consumed, 3) if gb_consumed is not None else None,
         gb_pending=gb_pending,
+        charged_amount=round(charged_amount, 2) if charged_amount is not None else None,
+        consumed_amount=round(consumed_amount, 2) if consumed_amount is not None else None,
     )

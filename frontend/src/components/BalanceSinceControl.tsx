@@ -10,7 +10,7 @@ import { CalendarClock } from 'lucide-react'
 import { ledgerApi } from '@/lib/api'
 import { Label } from '@/components/ui/label'
 import { Money } from '@/components/Money'
-import { cn } from '@/lib/utils'
+import { cn, formatToman } from '@/lib/utils'
 
 // react-multi-date-picker ships CJS with BOTH `exports.__esModule = true`
 // and its own `exports.default`. Vite 8's Rolldown bundler compiles a
@@ -33,27 +33,43 @@ type Scope = { customer_id: number } | { group_id: number } | { account_id: numb
 type CalendarKind = 'jalali' | 'gregorian'
 
 // GB figures read like the operator talks about them: "40 GB charged,
-// 33 GB consumed". Trim trailing zeros (18.00 -> 18, 2.50 -> 2.5) so the
-// widget stays compact; "—" when the backend reports null (charges that
-// predate GB tracking carry no honest GB figure — never rendered as 0).
+// 33 GB consumed", each with its Toman equivalent. Trim trailing zeros
+// (18.00 -> 18) so it stays compact; "—" when the backend reports null
+// (charges that predate GB tracking carry no honest GB figure — never
+// rendered as 0). Each metric is its own nowrap span so the row wraps
+// BETWEEN metrics on a phone instead of overflowing.
 function fmtGb(gb: number): string {
   return String(Number(gb.toFixed(2)))
 }
 
-function GbSummary({ balance }: { balance: { gb_charged: number | null; gb_consumed: number | null; gb_pending: number | null } | undefined }) {
+function GbSummary({ balance }: {
+  balance: {
+    gb_charged: number | null
+    gb_consumed: number | null
+    charged_amount: number | null
+    consumed_amount: number | null
+    gb_pending: number | null
+  } | undefined
+}) {
   if (!balance) return null
-  const { gb_charged, gb_consumed, gb_pending } = balance
-  if (gb_charged == null && gb_consumed == null && !gb_pending) return null
+  const { gb_charged, gb_consumed, charged_amount, consumed_amount, gb_pending } = balance
+  if (gb_charged == null && gb_consumed == null && charged_amount == null && consumed_amount == null && !gb_pending) {
+    return null
+  }
   return (
-    <span className="whitespace-nowrap text-[11px] text-muted-foreground">
-      <span className="text-foreground">{gb_charged != null ? `${fmtGb(gb_charged)} GB` : '—'}</span> charged
-      <span className="mx-1 text-border">·</span>
-      <span className="text-foreground">{gb_consumed != null ? `${fmtGb(gb_consumed)} GB` : '—'}</span> consumed
+    <span className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[11px] text-muted-foreground">
+      <span className="whitespace-nowrap">
+        <span className="text-foreground">{gb_charged != null ? `${fmtGb(gb_charged)} GB` : '—'}</span>
+        {' '}charged
+        {charged_amount != null && <> ({formatToman(charged_amount)})</>}
+      </span>
+      <span className="whitespace-nowrap">
+        <span className="text-foreground">{gb_consumed != null ? `${fmtGb(gb_consumed)} GB` : '—'}</span>
+        {' '}consumed
+        {consumed_amount != null && <> ({formatToman(consumed_amount)})</>}
+      </span>
       {gb_pending != null && gb_pending > 0.001 && (
-        <>
-          <span className="mx-1 text-border">·</span>
-          {fmtGb(gb_pending)} GB accruing
-        </>
+        <span className="whitespace-nowrap">{fmtGb(gb_pending)} GB accruing</span>
       )}
     </span>
   )

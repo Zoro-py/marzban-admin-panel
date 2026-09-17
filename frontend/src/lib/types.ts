@@ -207,6 +207,11 @@ export interface Balance {
   // predating GB tracking / manual money-only rows) — shown as "—", never 0.
   gb_charged: number | null
   gb_consumed: number | null
+  // Toman equivalents for the two figures above: gross charges in the
+  // window, and the consumed GB valued at each charge's own rate (an
+  // estimate of what the consumed data was worth, NOT what they owe).
+  charged_amount: number | null
+  consumed_amount: number | null
   // Live open-cycle usage no charge has attributed yet (like the money
   // "pending" figure, deliberately unaffected by the since date).
   gb_pending: number | null

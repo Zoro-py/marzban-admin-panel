@@ -127,6 +127,8 @@ bal = client.get("/api/ledger/balance", params={"customer_id": cust_id}).json()
 check("operator example: 40 GB charged for the customer", bal["gb_charged"] == 40.0)
 check("operator example: 33 GB consumed for the customer", bal["gb_consumed"] == 33.0)
 check("money still nets correctly alongside GB (200000 owed)", bal["balance"] == 200_000.0)
+check("charged Toman = gross billed (200000, not netted against credits)", bal["charged_amount"] == 200_000.0)
+check("consumed Toman = consumed GB x each charge's own rate (33 x 5000)", bal["consumed_amount"] == 165_000.0)
 
 bal1 = client.get("/api/ledger/balance", params={"account_id": a1_id}).json()
 check("account scope: 20 GB charged / 18 GB consumed", bal1["gb_charged"] == 20.0 and bal1["gb_consumed"] == 18.0)
@@ -275,6 +277,8 @@ ball = client.get("/api/ledger/balance", params={"customer_id": legacy_id}).json
 check("legacy-only window: gb_charged is None (unknown), not 0", ball["gb_charged"] is None)
 check("legacy-only window: gb_consumed is None", ball["gb_consumed"] is None)
 check("legacy-only window: money still reported", ball["balance"] == 50_000.0)
+check("legacy-only window: charged Toman STILL known (plain money)", ball["charged_amount"] == 50_000.0)
+check("legacy-only window: consumed Toman unknown", ball["consumed_amount"] is None)
 
 with Session(engine) as session:
     session.add(LedgerEntry(
