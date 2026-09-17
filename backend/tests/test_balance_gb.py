@@ -290,6 +290,34 @@ ball = client.get("/api/ledger/balance", params={"customer_id": legacy_id}).json
 check("mixed window: known GB summed (4 charged), unknown rows skipped", ball["gb_charged"] == 4.0)
 check("mixed window: known consumption summed (3.5)", ball["gb_consumed"] == 3.5)
 
+# Same mixed-window guarantee at ACCOUNT scope (a single account with one
+# legacy GB-less charge and one known-GB charge — the exact shape account 13
+# took after its one-off gb_amount backfill).
+with Session(engine) as session:
+    mix_acct = Account(
+        marzban_username="gb-mix", customer_id=legacy_id, billing_mode=BillingMode.prepay,
+        data_limit=5 * 1024**3, billed_data_limit=0, used_traffic=0,
+        usage_baseline=0, usage_baseline_at=utcnow(),
+    )
+    session.add(mix_acct)
+    session.commit()
+    session.refresh(mix_acct)
+    mix_id = mix_acct.id
+    session.add(LedgerEntry(
+        type=LedgerType.charge, amount=10_000, account_id=mix_id, customer_id=legacy_id,
+        date=now - timedelta(days=5),
+    ))  # legacy: no GB columns
+    session.add(LedgerEntry(
+        type=LedgerType.charge, amount=30_000, account_id=mix_id, customer_id=legacy_id,
+        date=now - timedelta(days=4), gb_amount=6.0, consumed_gb=4.5, consumed_amount=22_500,
+    ))
+    session.commit()
+balm = client.get("/api/ledger/balance", params={"account_id": mix_id}).json()
+check("account-scope mixed window: known GB summed (6 charged)", balm["gb_charged"] == 6.0)
+check("account-scope mixed window: known consumption summed (4.5)", balm["gb_consumed"] == 4.5)
+check("account-scope mixed window: charged Toman covers BOTH rows (40k)", balm["charged_amount"] == 40_000.0)
+check("account-scope mixed window: consumed Toman from the known row only", balm["consumed_amount"] == 22_500.0)
+
 # since: only the manual 4GB charge is inside the window -> same figures; the
 # legacy 50k charge drops out of the money balance.
 balw = client.get("/api/ledger/balance", params={"customer_id": legacy_id, "since": (now - timedelta(days=2)).replace(tzinfo=timezone.utc).isoformat()}).json()
