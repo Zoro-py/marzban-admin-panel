@@ -177,7 +177,6 @@ def update_group(group_id: int, body: GroupUpdate, session: Session = Depends(ge
                 new_rate=group.rate_per_gb,
                 created_by=operator,
             ))
-        session.add(group)
         session.commit()
         session.refresh(group)
     except Exception:
