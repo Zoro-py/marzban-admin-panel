@@ -586,26 +586,60 @@ def rate_is_configured(session: Session, account: Account, group: Optional[Group
 # window with 2GB used does NOT mean "144GB/month") — report insufficient_data
 # instead of a number.
 MIN_USAGE_SAMPLE_DAYS = 3.0
+# Below this much time on the CURRENT cycle, a per-cycle pace is noise (an
+# hour of downloading would extrapolate to absurd monthly figures) — the
+# estimator falls back to the lifetime average until the cycle is this old.
+MIN_CYCLE_PACE_DAYS = 0.5
 # Below a full billing month of observed history, still show a number (it's
 # useful) but flag it as preliminary so the UI can visually distinguish it from
 # a settled figure.
 FULL_CONFIDENCE_DAYS = 30.0
+# The standard shape for a pay-as-you-go account (applied by update_billing
+# when an account switches to payg): no expiry to ever "end the plan", and a
+# soft cap big enough that the cap-hit billing rhythm stays occasional rather
+# than constant — the cap-hit flow bills accrued usage and keeps the account
+# alive, which IS payg's normal cycle.
+PAYG_DEFAULT_DATA_LIMIT_GB = 300.0
 
 
 def monthly_avg_usage(account: Account, now: datetime) -> tuple[Optional[float], str, float]:
-    """Estimated monthly usage rate from lifetime traffic observed since this
-    dashboard first saw the account (see Account.first_seen_traffic) —
-    extracted out of enrich_accounts so anything else that needs "how much
-    does this account typically use a month" (e.g. sizing an auto-queued
-    next plan) reads the exact same number the dashboard shows, not a
-    second, separately-computed one that could drift from it.
+    """Estimated monthly usage rate for this account — what the auto-queue
+    sizes the next plan from, and the "Monthly average" figure the dashboard
+    shows (one number, one source of truth, so they can never drift).
 
-    Returns (monthly_avg_usage_gb, usage_confidence, observed_days).
+    Prefers the CURRENT cycle's observed pace — (used_traffic −
+    usage_baseline) over the time since usage_baseline_at — once that cycle
+    has MIN_CYCLE_PACE_DAYS of observation. The lifetime average this used
+    to be is still the fallback, but it alone had a real blind spot: a user
+    who sits idle for weeks and then starts burning 2GB a day keeps showing
+    their idle-era average (2.7 GB/mo) while actually running at ~60 GB/mo,
+    so auto-queue sizes their next plan at a fraction of their real demand
+    and they churn through plans. Usage is what the account is doing NOW.
+
+    Falls back to the lifetime average (observed since first_seen_traffic_at
+    — see Account.first_seen_traffic) when: the cycle is unobserved
+    (usage_baseline_at missing on legacy rows), younger than
+    MIN_CYCLE_PACE_DAYS (a half-day extrapolation is noise), or the user
+    hasn't used anything this cycle yet (a zero pace would read as "dead"
+    rather than "idle" — the lifetime figure is the honest statement then).
+
+    Returns (monthly_avg_usage_gb, usage_confidence, observed_days) where
+    observed_days is the window the returned figure was computed over.
     monthly_avg_usage_gb is None below MIN_USAGE_SAMPLE_DAYS of observed
     history — too little data for a trustworthy monthly rate, not a number
     to guess. `now` must be naive (see callers: this compares directly
-    against first_seen_traffic_at/created_at, which round-trip through
-    SQLite as naive)."""
+    against usage_baseline_at/first_seen_traffic_at/created_at, which
+    round-trip through SQLite as naive)."""
+    # Current-cycle pace: what the account is actually doing now.
+    if account.usage_baseline_at is not None:
+        cycle_days = (now - account.usage_baseline_at).total_seconds() / 86400
+        cycle_bytes = max(0, account.used_traffic - account.usage_baseline)
+        if cycle_days >= MIN_CYCLE_PACE_DAYS and cycle_bytes > 0:
+            cycle_avg_gb = round((cycle_bytes / GB) / cycle_days * 30, 2)
+            usage_confidence = "full" if cycle_days >= FULL_CONFIDENCE_DAYS else "preliminary"
+            return cycle_avg_gb, usage_confidence, cycle_days
+
+    # Lifetime fallback: the whole observed history since first sight.
     observed_since = account.first_seen_traffic_at or account.created_at
     observed_days = (now - observed_since).total_seconds() / 86400
     # max(0, ...): never negative, even if Marzban's lifetime counter were

@@ -38,6 +38,8 @@ from app.schemas import (
     NextPlanRequest,
 )
 from app.services import (
+    GB,
+    PAYG_DEFAULT_DATA_LIMIT_GB,
     account_posted_balance,
     attributable_consumed_gb,
     billable_bytes,
@@ -509,12 +511,13 @@ def update_relationship(account_id: int, body: AccountRelationshipUpdate, sessio
 
 
 @router.patch("/{account_id}/billing", response_model=AccountRead)
-def update_billing(account_id: int, body: AccountBillingUpdate, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
+async def update_billing(account_id: int, body: AccountBillingUpdate, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     account = session.get(Account, account_id)
     if not account:
         raise HTTPException(404, "Account not found")
 
     old_rate = account.rate_per_gb
+    old_billing_mode = account.billing_mode
     if body.clear_rate:
         account.rate_per_gb = None
     elif body.rate_per_gb is not None:
@@ -525,6 +528,36 @@ def update_billing(account_id: int, body: AccountBillingUpdate, session: Session
 
     if body.auto_renew_enabled is not None:
         account.auto_renew_enabled = body.auto_renew_enabled
+
+    # Switching a standalone account to payg applies payg's standard shape —
+    # no expiry (there is no plan to "end"; the account just runs until its
+    # soft cap, which is payg's own billing rhythm) and a 300GB soft cap —
+    # in Marzban FIRST, then mirrored locally. Without this, a converted
+    # account kept its old prepay expire and small cap, so it kept "ending
+    # its plan" and churning through activations even though it now bills
+    # metered usage. Grouped accounts are excluded: their effective mode is
+    # the group's, and their limits belong to the group's own management.
+    payg_shape_applied = False
+    marzban_user = None
+    if (
+        body.billing_mode == BillingMode.payg
+        and old_billing_mode != BillingMode.payg
+        and not account.group_id
+    ):
+        try:
+            marzban_user = await marzban_client.modify_user(
+                account.marzban_username,
+                {"expire": 0, "data_limit": int(PAYG_DEFAULT_DATA_LIMIT_GB * GB)},
+            )
+        except ValueError as exc:
+            raise HTTPException(400, f"Marzban rejected the payg shape: {exc}")
+        except (MarzbanUnavailable, MarzbanAuthError) as exc:
+            raise HTTPException(502, str(exc))
+        if marzban_user.get("expire") not in (0, None):
+            raise HTTPException(502, f"Marzban did not accept the no-expiry shape (expire={marzban_user.get('expire')})")
+        account.expire = None
+        account.data_limit = int(PAYG_DEFAULT_DATA_LIMIT_GB * GB)
+        payg_shape_applied = True
 
     try:
         session.add(account)
@@ -539,11 +572,16 @@ def update_billing(account_id: int, body: AccountBillingUpdate, session: Session
                 new_rate=account.rate_per_gb,
                 created_by=operator,
             ))
+        shape_note = (
+            " | payg shape applied: expire cleared, data_limit -> 300GB"
+            if payg_shape_applied
+            else ""
+        )
         session.add(
             AccountEvent(
                 account_id=account.id,
                 action="billing_change",
-                detail=f"rate_per_gb={account.rate_per_gb}, billing_mode={account.billing_mode}, auto_renew_enabled={account.auto_renew_enabled}",
+                detail=f"rate_per_gb={account.rate_per_gb}, billing_mode={account.billing_mode}, auto_renew_enabled={account.auto_renew_enabled}{shape_note}",
                 created_by=operator,
             )
         )

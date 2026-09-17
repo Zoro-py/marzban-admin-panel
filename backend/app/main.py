@@ -1,6 +1,7 @@
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
@@ -86,16 +87,22 @@ async def _scheduled_shop_renewal_warnings() -> None:
 
 
 async def _scheduled_debt_nudge() -> None:
+    # Every OTHER day: the cron fires daily at the configured hour and this
+    # skips odd calendar dates (date.toordinal parity) — a plain cron can't
+    # express "every 2 days" without drifting at month boundaries, and a
+    # stateless parity check never needs "did it run yesterday" tracking.
+    if datetime.now(timezone.utc).toordinal() % 2 != 0:
+        return
     # Purely informational (see debt_nudge_job's own docstring) — a failure
-    # here just means this week is silent; next week's run tries again on
-    # its own, no retry/self-healing state needed the way the money-moving
-    # jobs above require.
+    # here just means this run is silent; the next scheduled run tries
+    # again on its own, no retry/self-healing state needed the way the
+    # money-moving jobs above require.
     try:
         result = await run_debt_nudge()
         if result.get("sent"):
             logger.info("Debt nudge sent: %s", result)
     except Exception:
-        logger.exception("Debt nudge failed (will try again next week)")
+        logger.exception("Debt nudge failed (will try again next run)")
 
 
 async def _scheduled_payg_monthly_settlement() -> None:
@@ -152,12 +159,14 @@ async def lifespan(app: FastAPI):
         hour=settings.payg_monthly_settle_hour, minute=settings.payg_monthly_settle_minute,
         id="payg_monthly_settlement",
     )
-    # Once a week, not more — see debt_nudge_job's own docstring for why this
-    # is a duration check, not an amount one, and why "once a week" is the
-    # whole noise-control mechanism (no per-customer cooldown tracking).
+    # Fires daily at the configured hour; the job itself skips every other
+    # calendar day (see _scheduled_debt_nudge) — the operator asked for
+    # every-other-day reminders. Still a duration check, not an amount one:
+    # only debt that has genuinely sat for DEBT_NUDGE_MIN_DAYS gets raised
+    # (see debt_nudge_job's docstring).
     scheduler.add_job(
         _scheduled_debt_nudge, "cron",
-        day_of_week=settings.debt_nudge_day_of_week, hour=settings.debt_nudge_hour, minute=settings.debt_nudge_minute,
+        hour=settings.debt_nudge_hour, minute=settings.debt_nudge_minute,
         id="debt_nudge",
     )
     scheduler.start()

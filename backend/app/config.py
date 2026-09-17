@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     # why once-a-week is the whole noise-control mechanism). "mon" = Monday,
     # a normal start-of-week check-in time; APScheduler's own day_of_week
     # names (mon/tue/.../sun).
+    # Unused since the nudge moved to every-other-day scheduling (the job
+    # skips odd calendar dates itself) — kept so existing .env files that
+    # still set it keep parsing.
     debt_nudge_day_of_week: str = "mon"
     debt_nudge_hour: int = 9
     debt_nudge_minute: int = 0

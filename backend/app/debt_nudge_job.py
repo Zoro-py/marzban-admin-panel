@@ -1,7 +1,10 @@
-"""Weekly heads-up for debt that's been sitting a while — the operator asked
-for the bot to raise this itself instead of them having to remember to check
+"""Heads-up for debt that's been sitting a while — the operator asked for
+the bot to raise this itself instead of them having to remember to check
 Finance, but explicitly NOT as noise: only customers whose debt has been
-outstanding a real while, checked once a week, not per-charge or per-sync.
+outstanding a real while, checked every other day, not per-charge or per-
+sync. Each reminder message carries an inline button per debtor that opens
+a payment-recording conversation in the bot (see bot/handlers/debt.py),
+so acting on the reminder is one tap away.
 
 Deliberately about DURATION, not amount — a customer who was just charged
 5,000,000 Toman five minutes ago isn't "overdue" in any useful sense yet; a
@@ -121,7 +124,7 @@ async def run_debt_nudge() -> dict:
             age_days = _debt_age_days(entries, now)
             if age_days is None or age_days < DEBT_NUDGE_MIN_DAYS:
                 continue
-            overdue.append({"name": c.name, "amount": posted, "days": round(age_days)})
+            overdue.append({"name": c.name, "customer_id": c.id, "amount": posted, "days": round(age_days)})
 
     if not overdue:
         log.info("Debt nudge: nothing overdue past %.0f days", DEBT_NUDGE_MIN_DAYS)

@@ -16,7 +16,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-async def notify_admin(text: str) -> None:
+async def notify_admin(text: str, reply_markup: dict | None = None) -> None:
     """Raises on any failure to send — deliberately NOT best-effort, because
     some callers gate a real state change on this succeeding (queuing a next
     plan, or settling+resetting a payg account/group): an operator who never
@@ -29,10 +29,15 @@ async def notify_admin(text: str) -> None:
     that DOES need to know would never find out."""
     if not settings.bot_token or not settings.bot_admin_chat_id:
         raise RuntimeError("BOT_TOKEN/BOT_ADMIN_CHAT_ID not set — nowhere to send this notification")
+    payload: dict = {"chat_id": settings.bot_admin_chat_id, "text": text}
+    if reply_markup is not None:
+        # Inline keyboards (e.g. the debt nudge's per-debtor action buttons) —
+        # the payload is the Telegram Bot API shape, built by the caller.
+        payload["reply_markup"] = json.dumps(reply_markup)
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{settings.bot_token}/sendMessage",
-            data={"chat_id": settings.bot_admin_chat_id, "text": text},
+            data=payload,
         )
     if resp.status_code != 200:
         raise RuntimeError(f"Telegram rejected admin notification ({resp.status_code}): {resp.text}")
