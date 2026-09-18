@@ -47,8 +47,10 @@ class AmbiguousMatch(Exception):
 
 
 async def resolve_customer(query: str) -> dict | None:
-    """Looks up a customer by numeric id or case-insensitive name substring.
-    Raises AmbiguousMatch if more than one name matches."""
+    """Looks up a customer by numeric id or case-insensitive name — an EXACT
+    name match wins outright (typing "Ali" must hit Ali, not a picker
+    shared with Alireza), otherwise the unique substring match, and an
+    AmbiguousMatch if several names still match."""
     if query.isdigit():
         customers: list[dict] = await backend.get("/api/customers")
         for c in customers:
@@ -57,6 +59,9 @@ async def resolve_customer(query: str) -> dict | None:
         return None
 
     customers = await backend.get("/api/customers")
+    exact = [c for c in customers if c["name"].lower() == query.lower()]
+    if len(exact) == 1:
+        return exact[0]
     matches = [c for c in customers if query.lower() in c["name"].lower()]
     if len(matches) == 1:
         return matches[0]

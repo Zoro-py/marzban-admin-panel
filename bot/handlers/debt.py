@@ -126,24 +126,21 @@ def _bucket_payload(kind: str, bucket_id: int, customer_id: int) -> dict:
     return payload
 
 
-async def _render_list(edit: Editor, flash: str | None = None) -> None:
-    """The hub screen: current overdue debtors, re-read live from the
-    backend's preview endpoint so the list is never stale from message
-    time."""
+async def _list_content(flash: str | None = None) -> tuple[str, Optional[InlineKeyboardMarkup]]:
+    """(text, markup) for the hub list — shared by _render_list (which edits
+    the console message) and the /debts command (which sends a fresh one)."""
     try:
         data = await backend.get("/api/notifications/debt-nudge")
         overdue: list[dict] = data["overdue"]
     except Exception as exc:  # noqa: BLE001
-        await edit(f"خواندن فهرست بدهی‌ها شکست خورد: {exc}")
-        return
+        return f"خواندن فهرست بدهی‌ها شکست خورد: {exc}", None
 
     lines: list[str] = []
     if flash:
         lines += [flash, ""]
     if not overdue:
         lines.append("✅ بدهی قدیمیِ بالای ۱۴ روز نیست — کاری نیست.")
-        await edit("\n".join(lines), _kb(_nav_row(None)))
-        return
+        return "\n".join(lines), _kb(_nav_row(None))
 
     total = sum(r["amount"] for r in overdue)
     lines.append(f"⏳ بدهی‌های قدیمی — {len(overdue)} نفر، جمع {round(total):,} تومان")
@@ -163,7 +160,23 @@ async def _render_list(edit: Editor, flash: str | None = None) -> None:
         rows.append(row)
     rows.append([InlineKeyboardButton("🔄 بروزرسانی", callback_data="debthub:refresh"),
                  InlineKeyboardButton("✖ بستن", callback_data="debtdo:close")])
-    await edit("\n".join(lines), _kb(rows))
+    return "\n".join(lines), _kb(rows)
+
+
+async def _render_list(edit: Editor, flash: str | None = None) -> None:
+    """The hub screen: current overdue debtors, re-read live from the
+    backend's preview endpoint so the list is never stale from message
+    time."""
+    text, markup = await _list_content(flash)
+    await edit(text, markup)
+
+
+@admin_only
+async def debts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/debts — the payment console, on demand: same list the nudge carries,
+    any time the operator wants it without waiting for the schedule."""
+    text, markup = await _list_content()
+    await update.message.reply_text(text, reply_markup=markup)
 
 
 async def _render_debtor(edit: Editor, customer_id: int) -> None:

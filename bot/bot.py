@@ -17,6 +17,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Mess
 
 from handlers.account import delete_account_callback, delete_account_command, extend_command  # noqa: E402
 from handlers.backup import backup_command  # noqa: E402
+from handlers.bill import bill_callback, bill_command  # noqa: E402
 from handlers.bulk import bulk_callback, bulk_command  # noqa: E402
 from handlers.customer import charge_command, credit_command, customer_command  # noqa: E402
 from handlers.debt import (  # noqa: E402
@@ -25,6 +26,7 @@ from handlers.debt import (  # noqa: E402
     debt_hub_callback,
     debt_nudge_callback,
     debt_pay_callback,
+    debts_command,
 )
 from handlers.delegate_admin import (  # noqa: E402
     delegate_add_callback,
@@ -46,10 +48,41 @@ from handlers.wallet import wallet_callback, wallet_command, wallet_find_command
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+# The typing-bar command menu (Telegram's setMyCommands) — the operator
+# asked for the bot to be a handy toolbox, and a discoverable menu is where
+# a toolbox starts. Best-effort on purpose: a Telegram hiccup here must not
+# stop the bot from starting; the menu just stays whatever it was.
+async def _register_bot_commands(app) -> None:
+    from telegram import BotCommand
+
+    commands = [
+        BotCommand("debts", "کنسول بدهی‌ها — ثبت پرداخت از همین‌جا"),
+        BotCommand("bill", "صورتحساب: /bill <نام یا id>"),
+        BotCommand("report", "گزارش روزانه: بدهی، مصرف، انقضا"),
+        BotCommand("customer", "مشتری: /customer <نام یا id>"),
+        BotCommand("charge", "ثبت بدهی: /charge <مشتری> <مبلغ>"),
+        BotCommand("credit", "ثبت پرداخت: /credit <مشتری> <مبلغ>"),
+        BotCommand("topups", "رسیدهای در انتظار تأیید"),
+        BotCommand("extend", "تمدید اکانت: /extend <username> <روز>"),
+        BotCommand("delete_account", "حذف اکانت: /delete_account <username>"),
+        BotCommand("bulk", "ساخت دسته‌ای: /bulk <نام> <تعداد>"),
+        BotCommand("wallet_find", "کیف پول شاپ: /wallet_find <نام>"),
+        BotCommand("wallet", "کیف پول: /wallet <id> <مبلغ> <یادداشت>"),
+        BotCommand("delegate_list", "نماینده‌ها"),
+        BotCommand("sync", "سینک فوری Marzban"),
+        BotCommand("backup", "بکاپ فوری دیتابیس"),
+        BotCommand("help", "راهنمای کامل"),
+    ]
+    try:
+        await app.bot.set_my_commands(commands)
+        logging.getLogger(__name__).info("Bot command menu registered (%d commands)", len(commands))
+    except Exception:
+        logging.getLogger(__name__).warning("set_my_commands failed — keeping the previous menu", exc_info=True)
+
 
 def main() -> None:
     token = os.environ["BOT_TOKEN"]
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).post_init(_register_bot_commands).build()
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
@@ -85,6 +118,9 @@ def main() -> None:
     # Debt-reminder payment console (backend's nudge message carries the
     # entry button; see handlers/debt.py). Registered LAST so its text
     # handler only ever sees messages no earlier flow claimed.
+    app.add_handler(CommandHandler("debts", debts_command))
+    app.add_handler(CommandHandler("bill", bill_command))
+    app.add_handler(CallbackQueryHandler(bill_callback, pattern=r"^bill:"))
     app.add_handler(CallbackQueryHandler(debt_nudge_callback, pattern=r"^debtnudge:"))
     app.add_handler(CallbackQueryHandler(debt_hub_callback, pattern=r"^debthub:"))
     app.add_handler(CallbackQueryHandler(debt_pay_callback, pattern=r"^debtpay:"))

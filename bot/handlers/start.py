@@ -5,6 +5,8 @@ from handlers.common import admin_only
 
 HELP_TEXT = """*VPN reseller bot*
 
+/debts — کنسول بدهی‌ها: فهرست بدهکاران + ثبت پرداخت از همین‌جا (با تأیید)
+/bill <name or id> — صورتحساب یک مشتری: مانده، مصرفِ صورت‌حساب‌نشده، تراکنش‌های اخیر
 /report — daily summary: overdue customers, exhausted/near-quota, expired/expiring soon, no rate configured
 /customer <name or id> — balance + accounts for one customer
 /charge <customer> <amount> [note] — record a debt (بدهی)
