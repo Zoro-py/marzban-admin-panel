@@ -275,6 +275,15 @@ export const backupApi = {
   run: async () => (await api.post<{ sent_at: string; filename: string; size_bytes: number }>('/api/backup/run')).data,
 }
 
+// ---- operator notifications (the scheduled passes, run on demand) ----
+export const notificationsApi = {
+  // The debt nudge's own contract: sent=false + error (not an HTTP error)
+  // when Telegram rejects the send, and sent=false + count=0 when nobody
+  // is overdue past the 14-day threshold.
+  sendDebtNudge: async () =>
+    (await api.post<{ sent: boolean; count: number; error?: string }>('/api/notifications/debt-nudge/run')).data,
+}
+
 // ---- self-serve shop ----
 export const shopApi = {
   settings: async () => (await api.get<ShopSettings>('/api/shop/settings')).data,

@@ -1,6 +1,9 @@
 import * as React from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { reportsApi } from '@/lib/api'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { BellRing } from 'lucide-react'
+import { apiErrorMessage, notificationsApi, reportsApi } from '@/lib/api'
+import { Button } from '@/components/ui/button'
 import { StatCard } from '@/components/StatCard'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
@@ -17,15 +20,40 @@ export function FinancePage() {
   const { data, isLoading } = useQuery({ queryKey: ['reports', 'finance'], queryFn: reportsApi.finance })
   const openAccount = useOpenAccountInspector()
 
+  // The debt nudge normally fires every other day at the configured hour;
+  // this is its manual twin (same job, same message), for when the operator
+  // wants the reminder out right now. The job reports a Telegram failure as
+  // sent=false + error instead of throwing, so all three outcomes land here.
+  const nudgeMutation = useMutation({
+    mutationFn: notificationsApi.sendDebtNudge,
+    onSuccess: (r) => {
+      if (r.sent) toast.success(`Debt nudge sent — ${r.count} debtor${r.count === 1 ? '' : 's'}`)
+      else if (r.error) toast.error(`Debt nudge failed: ${r.error}`)
+      else toast.info('Nothing overdue past 14 days — nothing sent')
+    },
+    onError: (err) => toast.error(apiErrorMessage(err)),
+  })
+
   if (isLoading || !data) {
     return <p className="text-xs text-muted-foreground">Loading…</p>
   }
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="text-lg font-semibold tracking-tight">Finance</h1>
-        <p className="text-xs text-muted-foreground">Balances, money flow, and every effective rate in one place.</p>
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h1 className="text-lg font-semibold tracking-tight">Finance</h1>
+          <p className="text-xs text-muted-foreground">Balances, money flow, and every effective rate in one place.</p>
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => nudgeMutation.mutate()}
+          disabled={nudgeMutation.isPending}
+        >
+          <BellRing className="h-3.5 w-3.5" />
+          {nudgeMutation.isPending ? 'Sending…' : 'Send debt nudge'}
+        </Button>
       </div>
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">

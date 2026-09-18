@@ -15,7 +15,7 @@ from app.config import settings
 from app.db import init_db
 from app.debt_nudge_job import run_debt_nudge
 from app.payg_monthly_job import maybe_run_monthly_payg_settlement
-from app.routers import accounts, auth, backup, customers, delegate, groups, ledger, payg_monthly, reports, settings as settings_router, shop, sync
+from app.routers import accounts, auth, backup, customers, delegate, groups, ledger, notifications, payg_monthly, reports, settings as settings_router, shop, sync
 from app.sync_job import run_sync
 
 logging.basicConfig(
@@ -212,6 +212,7 @@ app.include_router(ledger.router)
 app.include_router(reports.router)
 app.include_router(sync.router)
 app.include_router(backup.router)
+app.include_router(notifications.router)
 app.include_router(payg_monthly.router)
 app.include_router(settings_router.router)
 app.include_router(shop.router)
