@@ -49,16 +49,16 @@ def check(label: str, condition: bool) -> None:
 app.dependency_overrides[require_auth] = lambda: "test-admin"
 client = TestClient(app)
 
-# Capture Telegram sends instead of hitting the API — the nudge must never
-# need real credentials to be testable.
-sent_messages: list[str] = []
+# Capture Telegram sends (with their keyboards) instead of hitting the API —
+# the nudge must never need real credentials to be testable.
+sent_messages: list[tuple[str, dict]] = []
 
 
-async def _capture_send(text, reply_markup=None):
-    sent_messages.append(text)
+async def _capture_send(text, reply_markup):
+    sent_messages.append((text, reply_markup))
 
 
-debt_nudge_job.notify_admin = _capture_send
+debt_nudge_job.notify_admin_with_buttons = _capture_send
 
 now = utcnow().replace(tzinfo=None)
 
@@ -77,8 +77,14 @@ with Session(engine) as session:
 r = client.post("/api/notifications/debt-nudge/run")
 check("manual nudge with an eligible debtor reports sent", r.status_code == 200 and r.json()["sent"] is True)
 check("manual nudge counts the one eligible debtor", r.json()["count"] == 1)
-check("the message reached the (captured) Telegram send with the debtor's name",
-      len(sent_messages) == 1 and "Nudge Endpoint Tester" in sent_messages[0])
+check("the message reached the (captured) Telegram send", len(sent_messages) == 1)
+
+text, markup = sent_messages[0]
+buttons = [b for row in markup["inline_keyboard"] for b in row]
+check("the message is a debt-nudge summary", "بدهی‌های قدیمی" in text)
+check("one button carries this debtor's debtnudge callback",
+      any(b["callback_data"] == f"debtnudge:{customer_id}" for b in buttons))
+check("the debtor's button shows their amount", any("120,000" in b["text"] for b in buttons))
 
 # ---- a freshly-charged customer is NOT eligible: the same pass must skip them ----
 with Session(engine) as session:
@@ -86,23 +92,26 @@ with Session(engine) as session:
     session.add(recent)
     session.commit()
     session.refresh(recent)
+    recent_id = recent.id
     session.add(LedgerEntry(type=LedgerType.charge, amount=50_000, customer_id=recent.id,
                             date=now - timedelta(days=2)))
     session.commit()
 
 r = client.post("/api/notifications/debt-nudge/run")
 check("recent debt is skipped by the manual nudge too", r.json()["sent"] is True and r.json()["count"] == 1)
+text2, markup2 = sent_messages[1]
+callbacks2 = [b["callback_data"] for row in markup2["inline_keyboard"] for b in row]
 check("only one more telegram send happened, without the recent debtor",
-      len(sent_messages) == 2 and "Nudge Too Recent" not in sent_messages[1])
+      len(sent_messages) == 2 and f"debtnudge:{recent_id}" not in callbacks2)
 
 # ---- a Telegram failure surfaces as sent=false + error on a 200, per the job's contract ----
 
 
-async def _failing_send(text, reply_markup=None):
+async def _failing_send(text, reply_markup):
     raise RuntimeError("Telegram down")
 
 
-debt_nudge_job.notify_admin = _failing_send
+debt_nudge_job.notify_admin_with_buttons = _failing_send
 r = client.post("/api/notifications/debt-nudge/run")
 check("a telegram failure returns sent=false with the error, not a 5xx",
       r.status_code == 200 and r.json()["sent"] is False and "Telegram down" in r.json()["error"])

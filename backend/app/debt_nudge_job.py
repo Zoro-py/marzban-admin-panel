@@ -26,7 +26,7 @@ from sqlmodel import Session, or_, select
 
 from app.db import engine
 from app.models import Account, Customer, Group, LedgerEntry, LedgerType, utcnow
-from app.notify import notify_admin
+from app.notify import notify_admin_with_buttons
 from app.services import MoneyBook
 
 log = logging.getLogger(__name__)
@@ -103,12 +103,54 @@ def _format_toman(amount: float) -> str:
     return f"{round(amount):,}"
 
 
+# Telegram caps an inline keyboard at 100 buttons; two per row means 50
+# debtors per message. Beyond that the OLDEST 50 get buttons and the message
+# says how many more there are — the panel's Finance page stays the
+# exhaustive view. (34 debtors today; this is a guard, not the norm.)
+MAX_NUDGE_BUTTONS = 50
+
+# Button labels cap at 64 chars — keep the name short enough that even a
+# wide Toman figure fits on one phone row, two buttons side by side.
+_MAX_BUTTON_NAME = 16
+
+
+def _build_nudge(overdue: list[dict]) -> tuple[str, dict]:
+    """The nudge message + its keyboard. The text is deliberately a short
+    summary — the per-debtor detail lives IN the buttons, because the point
+    of this message is to act, not to read: one button per debtor (two per
+    row, oldest debt first) opens the bot's payment console for that
+    customer (see bot/handlers/debt.py — bucket breakdown, «کامل» or a typed
+    custom amount, and a final ✅ ثبت / ❌ لغو confirm before anything
+    posts)."""
+    total = sum(r["amount"] for r in overdue)
+    lines = [
+        f"⏳ بدهی‌های قدیمی (بیش از {DEBT_NUDGE_MIN_DAYS:.0f} روز) — {len(overdue)} نفر، جمع {round(total):,} تومان",
+        "برای ثبت پرداخت روی بدهکار بزنید (قدیمی‌ترین اول):",
+    ]
+    if len(overdue) > MAX_NUDGE_BUTTONS:
+        lines.append(f"و {len(overdue) - MAX_NUDGE_BUTTONS} نفر دیگر — فهرست کامل در پنل > Finance.")
+    keyboard: list[list[dict]] = []
+    row: list[dict] = []
+    for r in overdue[:MAX_NUDGE_BUTTONS]:
+        name = r["name"] if len(r["name"]) <= _MAX_BUTTON_NAME else r["name"][:_MAX_BUTTON_NAME - 1] + "…"
+        row.append({"text": f"{name} · {round(r['amount']):,}",
+                    "callback_data": f"debtnudge:{r['customer_id']}"})
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    return "\n".join(lines), {"inline_keyboard": keyboard}
+
+
 async def run_debt_nudge() -> dict:
-    """Entry point, called weekly by the scheduler. Finds every customer
-    with real posted debt outstanding for at least DEBT_NUDGE_MIN_DAYS and
-    sends one summary message, oldest debt first. A customer with nothing
-    owed, or whose debt is too recent, is silently skipped — most weeks this
-    sends nothing for most operators, which is the point (no noise)."""
+    """Entry point, called every other day by the scheduler. Finds every
+    customer with real posted debt outstanding for at least DEBT_NUDGE_MIN_DAYS
+    and sends one actionable message: a short summary plus one button per
+    debtor (oldest debt first) that opens the bot's payment-recording
+    console. A customer with nothing owed, or whose debt is too recent, is
+    silently skipped — most runs this sends nothing for most operators,
+    which is the point (no noise)."""
     now = utcnow().replace(tzinfo=None)
 
     with Session(engine) as session:
@@ -131,14 +173,12 @@ async def run_debt_nudge() -> dict:
         return {"sent": False, "count": 0}
 
     overdue.sort(key=lambda r: -r["days"])
-    lines = [f"⏳ بدهی‌های قدیمی (بیش از {DEBT_NUDGE_MIN_DAYS:.0f} روز)", ""]
-    lines += [f"• {r['name']}: {_format_toman(r['amount'])} تومان — {r['days']} روزه" for r in overdue]
-    message = "\n".join(lines)
+    message, markup = _build_nudge(overdue)
 
     try:
-        await notify_admin(message)
+        await notify_admin_with_buttons(message, markup)
     except Exception as exc:
-        log.warning("Debt nudge failed to send (will retry next week's scheduled run): %s", exc)
+        log.warning("Debt nudge failed to send (will retry next scheduled run): %s", exc)
         return {"sent": False, "count": len(overdue), "error": str(exc)}
 
     return {"sent": True, "count": len(overdue)}
