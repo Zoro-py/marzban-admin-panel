@@ -42,18 +42,28 @@ function fmtGb(gb: number): string {
   return String(Number(gb.toFixed(2)))
 }
 
+// The picked date is sent as browser-local midnight converted to UTC —
+// picking "Aug 17" in a Tehran browser sends "2026-08-16T20:30:00.000Z",
+// which legitimately includes ledger rows the raw DB shows as "2026-08-16".
+// Always show the actual UTC boundary next to the picked date so the window
+// is never silently surprising when cross-checked against the ledger.
+function utcBoundary(since: string): string {
+  return `from ${since.replace('T', ' ').slice(0, 16)} UTC`
+}
+
 function GbSummary({ balance }: {
   balance: {
     gb_charged: number | null
     gb_consumed: number | null
     charged_amount: number | null
     consumed_amount: number | null
+    credited_amount: number | null
     gb_pending: number | null
   } | undefined
 }) {
   if (!balance) return null
-  const { gb_charged, gb_consumed, charged_amount, consumed_amount, gb_pending } = balance
-  if (gb_charged == null && gb_consumed == null && charged_amount == null && consumed_amount == null && !gb_pending) {
+  const { gb_charged, gb_consumed, charged_amount, consumed_amount, credited_amount, gb_pending } = balance
+  if (gb_charged == null && gb_consumed == null && charged_amount == null && consumed_amount == null && credited_amount == null && !gb_pending) {
     return null
   }
   return (
@@ -68,6 +78,11 @@ function GbSummary({ balance }: {
         {' '}consumed
         {consumed_amount != null && <> ({formatToman(consumed_amount)})</>}
       </span>
+      {credited_amount != null && (
+        <span className="whitespace-nowrap">
+          <span className="text-foreground">{formatToman(credited_amount)}</span> credited
+        </span>
+      )}
       {gb_pending != null && gb_pending > 0.001 && (
         <span className="whitespace-nowrap">{fmtGb(gb_pending)} GB accruing</span>
       )}
@@ -142,6 +157,7 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
       />
       {since !== '' && (
         <>
+          <span className="whitespace-nowrap text-[11px] text-muted-foreground">{utcBoundary(since)}</span>
           {query.isFetching ? (
             <span className="text-muted-foreground">Loading…</span>
           ) : (

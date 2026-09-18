@@ -96,7 +96,11 @@ class MoneyBook:
         deliberately UNAFFECTED — it's a live "right now" figure read off
         Marzban's current usage snapshot, not ledger history, so "since" has
         no meaning for it. The same split applies to the GB totals: gb
-        posted figures respect `since`, gb_pending does not."""
+        posted figures respect `since`, gb_pending does not. The
+        gross-credit accessors (account/group/customer_credits) ride the
+        very same filtered statements as the posted balances, so a payment
+        is counted into a window on exactly the same boundary that nets it
+        out of the balance."""
         self.session = session
         self._accounts = session.exec(select(Account)).all()
         self._groups = {g.id: g for g in session.exec(select(Group)).all()}
@@ -105,6 +109,14 @@ class MoneyBook:
         self._posted_by_account: dict[int, float] = defaultdict(float)
         self._posted_group_only: dict[int, float] = defaultdict(float)
         self._posted_customer_only: dict[int, float] = defaultdict(float)
+        # Gross credits (payments) per scope — same rows, same `since` filter,
+        # kept separate from the netted balances above so a settle+payment
+        # pair can be displayed as "charged X / credited X" instead of the
+        # payment silently disappearing into the net. None-propagating via
+        # .get(): a scope with no credit row in the window reports None, not 0.
+        self._credits_by_account: dict[int, float] = defaultdict(float)
+        self._credits_group_only: dict[int, float] = defaultdict(float)
+        self._credits_customer_only: dict[int, float] = defaultdict(float)
         from sqlmodel import func
 
         # Sum by account_id where account_id is not null
@@ -120,10 +132,16 @@ class MoneyBook:
 
         for acc_id, l_type, total in session.exec(stmt_acc).all():
             self._posted_by_account[acc_id] += total if l_type == LedgerType.charge else -total
+            if l_type == LedgerType.credit:
+                self._credits_by_account[acc_id] += total
         for grp_id, l_type, total in session.exec(stmt_grp).all():
             self._posted_group_only[grp_id] += total if l_type == LedgerType.charge else -total
+            if l_type == LedgerType.credit:
+                self._credits_group_only[grp_id] += total
         for cust_id, l_type, total in session.exec(stmt_cust).all():
             self._posted_customer_only[cust_id] += total if l_type == LedgerType.charge else -total
+            if l_type == LedgerType.credit:
+                self._credits_customer_only[cust_id] += total
 
         # GB + gross-charge totals ride the same three buckets and the same
         # `since` filter as the money above — but only CHARGE rows (a payment
@@ -226,6 +244,12 @@ class MoneyBook:
     def account_posted(self, account: Account) -> float:
         return self._posted_by_account.get(account.id, 0.0)
 
+    def account_credits(self, account: Account) -> Optional[float]:
+        """Gross credit (payment) amounts posted against this account in the
+        window. None = no credit row in the window at all — displayed as
+        "—", never as a lying 0 (same convention as the GB figures)."""
+        return self._credits_by_account.get(account.id)
+
     def account_pending(self, account: Account) -> float:
         """Accrued but not yet invoiced, at this account's effective rate."""
         if account.id not in self._pending_cache:
@@ -259,6 +283,14 @@ class MoneyBook:
         members = sum(self.account_posted(a) for a in self.group_members(group))
         return round(members + self._posted_group_only.get(group.id, 0.0), 2)
 
+    def group_credits(self, group: Group) -> Optional[float]:
+        """Gross credits in this group's window: member accounts + group-only
+        rows (same roll-up shape as group_posted, None-propagating)."""
+        total = self._credits_group_only.get(group.id)
+        for a in self.group_members(group):
+            total = _merge_opt(total, self._credits_by_account.get(a.id))
+        return total
+
     def group_pending(self, group: Group) -> float:
         return round(sum(self.account_pending(a) for a in self.group_members(group)), 2)
 
@@ -288,6 +320,17 @@ class MoneyBook:
         total += sum(self.group_posted(g) for g in self.represented_groups(customer))
         total += self._posted_customer_only.get(customer.id, 0.0)
         return round(total, 2)
+
+    def customer_credits(self, customer: Customer) -> Optional[float]:
+        """Same roll-up shape as customer_posted: directly-owned accounts +
+        represented groups + customer-only rows, None-propagating."""
+        total: Optional[float] = None
+        for a in self.customer_accounts(customer):
+            total = _merge_opt(total, self._credits_by_account.get(a.id))
+        for g in self.represented_groups(customer):
+            total = _merge_opt(total, self.group_credits(g))
+        total = _merge_opt(total, self._credits_customer_only.get(customer.id))
+        return total
 
     def customer_pending(self, customer: Customer) -> float:
         total = sum(self.account_pending(a) for a in self.customer_accounts(customer))

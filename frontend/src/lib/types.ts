@@ -226,6 +226,10 @@ export interface Balance {
   // estimate of what the consumed data was worth, NOT what they owe).
   charged_amount: number | null
   consumed_amount: number | null
+  // Gross credit (payment) amounts in the same window/scope. null = no
+  // credit row in the window — shown as "—", never 0. Pairs with
+  // charged_amount so a settle+payment pair reads as charged AND credited.
+  credited_amount: number | null
   // Live open-cycle usage no charge has attributed yet (like the money
   // "pending" figure, deliberately unaffected by the since date).
   gb_pending: number | null

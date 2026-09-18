@@ -144,6 +144,43 @@ check("providing none of the three is refused (400)", r.status_code == 400)
 r = client.get("/api/ledger/balance", params={"customer_id": customer_id})
 check("omitting since entirely still works (backward compatible)", r.status_code == 200)
 
+# ---- credited_amount: gross credits in the window, None when no credit rows ----
+with Session(engine) as session:
+    credit_customer = Customer(name="Since Credit Customer")
+    session.add(credit_customer)
+    session.commit()
+    session.refresh(credit_customer)
+    credit_customer_id = credit_customer.id
+    # An old paid-off cycle (charge+credit pair, both before every window
+    # used below) and a fresh charge with a PARTIAL payment inside it.
+    session.add(LedgerEntry(type=LedgerType.charge, amount=70_000, customer_id=credit_customer_id, date=long_ago))
+    session.add(LedgerEntry(type=LedgerType.credit, amount=70_000, customer_id=credit_customer_id, date=long_ago + timedelta(hours=1)))
+    session.add(LedgerEntry(type=LedgerType.charge, amount=40_000, customer_id=credit_customer_id, date=recent))
+    session.add(LedgerEntry(type=LedgerType.credit, amount=15_000, customer_id=credit_customer_id, date=recent + timedelta(hours=2)))
+    session.commit()
+
+r = client.get("/api/ledger/balance", params={"customer_id": credit_customer_id})
+check("all-time credited_amount is the gross sum of credit rows", r.json()["credited_amount"] == 85_000.0)
+check("all-time balance still nets charges against credits", r.json()["balance"] == 25_000.0)
+since_before_pair = (recent - timedelta(days=1)).replace(tzinfo=timezone.utc).isoformat()
+r = client.get("/api/ledger/balance", params={"customer_id": credit_customer_id, "since": since_before_pair})
+check("window credited_amount counts only credits dated in the window", r.json()["credited_amount"] == 15_000.0)
+r = client.get("/api/ledger/balance", params={"customer_id": credit_customer_id, "since": since_after_all})
+check("a window with no credit rows reports credited_amount null", r.json()["credited_amount"] is None)
+
+# ---- an offset-aware `since` means its UTC instant, not its wall clock ----
+# SQLite's driver binds a datetime's own wall-clock fields verbatim, so a
+# non-UTC offset would silently compare as that wall time against stored UTC
+# rows. The endpoint normalises to UTC first: an entry stamped at `recent`
+# must stay inside a window whose offset-spelled since has the same instant,
+# even though its wall-clock reading is 3.5h later.
+tehran = timezone(timedelta(hours=3, minutes=30))
+since_tehran_wall = (recent + timedelta(hours=3, minutes=30)).replace(tzinfo=tehran).isoformat()
+r = client.get("/api/ledger/balance", params={"customer_id": customer_id, "since": since_tehran_wall})
+check("an offset-aware since is honoured as its UTC instant, not its wall clock", r.json()["balance"] == 50_000.0)
+r = client.get("/api/ledger/balance", params={"customer_id": customer_id, "since": recent.replace(tzinfo=timezone.utc).isoformat()})
+check("the same instant spelled in Z gives the identical window", r.json()["balance"] == 50_000.0)
+
 print()
 if failures:
     print(f"{len(failures)} FAILURES: {failures}")

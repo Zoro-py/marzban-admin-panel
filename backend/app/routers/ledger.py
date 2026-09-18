@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -74,6 +74,16 @@ def get_balance(
     if sum(provided) != 1:
         raise HTTPException(400, "Provide exactly one of customer_id, group_id or account_id")
 
+    # A timezone-AWARE `since` is normalised to naive UTC before it reaches
+    # MoneyBook: SQLite's driver binds a datetime's own wall-clock fields
+    # verbatim (no timezone conversion), so a non-UTC offset would otherwise
+    # silently compare as that offset's wall time against the stored UTC
+    # rows. The dashboard always sends UTC ("…Z"), for which this is an
+    # identity — this pins the semantics for any future caller instead of
+    # leaving them to an accident of the driver.
+    if since is not None and since.tzinfo is not None:
+        since = since.astimezone(timezone.utc).replace(tzinfo=None)
+
     # Roll-ups, not a raw scan of rows carrying this id — see
     # services.MoneyBook for why those two are not the same thing.
     book = MoneyBook(session, since=since)
@@ -83,6 +93,7 @@ def get_balance(
             raise HTTPException(404, "customer_id not found")
         balance = book.customer_posted(customer)
         gb_charged, gb_consumed, charged_amount, consumed_amount = book.customer_gb(customer)
+        credited_amount = book.customer_credits(customer)
         gb_pending = book.customer_gb_pending(customer)
         entity_type, entity_id = "customer", customer_id
     elif group_id is not None:
@@ -91,6 +102,7 @@ def get_balance(
             raise HTTPException(404, "group_id not found")
         balance = book.group_posted(group)
         gb_charged, gb_consumed, charged_amount, consumed_amount = book.group_gb(group)
+        credited_amount = book.group_credits(group)
         gb_pending = book.group_gb_pending(group)
         entity_type, entity_id = "group", group_id
     else:
@@ -99,6 +111,7 @@ def get_balance(
             raise HTTPException(404, "account_id not found")
         balance = book.account_posted(account)
         gb_charged, gb_consumed, charged_amount, consumed_amount = book.account_gb(account)
+        credited_amount = book.account_credits(account)
         gb_pending = book.account_gb_pending(account)
         entity_type, entity_id = "account", account_id
 
@@ -119,4 +132,5 @@ def get_balance(
         gb_pending=gb_pending,
         charged_amount=round(charged_amount, 2) if charged_amount is not None else None,
         consumed_amount=round(consumed_amount, 2) if consumed_amount is not None else None,
+        credited_amount=round(credited_amount, 2) if credited_amount is not None else None,
     )

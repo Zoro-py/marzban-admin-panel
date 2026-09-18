@@ -376,6 +376,12 @@ class BalanceRead(BaseModel):
     #                     consumed data was worth, NOT what they owe.
     consumed_amount: Optional[float] = None
     charged_amount: Optional[float] = None
+    # Gross sum of credit (payment) amounts in the same window/scope, riding
+    # the same `since` boundary as the figures above. Pairs with
+    # charged_amount so a settle+payment pair reads as "charged X /
+    # credited X" instead of the payment vanishing into the netted balance.
+    # None = no credit row in this window — displayed as "—", never as 0.
+    credited_amount: Optional[float] = None
     # Live, window-independent (exactly like the money pending figure):
     # usage accrued since each account's current meter epoch started that no
     # charge has attributed yet. The GB sibling of "not invoiced yet".
