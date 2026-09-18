@@ -386,6 +386,13 @@ class BalanceRead(BaseModel):
     # usage accrued since each account's current meter epoch started that no
     # charge has attributed yet. The GB sibling of "not invoiced yet".
     gb_pending: Optional[float] = None
+    # The money sibling of gb_pending — accrued usage not yet invoiced, at
+    # the current effective rate. Same window-blind "right now" semantics:
+    # usage can't be attributed to a time sub-range (Marzban exposes no
+    # per-interval bytes), so this does not respect `since` either. Shown
+    # next to gb_pending so the widget states the full picture of a period:
+    # "posted 43,288 + accruing 153,115", not just the settled slice.
+    pending_amount: Optional[float] = None
 
 
 # ---- Bulk ("family") account creation ----------------------------------

@@ -59,10 +59,11 @@ function GbSummary({ balance }: {
     consumed_amount: number | null
     credited_amount: number | null
     gb_pending: number | null
+    pending_amount: number | null
   } | undefined
 }) {
   if (!balance) return null
-  const { gb_charged, gb_consumed, charged_amount, consumed_amount, credited_amount, gb_pending } = balance
+  const { gb_charged, gb_consumed, charged_amount, consumed_amount, credited_amount, gb_pending, pending_amount } = balance
   if (gb_charged == null && gb_consumed == null && charged_amount == null && consumed_amount == null && credited_amount == null && !gb_pending) {
     return null
   }
@@ -84,7 +85,10 @@ function GbSummary({ balance }: {
         </span>
       )}
       {gb_pending != null && gb_pending > 0.001 && (
-        <span className="whitespace-nowrap">{fmtGb(gb_pending)} GB accruing</span>
+        <span className="whitespace-nowrap">
+          {fmtGb(gb_pending)} GB accruing
+          {pending_amount != null && <> ({formatToman(pending_amount)})</>}
+        </span>
       )}
     </span>
   )
@@ -107,9 +111,17 @@ const CALENDARS: Record<CalendarKind, { calendar: typeof persian; locale: typeof
  * and Gregorian — some operators think in one, some in the other, and
  * ledger dates themselves come from bank receipts that could be dated
  * either way. Whichever is picked, the VALUE sent to the backend is a
- * plain Gregorian ISO string either way (`DateObject.toDate().toISOString()`
- * converts regardless of which calendar was used to pick it), so nothing
- * about the API or the stored ledger dates needs to know Jalali exists.
+ * plain Gregorian ISO string either way, so nothing about the API or the
+ * stored ledger dates needs to know Jalali exists.
+ *
+ * The value is the picked day at LOCAL MIDNIGHT (`setHours(0,0,0,0)`
+ * before toISOString). react-multi-date-picker seeds its internal
+ * DateObject from "now" and only swaps in the picked Y/M/D, so the raw
+ * toDate() carries the current wall-clock time — picking "Aug 17" at
+ * 04:03 Tehran would silently send a 00:33-UTC boundary and exclude the
+ * first 4 hours of the very day the operator asked for. Zeroing the time
+ * makes the boundary deterministic: local midnight of the picked day,
+ * which the widget then shows verbatim as its UTC equivalent.
  */
 export function BalanceSinceControl({ scope }: { scope: Scope }) {
   const [since, setSince] = React.useState('')
@@ -150,7 +162,14 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
         locale={locale}
         calendarPosition="bottom-right"
         value={since ? new Date(since) : null}
-        onChange={(dateObject: DateObject | null) => setSince(dateObject ? dateObject.toDate().toISOString() : '')}
+        onChange={(dateObject: DateObject | null) => {
+          if (!dateObject) { setSince(''); return }
+          // Local midnight of the picked day — see the docstring above for
+          // why the raw toDate() must not be trusted to be midnight.
+          const picked = dateObject.toDate()
+          picked.setHours(0, 0, 0, 0)
+          setSince(picked.toISOString())
+        }}
         inputClass="h-7 rounded-md border border-input bg-background px-2 text-xs w-28 outline-none focus-visible:ring-1 focus-visible:ring-ring"
         containerClassName="inline-block"
         editable={false}

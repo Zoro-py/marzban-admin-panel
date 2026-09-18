@@ -95,6 +95,7 @@ def get_balance(
         gb_charged, gb_consumed, charged_amount, consumed_amount = book.customer_gb(customer)
         credited_amount = book.customer_credits(customer)
         gb_pending = book.customer_gb_pending(customer)
+        pending_amount = book.customer_pending(customer)
         entity_type, entity_id = "customer", customer_id
     elif group_id is not None:
         group = session.get(Group, group_id)
@@ -104,6 +105,7 @@ def get_balance(
         gb_charged, gb_consumed, charged_amount, consumed_amount = book.group_gb(group)
         credited_amount = book.group_credits(group)
         gb_pending = book.group_gb_pending(group)
+        pending_amount = book.group_pending(group)
         entity_type, entity_id = "group", group_id
     else:
         account = session.get(Account, account_id)
@@ -113,6 +115,7 @@ def get_balance(
         gb_charged, gb_consumed, charged_amount, consumed_amount = book.account_gb(account)
         credited_amount = book.account_credits(account)
         gb_pending = book.account_gb_pending(account)
+        pending_amount = book.account_pending(account)
         entity_type, entity_id = "account", account_id
 
     # total_charge/total_credit are reported as the netted balance split into
@@ -133,4 +136,5 @@ def get_balance(
         charged_amount=round(charged_amount, 2) if charged_amount is not None else None,
         consumed_amount=round(consumed_amount, 2) if consumed_amount is not None else None,
         credited_amount=round(credited_amount, 2) if credited_amount is not None else None,
+        pending_amount=round(pending_amount, 2),
     )

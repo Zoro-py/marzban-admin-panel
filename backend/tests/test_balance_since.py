@@ -32,7 +32,8 @@ from sqlmodel import Session  # noqa: E402
 from app.auth import require_auth  # noqa: E402
 from app.db import engine, init_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Account, Customer, Group, LedgerEntry, LedgerType, utcnow  # noqa: E402
+from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerType, utcnow  # noqa: E402
+from app.services import get_settings  # noqa: E402
 
 init_db()
 
@@ -180,6 +181,24 @@ r = client.get("/api/ledger/balance", params={"customer_id": customer_id, "since
 check("an offset-aware since is honoured as its UTC instant, not its wall clock", r.json()["balance"] == 50_000.0)
 r = client.get("/api/ledger/balance", params={"customer_id": customer_id, "since": recent.replace(tzinfo=timezone.utc).isoformat()})
 check("the same instant spelled in Z gives the identical window", r.json()["balance"] == 50_000.0)
+
+# ---- pending_amount: the money sibling of gb_pending, window-blind ----
+with Session(engine) as session:
+    acct = session.get(Account, account_id)
+    acct.billing_mode = BillingMode.payg
+    acct.used_traffic = 5 * 1024 ** 3
+    acct.usage_baseline = 0
+    session.add(acct)
+    settings = get_settings(session)
+    settings.default_rate_per_gb = 1000
+    session.add(settings)
+    session.commit()
+
+r = client.get("/api/ledger/balance", params={"account_id": account_id})
+check("pending_amount equals accrued usage x rate", r.json()["pending_amount"] == 5000.0)
+check("gb_pending matches the same accrual", r.json()["gb_pending"] == 5.0)
+r = client.get("/api/ledger/balance", params={"account_id": account_id, "since": since_after_all})
+check("pending_amount is window-blind (same value with and without since)", r.json()["pending_amount"] == 5000.0)
 
 print()
 if failures:

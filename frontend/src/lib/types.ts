@@ -233,6 +233,10 @@ export interface Balance {
   // Live open-cycle usage no charge has attributed yet (like the money
   // "pending" figure, deliberately unaffected by the since date).
   gb_pending: number | null
+  // The money sibling of gb_pending — accrued usage not yet invoiced at the
+  // current rate, same window-blind semantics. Shown as the accruing tag's
+  // Toman equivalent so the widget states posted AND accruing together.
+  pending_amount: number | null
 }
 
 export interface InvoiceLine {
