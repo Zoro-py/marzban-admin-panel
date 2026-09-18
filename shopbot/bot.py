@@ -65,6 +65,20 @@ async def on_error(update, context) -> None:
         logger.exception("Could not even send the fallback error message")
 
 
+async def _register_shop_commands(app) -> None:
+    """The customer-facing typing-bar menu (setMyCommands) — best-effort,
+    same reasoning as the operator bot's: a Telegram hiccup must not stop
+    the shop from starting."""
+    from telegram import BotCommand
+    try:
+        await app.bot.set_my_commands([
+            BotCommand("start", "شروع خرید و منوی اصلی"),
+            BotCommand("help", "راهنما"),
+        ])
+    except Exception:
+        logger.warning("set_my_commands failed - keeping the previous menu", exc_info=True)
+
+
 def main() -> None:
     token = os.environ.get("SHOP_BOT_TOKEN", "").strip()
     if not token:
@@ -77,7 +91,7 @@ def main() -> None:
         threading.Event().wait()
         return
 
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).post_init(_register_shop_commands).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
