@@ -566,9 +566,13 @@ function ResetSection({ account, canBill }: { account: AccountRow; canBill: bool
               <Button
                 size="sm"
                 variant="ghost"
-                title="Post the current pending amount as a charge and roll the billing baseline forward, without resetting the quota in Marzban"
+                title={
+                  isPayg
+                    ? 'Post the current pending amount as a charge and roll the billing baseline forward — for payg this also resets the live usage meter in Marzban, same as the automatic settlements'
+                    : 'Post the current pending amount as a charge and roll the billing baseline forward, without resetting the quota in Marzban'
+                }
               >
-                Charge without reset
+                {isPayg ? 'Charge & reset meter' : 'Charge without reset'}
               </Button>
             }
           />
