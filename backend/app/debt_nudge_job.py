@@ -143,14 +143,13 @@ def _build_nudge(overdue: list[dict]) -> tuple[str, dict]:
     return "\n".join(lines), {"inline_keyboard": keyboard}
 
 
-async def run_debt_nudge() -> dict:
-    """Entry point, called every other day by the scheduler. Finds every
-    customer with real posted debt outstanding for at least DEBT_NUDGE_MIN_DAYS
-    and sends one actionable message: a short summary plus one button per
-    debtor (oldest debt first) that opens the bot's payment-recording
-    console. A customer with nothing owed, or whose debt is too recent, is
-    silently skipped — most runs this sends nothing for most operators,
-    which is the point (no noise)."""
+def collect_overdue() -> list[dict]:
+    """Every customer with real posted debt outstanding for at least
+    DEBT_NUDGE_MIN_DAYS, sorted oldest first — the ONE eligibility
+    computation shared by the scheduled send, the manual trigger and the
+    Telegram console's list screen (which re-reads it on every render, so
+    amounts and cleared debtors are always live, never stale from message
+    time)."""
     now = utcnow().replace(tzinfo=None)
 
     with Session(engine) as session:
@@ -168,11 +167,22 @@ async def run_debt_nudge() -> dict:
                 continue
             overdue.append({"name": c.name, "customer_id": c.id, "amount": posted, "days": round(age_days)})
 
+    overdue.sort(key=lambda r: -r["days"])
+    return overdue
+
+
+async def run_debt_nudge() -> dict:
+    """Entry point, called every other day by the scheduler. Sends one
+    actionable message for collect_overdue()'s result: a short summary plus
+    one button per debtor (oldest debt first) that opens the bot's
+    payment-recording console. Nobody eligible means nothing is sent —
+    which is the point (no noise)."""
+    overdue = collect_overdue()
+
     if not overdue:
         log.info("Debt nudge: nothing overdue past %.0f days", DEBT_NUDGE_MIN_DAYS)
         return {"sent": False, "count": 0}
 
-    overdue.sort(key=lambda r: -r["days"])
     message, markup = _build_nudge(overdue)
 
     try:

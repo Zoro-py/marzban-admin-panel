@@ -22,6 +22,7 @@ from handlers.customer import charge_command, credit_command, customer_command  
 from handlers.debt import (  # noqa: E402
     debt_amount_handler,
     debt_do_callback,
+    debt_hub_callback,
     debt_nudge_callback,
     debt_pay_callback,
 )
@@ -85,6 +86,7 @@ def main() -> None:
     # entry button; see handlers/debt.py). Registered LAST so its text
     # handler only ever sees messages no earlier flow claimed.
     app.add_handler(CallbackQueryHandler(debt_nudge_callback, pattern=r"^debtnudge:"))
+    app.add_handler(CallbackQueryHandler(debt_hub_callback, pattern=r"^debthub:"))
     app.add_handler(CallbackQueryHandler(debt_pay_callback, pattern=r"^debtpay:"))
     app.add_handler(CallbackQueryHandler(debt_do_callback, pattern=r"^debtdo:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, debt_amount_handler))

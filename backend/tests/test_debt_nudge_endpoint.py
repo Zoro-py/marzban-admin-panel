@@ -86,6 +86,13 @@ check("one button carries this debtor's debtnudge callback",
       any(b["callback_data"] == f"debtnudge:{customer_id}" for b in buttons))
 check("the debtor's button shows their amount", any("120,000" in b["text"] for b in buttons))
 
+# ---- the read-only preview the Telegram console's list screen re-reads ----
+r = client.get("/api/notifications/debt-nudge")
+overdue = r.json()["overdue"]
+check("preview returns the eligible debtor, oldest first",
+      r.status_code == 200 and len(overdue) == 1 and overdue[0]["customer_id"] == customer_id
+      and overdue[0]["amount"] == 120_000.0)
+
 # ---- a freshly-charged customer is NOT eligible: the same pass must skip them ----
 with Session(engine) as session:
     recent = Customer(name="Nudge Too Recent")

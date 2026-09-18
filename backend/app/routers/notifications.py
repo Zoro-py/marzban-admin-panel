@@ -1,9 +1,18 @@
 from fastapi import APIRouter, Depends
 
 from app.auth import require_auth
-from app.debt_nudge_job import run_debt_nudge
+from app.debt_nudge_job import collect_overdue, run_debt_nudge
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"], dependencies=[Depends(require_auth)])
+
+
+@router.get("/debt-nudge")
+async def debt_nudge_preview():
+    """Read-only: who the nudge would message right now — the exact list the
+    scheduled pass computes, sorted oldest first. The Telegram console's
+    list screen re-reads this on every render, so its amounts and the
+    already-settled guard are live, never stale from message time."""
+    return {"overdue": collect_overdue()}
 
 
 @router.post("/debt-nudge/run")
