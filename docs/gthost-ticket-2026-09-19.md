@@ -43,8 +43,17 @@ server back every minute. Every incident shows:
 Incident timestamps (UTC, 2026-09-19, from our event log):
 
 - VM A (216.106.179.122): 05:40:40, 06:09:19, 06:34:51, 07:33:46, 08:05:36,
-  08:27:01 — each ~60–64s, 100% loss both directions
-- VM B (216.152.154.147): 08:28:55, 08:48:35 — same signature
+  08:27:01, **18:22:04** — each ~60–75s, 100% loss both directions
+- VM B (216.152.154.147): 08:28:55, 08:48:35, **18:07:48** — same signature
+
+**Decisive evidence added 2026-09-19 18:22 UTC:** a third VM of yours in the
+same region — Detroit, 216.152.153.118, 2 ms from VM B — was monitoring
+during the 18:21–18:23 VM A incident. While VM A was 100% unreachable from
+everywhere, Detroit simultaneously had ZERO loss to the outside world
+(1.1.1.1: 0.4 ms, France: 89 ms, VM B: 29 ms) and only lost VM A. So the
+blackout is isolated to the individual VM's host/vSwitch path, not the DC
+upstream and not the transatlantic route — which is why we ask for a
+per-host check and re-home of the affected VMs.
 
 The same signature was already visible in our control-plane logs for at least
 24h before formal monitoring (roughly 1–6 incidents per hour, both VMs,
