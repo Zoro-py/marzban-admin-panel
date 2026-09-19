@@ -53,17 +53,23 @@ WATCH_CONTAINERS=$WATCH_CONTAINERS
 MARZBAN_LOG_CONTAINER=$MARZBAN_CONTAINER
 LOG_DIR=/var/log/vpn-monitor
 STATE_DIR=/var/lib/vpn-monitor
+# The 3GB-per-box log budget (agent logs + spool share; docker logs are
+# capped separately in docker-compose). On crossing, ~250MB of the OLDEST
+# data is removed automatically.
+LOG_BUDGET_MB=2816
+TRIM_CHUNK_MB=250
 EOF
 chmod 0600 /etc/vpn-monitor/agent.conf   # holds the ingest token
 
-# ── logrotate: the per-box share of the HARD 1GB log budget. Worst case
-# here is ~300MB (2 files x 3 generations x 50M, compressed rotations are
-# far smaller in practice) + ~5MB spool.
+# ── logrotate: weekly compression pass that keeps files readable. The SIZE
+# CEILING is enforced by the agent itself (enforce_log_budget — 3GB per box,
+# frees ~250MB of the oldest on crossing), identically on every distro;
+# logrotate only rotates/compresses, it does not bound total size.
 cat > /etc/logrotate.d/vpn-monitor <<'EOF'
 /var/log/vpn-monitor/*.jsonl {
-    daily
-    maxsize 50M
-    rotate 2
+    weekly
+    maxsize 200M
+    rotate 26
     compress
     missingok
     notifempty

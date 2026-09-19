@@ -18,9 +18,10 @@ Design constraints that shaped this file:
     deduplication lives here.
   * The panel being unreachable must not lose data: unsent payloads spool to
     STATE_DIR/spool.jsonl (capped) and flush on a later successful run.
-  * Local jsonl logs (LOG_DIR) are the post-mortem record of last resort;
-    logrotate caps them so the whole monitoring stack stays far below the
-    operator's hard 1GB-per-box log budget.
+  * Local jsonl logs (LOG_DIR) are the post-mortem record of last resort.
+    A SIZE-based budget (3GB per box; see LOG_BUDGET_MB below) is enforced
+    by the agent itself: on crossing it, ~TRIM_CHUNK_MB of the OLDEST data
+    is removed so fresh logs always have room.
 
 Exit code is always 0 — a monitoring agent that spams cron/journal with
 failures gets uninstalled; its own errors are events like everything else.
@@ -39,7 +40,17 @@ import urllib.error
 import urllib.request
 
 CONF_PATH = os.environ.get("VPN_MONITOR_CONF", "/etc/vpn-monitor/agent.conf")
-AGENT_VERSION = "vpn-monitor/1.0"
+AGENT_VERSION = "vpn-monitor/1.1"
+
+# ── the 3GB hard log budget (operator's rule, 2026-09-19):
+# TOTAL budget per box is 3GB. The agent's own share (LOG_DIR + spool) is
+# capped by SIZE, not by file count: when the total crosses LOG_BUDGET_MB,
+# the agent frees TRIM_CHUNK_MB by deleting the OLDEST data first (rotated
+# files, then the head of the active files). logrotate stays installed as a
+# compression pass, but the size ceiling lives HERE so it behaves identically
+# on every distro (CentOS 7 included).
+LOG_BUDGET_MB = 2816   # 2.75 GiB of the 3GB; docker logs (~180MB) + panel DB take the rest
+TRIM_CHUNK_MB = 250    # how much to free per eviction, per the operator's own example
 
 # ── thresholds: (trigger, recover) — hysteresis so a value oscillating
 # around one number doesn't machine-gun the events table.
@@ -93,6 +104,79 @@ def save_json_atomic(path, obj):
     with open(tmp, "w") as fh:
         json.dump(obj, fh)
     os.replace(tmp, path)  # atomic on POSIX: reader never sees a half file
+
+
+def _dir_size_bytes(paths):
+    total = 0
+    for p in paths:
+        try:
+            total += os.path.getsize(p)
+        except OSError:
+            pass
+    return total
+
+
+def enforce_log_budget(log_dir, state_dir, budget_mb=None, trim_mb=None):
+    """The 3GB rule's enforcer: if LOG_DIR + spool together exceed the
+    budget (LOG_BUDGET_MB, overridable via agent.conf), free TRIM_CHUNK_MB
+    starting from the OLDEST data — rotated files are deleted outright
+    (they are pure history), and only if that is not enough does the HEAD
+    of the active files get dropped (rewritten to their tail). Never
+    raises: a budget enforcer that crashes the agent would stop the
+    monitoring AND the enforcement in one move."""
+    budget = (budget_mb if budget_mb is not None else LOG_BUDGET_MB) * 1024 * 1024
+    trim = (trim_mb if trim_mb is not None else TRIM_CHUNK_MB) * 1024 * 1024
+    try:
+        candidates = []
+        for d in (log_dir, state_dir):
+            if not os.path.isdir(d):
+                continue
+            for name in os.listdir(d):
+                p = os.path.join(d, name)
+                if os.path.isfile(p):
+                    candidates.append(p)
+        total = _dir_size_bytes(candidates)
+        if total <= budget:
+            return
+        target = total - (budget - trim)
+        # Oldest first: rotated/compressed history dies before anything live.
+        # mtime, not name parsing — survives any rotation scheme.
+        candidates.sort(key=lambda p: os.path.getmtime(p))
+        for p in candidates:
+            need = total - target
+            if need <= 0:
+                break
+            name = os.path.basename(p)
+            active = name in ("metrics.jsonl", "events.jsonl") and os.path.dirname(p) == log_dir
+            if not active:
+                total -= os.path.getsize(p)
+                os.remove(p)
+                continue
+            # Active file: drop the head, keep the tail — exactly as much as
+            # still needed, oldest file first (the operator's "remove from
+            # the oldest until there's room"). temp+replace keeps the shrink
+            # atomic for anything tailing the file, and the kept tail is
+            # nudged forward to the next newline so no partial line survives
+            # at the head of what remains.
+            size = os.path.getsize(p)
+            keep = size - min(size, need)
+            if keep == 0:
+                total -= size
+                os.remove(p)
+                continue
+            with open(p, "rb") as fh:
+                fh.seek(-keep, os.SEEK_END)
+                tail = fh.read()
+            nl = tail.find(bytes([10]))
+            if 0 < nl < len(tail) - 1:
+                tail = tail[nl + 1:]
+            tmp = p + ".trim"
+            with open(tmp, "wb") as fh:
+                fh.write(tail)
+            os.replace(tmp, p)
+            total -= (size - len(tail))
+    except Exception:
+        pass
 
 
 # ── metric collectors ───────────────────────────────────────────────────────
@@ -574,6 +658,12 @@ def main():
         save_json_atomic(state_path, state)
     except Exception:
         pass
+
+    # Budget enforcement runs last so a slow trim never delays sampling.
+    enforce_log_budget(
+        log_dir, state_dir,
+        budget_mb=int(conf.get("LOG_BUDGET_MB") or 0) or None,
+        trim_mb=int(conf.get("TRIM_CHUNK_MB") or 0) or None)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,10 @@
 # HARD RULE from the operator: diagnostic/monitoring logs must never exceed
-# 1GB per box. Docker's json-file driver is UNBOUNDED by default — a chatty
+# 3GB per box. Docker's json-file driver is UNBOUNDED by default — a chatty
 # uvicorn or bot container eventually eats the disk that the SQLite volume
-# lives on. 10m x 3 files per service (~180MB across all six services) plus
-# the agents' own logrotate budget (see scripts/monitor/README.md, ~300MB
-# worst case) keeps every box comfortably under the 1GB ceiling.
+# lives on. 10m x 3 files per service (~180MB across all six services); the
+# monitoring agents enforce their own 2.75GB share from inside
+# scripts/monitor/vpn_monitor_agent.py (enforce_log_budget), so every box
+# stays under the 3GB ceiling.
 x-logging: &default-logging
   driver: json-file
   options:

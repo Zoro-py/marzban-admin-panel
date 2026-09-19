@@ -34,20 +34,30 @@ can INSERT metrics/events and nothing else. Never a dashboard JWT, never the
 Marzban admin credentials. The dashboard read endpoints use the normal
 operator JWT. Both fail closed when the token is unset.
 
-## The 1GB log budget — HARD RULE
+## The 3GB log budget — HARD RULE (operator, 2026-09-19)
 
-Logs (monitoring + docker) must never exceed **1GB per box**. Enforced in
-three places, not by convention:
+All logs on a box must never exceed **3GB**. Two enforcement layers, both in
+code rather than convention:
+
+1. **Agent-side size eviction** (`enforce_log_budget` in
+   `vpn_monitor_agent.py`): when `LOG_DIR` + spool together cross
+   `LOG_BUDGET_MB` (default 2816 MB of the 3GB), the agent frees
+   `TRIM_CHUNK_MB` (default 250 MB) by removing the OLDEST data first —
+   rotated files deleted outright, then the head of the active files trimmed
+   (line-aligned, atomic via temp+rename). Both values are overridable in
+   `/etc/vpn-monitor/agent.conf`. This makes the budget behave identically
+   on every distro, CentOS 7 included.
+2. **Docker json-file caps** (`max-size: 10m`, `max-file: 3` per compose
+   service): ~180 MB across the panel's six services.
 
 | Component | Mechanism | Worst case |
 |---|---|---|
-| agent jsonl logs (`/var/log/vpn-monitor/*.jsonl`) | logrotate `maxsize 50M`, `rotate 2`, compressed | ~300 MB |
-| agent push spool (`/var/lib/vpn-monitor/spool.jsonl`) | capped at 300 payloads in code | ~5 MB |
-| docker json-file logs (panel compose services) | `max-size: 10m`, `max-file: 3` × 6 services | ~180 MB |
+| agent jsonl logs + rotated copies | agent eviction at 2816 MB | 2.75 GB |
+| agent push spool (`spool.jsonl`) | counted toward the same budget; payload cap 300 | inside the 2.75 GB |
+| docker json-file logs (panel compose) | `10m x 3` × 6 services | ~180 MB |
 | panel SQLite (`ServerMetric`/`MonitorEvent`) | ingest-side pruning: 30d metrics / 90d events | ~50 MB |
 
-Per box total stays **under ~0.5 GB** even with everything at its cap. The
-one component outside this repo's control is Marzban's own container log
+The one component outside this repo's control is Marzban's own container log
 (separate compose file); check it with
 `du -sh /var/lib/docker/containers/*/*-json.log` and set the same `logging:`
 block in its compose if it grows.

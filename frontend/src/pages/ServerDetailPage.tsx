@@ -10,6 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { MetricChart, SERIES_AQUA, SERIES_BLUE } from '@/components/monitor/MetricChart'
+import { LiveMetricMonitor, PingPanel } from '@/components/monitor/LiveMetricMonitor'
 import { cn, formatAgo } from '@/lib/utils'
 
 const SEVERITY_DOT: Record<MonitorSeverity, string> = {
@@ -49,7 +50,6 @@ export function ServerDetailPage() {
   const events = eventsQuery.data ?? []
   const times = points.map((p) => p.ts)
   const latest = points.length > 0 ? points[points.length - 1] : null
-  const pingEntries = Object.entries(latest?.extra?.ping ?? {})
 
   return (
     <div className="flex flex-col gap-4">
@@ -78,6 +78,27 @@ export function ServerDetailPage() {
           </TabsList>
         </Tabs>
       </div>
+
+      {!historyQuery.isLoading && points.length > 0 && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card>
+            <CardHeader className="pb-1">
+              <CardTitle>Live monitor — any metric</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <LiveMetricMonitor serverId={serverId} points={points} />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-1">
+              <CardTitle>Latency to ping targets</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <PingPanel points={points} />
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {historyQuery.isLoading ? (
         <div className="grid gap-4 lg:grid-cols-2">
@@ -151,13 +172,6 @@ export function ServerDetailPage() {
             <CardHeader className="pb-1">
               <CardTitle>
                 TCP retransmit {latest!.tcp_retrans_pct.toFixed(1)}%
-                {pingEntries.length > 0 && (
-                  <span className="ml-2 font-normal text-muted-foreground">
-                    {pingEntries
-                      .map(([t, r]) => `${t.split('.')[0]}: ${r?.avg_ms != null ? `${Math.round(r.avg_ms)}ms` : '—'}${r && r.loss > 0 ? ` (${r.loss.toFixed(0)}% loss)` : ''}`)
-                      .join(' · ')}
-                  </span>
-                )}
               </CardTitle>
             </CardHeader>
             <CardContent>

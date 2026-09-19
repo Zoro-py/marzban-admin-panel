@@ -136,8 +136,8 @@ class Settings(BaseSettings):
     # admin credentials or a dashboard JWT.
     monitor_ingest_token: str = ""
 
-    # Ingest-side retention for ServerMetric / MonitorEvent rows. The 1GB log
-    # budget is a hard product constraint (the operator's own rule): metrics
+    # Ingest-side retention for ServerMetric / MonitorEvent rows. The 3GB per-box
+    # log budget is a hard product constraint (the operator's own rule): metrics
     # are ~5 servers x 1 sample/minute, so 30 days is roughly 216k small rows
     # — a few tens of MB in SQLite — and events are sparse by construction.
     # Changing either here is a knob, not a migration; pruning runs on ingest.
