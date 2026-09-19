@@ -127,6 +127,23 @@ class Settings(BaseSettings):
     # check, not by this key).
     delegate_bot_api_key: str = ""
 
+    # Shared secret the monitoring agents on the VPN servers present on
+    # POST /api/monitor/ingest (X-Monitor-Token header). Fail closed exactly
+    # like the bot keys above: an unset token refuses every ingest rather
+    # than accepting unauthenticated metric spam. The agents run as root on
+    # our own boxes, but they cross the public internet to reach the panel,
+    # so they get their own narrow secret — they must never hold the Marzban
+    # admin credentials or a dashboard JWT.
+    monitor_ingest_token: str = ""
+
+    # Ingest-side retention for ServerMetric / MonitorEvent rows. The 1GB log
+    # budget is a hard product constraint (the operator's own rule): metrics
+    # are ~5 servers x 1 sample/minute, so 30 days is roughly 216k small rows
+    # — a few tens of MB in SQLite — and events are sparse by construction.
+    # Changing either here is a knob, not a migration; pruning runs on ingest.
+    monitor_metric_retention_days: int = 30
+    monitor_event_retention_days: int = 90
+
 
 DEFAULT_JWT_SECRET_PATH = Path(__file__).resolve().parent.parent / ".jwt_secret"
 

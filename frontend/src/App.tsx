@@ -15,6 +15,8 @@ const FinancePage = lazy(() => import('@/pages/FinancePage').then(m => ({ defaul
 const MonthlySettlementsPage = lazy(() => import('@/pages/MonthlySettlementsPage').then(m => ({ default: m.MonthlySettlementsPage })))
 const ShopPage = lazy(() => import('@/pages/ShopPage').then(m => ({ default: m.ShopPage })))
 const DelegatesPage = lazy(() => import('@/pages/DelegatesPage').then(m => ({ default: m.DelegatesPage })))
+const ServersPage = lazy(() => import('@/pages/ServersPage').then(m => ({ default: m.ServersPage })))
+const ServerDetailPage = lazy(() => import('@/pages/ServerDetailPage').then(m => ({ default: m.ServerDetailPage })))
 
 function GlobalLoader() {
   return (
@@ -56,6 +58,8 @@ function App() {
             <Route path="/finance" element={<FinancePage />} />
             <Route path="/shop" element={<ShopPage />} />
             <Route path="/delegates" element={<DelegatesPage />} />
+            <Route path="/servers" element={<ServersPage />} />
+            <Route path="/servers/:serverId" element={<ServerDetailPage />} />
             <Route path="/monthly-settlements" element={<MonthlySettlementsPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Route>

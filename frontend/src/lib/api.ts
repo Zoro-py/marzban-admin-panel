@@ -18,6 +18,7 @@ import type {
   GroupInvoice,
   GroupWithBalance,
   LedgerEntry,
+  MonitorEvent,
   MonthlySettlementBatch,
   MonthlySettlementRunResult,
   NextPlan,
@@ -30,6 +31,8 @@ import type {
   ShopTopup,
   ShopTopupStatus,
   ShopUser,
+  ServerMetricPoint,
+  ServerSummary,
   ShopWalletEntry,
   SyncStatus,
   SystemStatus,
@@ -303,4 +306,13 @@ export const shopApi = {
   rejectTopup: async (id: number, reason?: string) =>
     (await api.post<ShopTopup>(`/api/shop/topups/${id}/reject`, reason ? { reason } : {})).data,
   orders: async () => (await api.get<ShopOrder[]>('/api/shop/orders')).data,
+}
+
+// ---- server monitoring (dashboard view of scripts/monitor agents) ----
+export const monitorApi = {
+  servers: async () => (await api.get<ServerSummary[]>('/api/monitor/servers')).data,
+  history: async (serverId: string, hours = 24) =>
+    (await api.get<ServerMetricPoint[]>(`/api/monitor/servers/${encodeURIComponent(serverId)}/history`, { params: { hours } })).data,
+  events: async (params: { limit?: number; server_id?: string; severity?: string } = {}) =>
+    (await api.get<MonitorEvent[]>('/api/monitor/events', { params })).data,
 }

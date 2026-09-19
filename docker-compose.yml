@@ -1,5 +1,18 @@
+# HARD RULE from the operator: diagnostic/monitoring logs must never exceed
+# 1GB per box. Docker's json-file driver is UNBOUNDED by default — a chatty
+# uvicorn or bot container eventually eats the disk that the SQLite volume
+# lives on. 10m x 3 files per service (~180MB across all six services) plus
+# the agents' own logrotate budget (see scripts/monitor/README.md, ~300MB
+# worst case) keeps every box comfortably under the 1GB ceiling.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   backend:
+    logging: *default-logging
     build: ./backend
     env_file: ./backend/.env
     environment:
@@ -17,6 +30,7 @@ services:
     restart: unless-stopped
 
   bot:
+    logging: *default-logging
     build: ./bot
     env_file: ./bot/.env
     depends_on:
@@ -31,6 +45,7 @@ services:
   # Remove this service if you aren't running a self-serve shop; nothing else
   # depends on it.
   shopbot:
+    logging: *default-logging
     build: ./shopbot
     env_file: ./shopbot/.env
     environment:
@@ -50,6 +65,7 @@ services:
   # Marzban directly. Remove this service if no delegate has been granted
   # access via /delegate_add; nothing else depends on it.
   delegate_bot:
+    logging: *default-logging
     build: ./delegate_bot
     env_file: ./delegate_bot/.env
     environment:
@@ -59,6 +75,7 @@ services:
     restart: unless-stopped
 
   frontend:
+    logging: *default-logging
     build:
       context: ./frontend
       args:

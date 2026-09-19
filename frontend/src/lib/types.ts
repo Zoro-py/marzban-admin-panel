@@ -526,3 +526,65 @@ export interface DelegateUpsert {
   username_prefix?: string
   default_duration_days?: number
 }
+
+// ---- server monitoring (GET /api/monitor/*, see scripts/monitor/README.md) ----
+
+export interface PingResult {
+  loss: number
+  avg_ms: number | null
+}
+
+export interface MonitorExtra {
+  iface?: string
+  docker_ok?: boolean
+  agent?: string
+  ping?: Record<string, PingResult | null>
+  containers?: Record<string, string>
+}
+
+interface MetricFields {
+  ts: string
+  server_id: string
+  uptime_s: number
+  load1: number
+  load5: number
+  load15: number
+  cpu_cores: number
+  cpu_pct: number
+  steal_pct: number
+  mem_total_mb: number
+  mem_used_mb: number
+  mem_avail_mb: number
+  swap_used_mb: number
+  disk_used_pct: number
+  net_rx_bps: number
+  net_tx_bps: number
+  net_err_delta: number
+  net_drop_delta: number
+  conntrack_count: number
+  conntrack_max: number
+  tcp_retrans_pct: number
+}
+
+export type ServerStatus = 'online' | 'stale' | 'unknown'
+
+export interface ServerSummary extends MetricFields {
+  extra: MonitorExtra
+  status: ServerStatus
+  warn_events_24h: number
+  last_event: { ts: string; type: string; severity: MonitorSeverity; detail: string } | null
+}
+
+export interface ServerMetricPoint extends MetricFields {
+  extra: MonitorExtra
+}
+
+export type MonitorSeverity = 'info' | 'warn' | 'critical'
+
+export interface MonitorEvent {
+  ts: string
+  server_id: string
+  type: string
+  severity: MonitorSeverity
+  detail: string
+}
