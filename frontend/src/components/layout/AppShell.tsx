@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { Building2, CalendarCheck, LayoutDashboard, LogOut, Menu, Moon, Network, RefreshCw, Search, Store, Sun, UserCog, Users, Wallet } from 'lucide-react'
+import { Building2, CalendarCheck, LayoutDashboard, LogOut, Menu, Moon, Network, RefreshCw, Search, Server, Store, Sun, UserCog, Users, Wallet } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useAuth } from '@/lib/auth'
@@ -22,6 +22,7 @@ const NAV_ITEMS = [
   { to: '/shop', label: 'Shop', icon: Store },
   { to: '/monthly-settlements', label: 'Monthly Settlements', icon: CalendarCheck },
   { to: '/delegates', label: 'Delegates', icon: UserCog },
+  { to: '/servers', label: 'Servers', icon: Server },
 ]
 
 function openCommandPalette() {

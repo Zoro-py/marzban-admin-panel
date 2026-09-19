@@ -883,3 +883,46 @@ class DelegateAccountRenewRequest(BaseModel):
 
 class DelegateAccountDeleteRequest(BaseModel):
     telegram_id: int
+
+
+# ---- server monitoring (see scripts/monitor/README.md for the architecture) ----
+# Body of POST /api/monitor/ingest, sent once a minute by each server's agent.
+# Everything numeric is optional-with-default so an agent on a minimal box
+# (no conntrack, no swap, ...) can still report what it has — a missing metric
+# reads as 0/empty downstream, never as a rejected payload.
+
+class MonitorMetricIn(BaseModel):
+    ts: datetime
+    uptime_s: int = 0
+    load1: float = 0.0
+    load5: float = 0.0
+    load15: float = 0.0
+    cpu_cores: int = 0
+    cpu_pct: float = 0.0
+    steal_pct: float = 0.0
+    mem_total_mb: int = 0
+    mem_used_mb: int = 0
+    mem_avail_mb: int = 0
+    swap_used_mb: int = 0
+    disk_used_pct: float = 0.0
+    net_rx_bps: float = 0.0
+    net_tx_bps: float = 0.0
+    net_err_delta: int = 0
+    net_drop_delta: int = 0
+    conntrack_count: int = 0
+    conntrack_max: int = 0
+    tcp_retrans_pct: float = 0.0
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class MonitorEventIn(BaseModel):
+    ts: datetime
+    type: str = Field(max_length=64)
+    severity: Literal["info", "warn", "critical"] = "info"
+    detail: str = Field(default="", max_length=2000)
+
+
+class MonitorIngestIn(BaseModel):
+    server_id: str = Field(max_length=64)
+    metrics: Optional[MonitorMetricIn] = None
+    events: list[MonitorEventIn] = Field(default_factory=list, max_length=100)

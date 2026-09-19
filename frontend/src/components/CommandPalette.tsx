@@ -9,6 +9,7 @@ import {
   Network,
   RefreshCw,
   Search,
+  Server,
   Sun,
   User,
   UserCog,
@@ -100,6 +101,7 @@ export function CommandPalette() {
       { id: 'p-acct', label: 'Accounts', icon: Network, keywords: 'accounts users marzban', run: () => { navigate('/accounts'); close() } },
       { id: 'p-fin', label: 'Finance', icon: Wallet, keywords: 'finance money revenue ledger rates', run: () => { navigate('/finance'); close() } },
       { id: 'p-delegate', label: 'Delegates', icon: UserCog, keywords: 'delegates grants self-service delegate_bot telegram resellers', run: () => { navigate('/delegates'); close() } },
+      { id: 'p-servers', label: 'Servers', icon: Server, keywords: 'servers monitoring health cpu steal dallas france nodes outages flaps', run: () => { navigate('/servers'); close() } },
     ]
     const actions: Item[] = [
       {

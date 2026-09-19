@@ -739,3 +739,81 @@ class Delegate(SQLModel, table=True):
     default_duration_days: int = 30
 
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class ServerMetric(SQLModel, table=True):
+    """One resource sample from a monitored server, pushed every minute by the
+    agent in scripts/monitor/ (see that README for the architecture).
+
+    This is diagnostics data, not billing data: nothing here can change what a
+    customer is charged. The whole point is the outage timeline — being able to
+    line up "node flapped at 21:34" (a MonitorEvent from the panel agent's
+    Marzban log watcher) against "CPU steal was 40% right then" (rows here) and
+    close the case instead of guessing.
+
+    Numeric columns rather than one JSON blob so history queries stay indexable
+    and cheap; `extra` carries the long tail (ping targets, container states)
+    that isn't worth its own column. Retention is enforced by the ingest
+    endpoint (monitor_metric_retention_days), NOT by the database — the 1GB log
+    budget is a hard product constraint and lives in code, not in ops folklore.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    ts: datetime = Field(index=True)
+    server_id: str = Field(index=True)
+
+    uptime_s: int = 0
+    load1: float = 0.0
+    load5: float = 0.0
+    load15: float = 0.0
+    cpu_cores: int = 0
+
+    # cpu_pct includes iowait; steal_pct is broken out because a budget-VPS
+    # neighbor squeezing the host shows up as steal long before total CPU
+    # looks bad — it was the prime suspect in the 2026-09 flakiness report.
+    cpu_pct: float = 0.0
+    steal_pct: float = 0.0
+
+    mem_total_mb: int = 0
+    mem_used_mb: int = 0
+    mem_avail_mb: int = 0
+    swap_used_mb: int = 0
+
+    disk_used_pct: float = 0.0
+
+    # Rates over the interval since the previous sample, plus error/drop
+    # DELTAS — absolute counters would only tell you the NIC was ever bad.
+    net_rx_bps: float = 0.0
+    net_tx_bps: float = 0.0
+    net_err_delta: int = 0
+    net_drop_delta: int = 0
+
+    conntrack_count: int = 0
+    conntrack_max: int = 0
+
+    # Retransmitted segments / total outgoing segments over the interval:
+    # the single best "is the network path sick right now" number a node
+    # can report about its own traffic.
+    tcp_retrans_pct: float = 0.0
+
+    extra: str = "{}"
+
+
+class MonitorEvent(SQLModel, table=True):
+    """Something anomalous a monitoring agent noticed, or a state transition
+    it observed (node_connection_lost / cpu_steal_high / container_down / ...).
+
+    Events are the outage post-mortem feed: sparse, human-readable, severity
+    colored. They are deduplicated at the SOURCE (the agent keeps hysteresis
+    latches so one bad minute emits one event, not sixty) — this table does no
+    suppression of its own, deliberately: what landed here is what happened.
+    Retention enforced on ingest (monitor_event_retention_days), same 1GB
+    reasoning as ServerMetric.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    ts: datetime = Field(index=True)
+    server_id: str = Field(index=True)
+    type: str = Field(index=True)
+    severity: str = "info"  # info | warn | critical
+    detail: str = ""
