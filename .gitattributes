@@ -1,2 +1,6 @@
 * text=auto eol=lf
 *.sh text eol=lf
+# Files deployed to Linux boxes must keep LF — a CRLF shebang breaks
+# /usr/bin/env (happened 2026-09-19 with vpn_monitor_agent.py).
+scripts/monitor/*.py text eol=lf
+scripts/monitor/*.sh text eol=lf

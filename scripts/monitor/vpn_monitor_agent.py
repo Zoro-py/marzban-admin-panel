@@ -40,7 +40,7 @@ import urllib.error
 import urllib.request
 
 CONF_PATH = os.environ.get("VPN_MONITOR_CONF", "/etc/vpn-monitor/agent.conf")
-AGENT_VERSION = "vpn-monitor/1.1"
+AGENT_VERSION = "vpn-monitor/1.2"
 
 # ── the 3GB hard log budget (operator's rule, 2026-09-19):
 # TOTAL budget per box is 3GB. The agent's own share (LOG_DIR + spool) is
@@ -347,7 +347,11 @@ def marzban_node_events(container, state):
     events = []
     try:
         proc = subprocess.run(
-            ["docker", "logs", "--since", "70s", "--timestamps", container],
+            # --tail, not --since: --since re-parses the whole json log file
+            # every run (O(size), and the panel log only grows); --tail reads
+            # just the end. The last-seen-timestamp filter below absorbs the
+            # overlap, so behavior is identical and much cheaper.
+            ["docker", "logs", "--tail", "600", "--timestamps", container],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
         raw = (proc.stdout + proc.stderr).decode("utf-8", "replace")
     except Exception:
