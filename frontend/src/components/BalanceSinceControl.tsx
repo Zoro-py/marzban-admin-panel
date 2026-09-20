@@ -68,7 +68,9 @@ function GbSummary({ balance }: {
     return null
   }
   return (
-    <span className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[11px] text-muted-foreground">
+    <span
+      title="Usage rows cover what was actually BILLED inside this window — the live Marzban counter keeps its own continuous total and is not summed here."
+      className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[11px] text-muted-foreground">
       <span className="whitespace-nowrap">
         <span className="text-foreground">{gb_charged != null ? `${fmtGb(gb_charged)} GB` : '—'}</span>
         {' '}charged
@@ -76,7 +78,7 @@ function GbSummary({ balance }: {
       </span>
       <span className="whitespace-nowrap">
         <span className="text-foreground">{gb_consumed != null ? `${fmtGb(gb_consumed)} GB` : '—'}</span>
-        {' '}consumed
+        {' '}billed usage
         {consumed_amount != null && <> ({formatToman(consumed_amount)})</>}
       </span>
       {credited_amount != null && (
