@@ -8,6 +8,8 @@ export interface Customer {
   name: string
   contact: string | null
   is_group_rep: boolean
+  // Label only: 'family' = one payer owning several accounts. No money math reads it.
+  kind: 'individual' | 'family'
   created_at: string
 }
 
@@ -115,6 +117,9 @@ export interface BulkAccountResult {
   items: BulkAccountItem[]
   notifications_queued: boolean
   aborted_reason: string | null
+  // Who the batch was attached to (given, or the default family customer).
+  customer_id: number | null
+  customer_name: string | null
 }
 
 export interface BulkAccountRequest {
@@ -123,6 +128,9 @@ export interface BulkAccountRequest {
   start_index?: number | null
   customer_id?: number | null
   group_id?: number | null
+  // With no customer and no group the backend attaches the batch to ONE family
+  // customer named after the base; true opts out (test/one-off accounts).
+  unassigned?: boolean
   rate_per_gb?: number | null
   expire_days?: number | null
   data_limit_gb?: number | null
@@ -256,7 +264,7 @@ export interface GroupInvoice {
 }
 
 export interface ReportSummary {
-  overdue_customers: { customer_id: number; name: string; balance: number }[]
+  overdue_customers: { customer_id: number; name: string; balance: number; kind?: 'individual' | 'family' }[]
   // has_next_plan: whether a next plan is already queued for this account —
   // shown alongside these four buckets specifically so the operator can tell
   // what still needs a decision from what's already covered.

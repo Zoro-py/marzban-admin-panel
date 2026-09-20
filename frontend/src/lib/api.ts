@@ -113,7 +113,7 @@ export async function login(username: string, password: string, rememberMe: bool
 export const customersApi = {
   list: async () => (await api.get<CustomerWithBalance[]>('/api/customers')).data,
   get: async (id: number) => (await api.get<CustomerWithBalance>(`/api/customers/${id}`)).data,
-  create: async (body: { name: string; contact?: string; is_group_rep?: boolean }) =>
+  create: async (body: { name: string; contact?: string; is_group_rep?: boolean; kind?: 'individual' | 'family' }) =>
     (await api.post<Customer>('/api/customers', body)).data,
   update: async (id: number, body: Partial<{ name: string; contact: string; is_group_rep: boolean }>) =>
     (await api.patch<Customer>(`/api/customers/${id}`, body)).data,

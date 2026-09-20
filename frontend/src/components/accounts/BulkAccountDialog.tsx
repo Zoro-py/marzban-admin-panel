@@ -20,6 +20,8 @@ import { SearchableSelect } from '@/components/ui/searchable-select'
 import { AlertTriangle, Check, Copy, Users } from 'lucide-react'
 
 const NONE = '__none__'
+// Deliberate opt-out of the default family customer (test / one-off accounts).
+const UNASSIGNED = '__unassigned__'
 // Mirrors MAX_BULK_COUNT in backend/app/bulk_accounts.py. Kept as a local
 // constant rather than fetched: the input needs a max before any request is
 // made, and the backend rejects an over-cap count regardless — this only
@@ -103,7 +105,8 @@ export function BulkAccountDialog({ defaultCustomerId, defaultGroupId, trigger }
     base_name: trimmedBase,
     count: parsedCount,
     start_index: parsedStart,
-    customer_id: customerId === NONE ? null : Number(customerId),
+    customer_id: customerId === NONE || customerId === UNASSIGNED ? null : Number(customerId),
+    unassigned: customerId === UNASSIGNED,
     group_id: groupId === NONE ? null : Number(groupId),
     expire_days: expireDays.trim() === '' ? null : Number(expireDays),
     data_limit_gb: dataLimitGb.trim() === '' ? null : Number(dataLimitGb),
@@ -261,10 +264,16 @@ export function BulkAccountDialog({ defaultCustomerId, defaultGroupId, trigger }
                   <SearchableSelect
                     value={customerId}
                     onValueChange={setCustomerId}
-                    placeholder="Unassigned"
+                    placeholder="New family customer"
                     searchPlaceholder="Search customers…"
                     options={[
-                      { value: NONE, label: 'Unassigned' },
+                      {
+                        value: NONE,
+                        label: groupId === NONE
+                          ? `New family customer${trimmedBase ? ` «${trimmedBase}»` : ''} (default)`
+                          : 'None (the group owns them)',
+                      },
+                      ...(groupId === NONE ? [{ value: UNASSIGNED, label: 'No owner (test accounts)' }] : []),
                       ...(customersQuery.data ?? []).map((c) => ({ value: String(c.id), label: c.name })),
                     ]}
                   />
@@ -410,6 +419,11 @@ function NamePreview({
 function BatchResult({ result, onCopy }: { result: BulkAccountResult; onCopy: (text: string) => void }) {
   return (
     <div className="flex flex-col gap-3">
+      {result.customer_name && result.created > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Owner: <span className="font-medium text-foreground">{result.customer_name}</span> — one payer for the whole batch.
+        </p>
+      )}
       <div className="flex flex-wrap gap-3 text-xs">
         <span className="text-success">{result.created} created</span>
         {result.skipped > 0 && <span className="text-muted-foreground">{result.skipped} skipped</span>}

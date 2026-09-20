@@ -305,7 +305,10 @@ export function DashboardPage() {
                       to={`/customers/${c.customer_id}`}
                       className="flex items-center justify-between gap-3 px-4 py-1.5 text-[13px] hover:bg-muted/50"
                     >
-                      <span className="truncate">{c.name}</span>
+                      <span className="truncate">
+                        {c.name}
+                        {c.kind === 'family' && <span className="ml-1.5 text-[11px] text-muted-foreground">family</span>}
+                      </span>
                       <Money amount={c.balance} className="text-xs" />
                     </Link>
                   )}

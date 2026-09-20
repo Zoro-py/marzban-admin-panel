@@ -20,16 +20,18 @@ export function NewCustomerDialog() {
   const [open, setOpen] = React.useState(false)
   const [name, setName] = React.useState('')
   const [contact, setContact] = React.useState('')
+  const [family, setFamily] = React.useState(false)
   const queryClient = useQueryClient()
 
   const mutation = useMutation({
-    mutationFn: () => customersApi.create({ name: name.trim(), contact: contact.trim() || undefined }),
+    mutationFn: () => customersApi.create({ name: name.trim(), contact: contact.trim() || undefined, kind: family ? 'family' : 'individual' }),
     onSuccess: (customer) => {
       toast.success(`Added customer ${customer.name}`)
       queryClient.invalidateQueries({ queryKey: ['customers'] })
       setOpen(false)
       setName('')
       setContact('')
+      setFamily(false)
     },
   })
 
@@ -55,6 +57,12 @@ export function NewCustomerDialog() {
             <Label htmlFor="contact">Contact (Telegram / phone)</Label>
             <Input id="contact" value={contact || ''} onChange={(e) => setContact(e.target.value)} placeholder="@ali_boojar" />
           </div>
+          <label className="flex cursor-pointer items-start gap-2 text-xs">
+            <input type="checkbox" checked={family} onChange={(e) => setFamily(e.target.checked)} className="mt-0.5" />
+            <span>
+              <span className="font-medium">Family</span> — one payer who owns several accounts (labels the customer; changes no billing).
+            </span>
+          </label>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>
