@@ -232,6 +232,7 @@ def test_council_findings() -> None:
     check("123 must not join a family literally named 1", sync_job._family_for_username("123", fam), None)
     check("no trailing digits -> no family", sync_job._family_for_username("fam", fam), None)
     check("case-insensitive", sync_job._family_for_username("FAM7", fam), 1)
+    check("non-ASCII digits (superscript, Arabic-Indic) are not a numeric tail", (sync_job._family_for_username("fam²", fam), sync_job._family_for_username("fam١٢", fam)), (None, None))
 
     client = _client(FakeMarzban())
     a = client.post("/api/customers", json={"name": "Alpha", "kind": "family"}).json()["id"]
@@ -263,6 +264,29 @@ def test_council_findings() -> None:
     check("but the result carries a warning naming the count", len(r["warnings"]) == 1 and "2 account(s)" in r["warnings"][0], True)
     client = _client(FakeMarzban())
     check("a normal batch has no warnings", client.post("/api/accounts/bulk", json={"base_name": "okfam", "count": 2}).json()["warnings"], [])
+    # transient failure on the first attempt only: the retry heals it, ONE owner for the whole batch
+    client = _client(FakeMarzban())
+    calls = {"n": 0}
+    def flaky(session, base):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient")
+        return real_ensure(session, base)
+    accounts_router._ensure_family_customer = flaky
+    try:
+        r2 = client.post("/api/accounts/bulk", json={"base_name": "flaky", "count": 3}).json()
+    finally:
+        accounts_router._ensure_family_customer = real_ensure
+    check("transient first failure is retried: no warning, one owner for all 3", (r2["warnings"], len(set(_owners()))), ([], 1))
+    # persistent failure: never splits the batch — all unowned + one warning
+    client = _client(FakeMarzban())
+    accounts_router._ensure_family_customer = boom
+    try:
+        r3 = client.post("/api/accounts/bulk", json={"base_name": "gone", "count": 3}).json()
+    finally:
+        accounts_router._ensure_family_customer = real_ensure
+    check("persistent failure: all 3 unowned, exactly one warning", (_owners(), len(r3["warnings"])), ([None, None, None], 1))
+    client = _client(FakeMarzban())
     check("nonexistent customer_id is still refused", client.post("/api/accounts/bulk", json={"base_name": "zz", "count": 1, "customer_id": 999}).status_code, 404)
 
     # -- PATCH with explicit nulls leaves NOT NULL columns alone (was a generic 400 integrity error)

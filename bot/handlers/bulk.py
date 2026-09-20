@@ -318,9 +318,10 @@ async def bulk_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # the bot no longer duplicates it — one implementation for panel and
         # bot, and no window where the customer exists but the batch failed.
         body = {k: v for k, v in body.items() if k not in ("customer_id", "group_id", "unassigned")}
-    elif action == "go" and not body.get("customer_id") and not body.get("group_id"):
+    elif action == "go" and body.get("customer_id") is None and body.get("group_id") is None:
         # The explicit «without owner» button: say so, because an owner-less
         # request is now the trigger for the family default.
-        body = dict(body, unassigned=True)
+        body = {k: v for k, v in body.items() if k not in ("customer_id", "group_id")}
+        body["unassigned"] = True
 
     await _create_batch(query, body)

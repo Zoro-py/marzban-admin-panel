@@ -80,6 +80,9 @@ bad = client.post("/api/ledger", json={**body, "amount": -1}, headers={"Idempote
 ok_after = client.post("/api/ledger", json=body, headers={"Idempotency-Key": "k-bad"})
 check("a rejected request does not burn its key", bad.status_code in (400, 422) and ok_after.status_code == 200 and rows() == 6)
 
+clash = client.post("/api/ledger", json={**body, "amount": 99999}, headers={"Idempotency-Key": "k-1"})
+check("same key with a DIFFERENT payload is refused (409), not answered with the old entry", clash.status_code == 409 and rows() == 6)
+
 long = client.post("/api/ledger", json=body, headers={"Idempotency-Key": "x" * 200})
 check("absurdly long key is refused (422)", long.status_code == 422)
 

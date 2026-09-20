@@ -336,6 +336,10 @@ async def create_bulk_accounts(
     needs_family = body.customer_id is None and body.group_id is None and not body.unassigned
     owner_customer: Optional[Customer] = session.get(Customer, body.customer_id) if body.customer_id is not None else None
     unowned_created = 0
+    # Once the family customer couldn't be set up (after one retry) stop trying
+    # for the rest of the batch: a transient failure on item 1 that heals on
+    # item 2 would otherwise split ONE batch between «unowned» and «owned».
+    family_setup_failed = False
 
     for planned in plan.names:
         if aborted_reason is not None:
@@ -388,12 +392,16 @@ async def create_bulk_accounts(
         subscription_url = resolve_subscription_url(marzban_user.get("subscription_url"))
         now = utcnow()
         family_created_here = False
-        if needs_family and owner_customer is None:
-            try:
-                owner_customer, family_created_here = _ensure_family_customer(session, body.base_name)
-            except Exception:  # noqa: BLE001 — falls through to an unowned row rather than losing the account
-                session.rollback()
-                logger.exception("Bulk batch '%s': couldn't set up the family customer", body.base_name)
+        if needs_family and owner_customer is None and not family_setup_failed:
+            for attempt in (1, 2):
+                try:
+                    owner_customer, family_created_here = _ensure_family_customer(session, body.base_name)
+                    break
+                except Exception:  # noqa: BLE001 — falls through to an unowned row rather than losing the account
+                    session.rollback()
+                    logger.exception("Bulk batch '%s': couldn't set up the family customer (attempt %d)", body.base_name, attempt)
+            else:
+                family_setup_failed = True
         account = Account(
             marzban_username=planned.username,
             customer_id=owner_customer.id if owner_customer is not None else body.customer_id,

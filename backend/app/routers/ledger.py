@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/ledger", tags=["ledger"], dependencies=[Depends(
 # a restart only forgets keys that are minutes old, and no schema change is needed.
 _IDEM_TTL_ENTRIES = 2000
 _idem_lock = threading.Lock()
-_idem_seen: dict[str, int] = {}
+_idem_seen: dict[str, tuple[int, str]] = {}   # key -> (entry id, request fingerprint)
 
 
 @router.get("", response_model=list[LedgerRead])
@@ -56,13 +56,19 @@ def create_ledger_entry(
         # Held across check + write + commit so two concurrent requests with one
         # key can't both pass the check (the endpoint runs in a thread pool).
         with _idem_lock:
-            seen_id = _idem_seen.get(idempotency_key)
-            if seen_id is not None:
+            fingerprint = body.model_dump_json()
+            seen = _idem_seen.get(idempotency_key)
+            if seen is not None:
+                seen_id, seen_fp = seen
+                if seen_fp != fingerprint:
+                    # Same key, different request: returning the first entry with a
+                    # 200 would tell the caller their (different) payment was recorded.
+                    raise HTTPException(409, "This Idempotency-Key was already used for a different entry")
                 existing = session.get(LedgerEntry, seen_id)
                 if existing is not None:
                     return existing
             entry = _write_entry(body, session, operator)
-            _idem_seen[idempotency_key] = entry.id
+            _idem_seen[idempotency_key] = (entry.id, fingerprint)
             while len(_idem_seen) > _IDEM_TTL_ENTRIES:
                 _idem_seen.pop(next(iter(_idem_seen)))
             return entry

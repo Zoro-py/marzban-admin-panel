@@ -361,7 +361,7 @@ def _family_for_username(username: str, family_ids: dict[str, int]) -> Optional[
     lowered = username.lower()
     for cut in range(len(lowered) - 1, 0, -1):
         base, tail = lowered[:cut], lowered[cut:]
-        if tail.isdigit() and not base.isdigit() and base in family_ids:
+        if tail.isascii() and tail.isdigit() and not base.isdigit() and base in family_ids:
             return family_ids[base]
     return None
 
