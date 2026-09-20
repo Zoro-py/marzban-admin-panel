@@ -214,7 +214,8 @@ export const ledgerApi = {
     group_id?: number | null
     account_id?: number | null
     note?: string
-  }) => (await api.post<LedgerEntry>('/api/ledger', body)).data,
+  }, idempotencyKey?: string) =>
+    (await api.post<LedgerEntry>('/api/ledger', body, idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : undefined)).data,
   balance: async (params: { customer_id?: number; group_id?: number; account_id?: number; since?: string }) =>
     (await api.get<Balance>('/api/ledger/balance', { params })).data,
 }

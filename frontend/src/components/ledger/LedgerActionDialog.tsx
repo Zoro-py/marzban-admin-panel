@@ -61,16 +61,29 @@ export function LedgerActionDialog({
     }
   }, [open, defaultType])
 
+  // One key per distinct payload: a double-click or a retry of THE SAME entry
+  // reuses it (the server returns the first entry instead of appending a
+  // second), while any edit — or a fresh dialog — mints a new one, so a real
+  // second payment of the same amount is never swallowed.
+  const idempotencyKey = React.useMemo(
+    () => crypto.randomUUID(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [open, type, amount, note, customerId, groupId, accountId],
+  )
+
   const mutation = useMutation({
     mutationFn: () =>
-      ledgerApi.create({
-        type,
-        amount: Number(amount),
-        customer_id: customerId,
-        group_id: groupId,
-        account_id: accountId,
-        note: note || undefined,
-      }),
+      ledgerApi.create(
+        {
+          type,
+          amount: Number(amount),
+          customer_id: customerId,
+          group_id: groupId,
+          account_id: accountId,
+          note: note || undefined,
+        },
+        idempotencyKey,
+      ),
     onSuccess: () => {
       toast.success(type === 'charge' ? 'Debt recorded' : 'Payment recorded')
       queryClient.invalidateQueries({ queryKey: ['accounts'] })
