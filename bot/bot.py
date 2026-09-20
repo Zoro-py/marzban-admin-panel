@@ -36,6 +36,7 @@ from handlers.delegate_admin import (  # noqa: E402
     delegate_off_command,
 )
 from handlers.report import report_command  # noqa: E402
+from handlers.since import since_command  # noqa: E402
 from handlers.start import help_command, start_command  # noqa: E402
 from handlers.sync import sync_command  # noqa: E402
 from handlers.topup import (  # noqa: E402
@@ -58,6 +59,7 @@ async def _register_bot_commands(app) -> None:
     commands = [
         BotCommand("debts", "کنسول بدهی‌ها — ثبت پرداخت از همین‌جا"),
         BotCommand("bill", "صورتحساب: /bill <نام یا id>"),
+        BotCommand("since", "از این تاریخ: /since <نام یا id> [تاریخ]"),
         BotCommand("report", "گزارش روزانه: بدهی، مصرف، انقضا"),
         BotCommand("customer", "مشتری: /customer <نام یا id>"),
         BotCommand("charge", "ثبت بدهی: /charge <مشتری> <مبلغ>"),
@@ -88,6 +90,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("report", report_command))
     app.add_handler(CommandHandler("customer", customer_command))
+    app.add_handler(CommandHandler("since", since_command))
     app.add_handler(CommandHandler("charge", charge_command))
     app.add_handler(CommandHandler("credit", credit_command))
     app.add_handler(CommandHandler("extend", extend_command))
