@@ -1,7 +1,8 @@
+import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlmodel import Session, select
 
 from app.auth import require_auth
@@ -11,6 +12,18 @@ from app.schemas import BalanceRead, LedgerCreate, LedgerRead
 from app.services import MoneyBook
 
 router = APIRouter(prefix="/api/ledger", tags=["ledger"], dependencies=[Depends(require_auth)])
+
+# Optional client-supplied idempotency (header `Idempotency-Key`): a double-click,
+# a second tab or an automatic retry that carries the SAME key returns the entry
+# the first request wrote instead of appending a second one. The ledger is
+# append-only, so a duplicated row can't be noticed afterwards — it silently
+# invents (credit) or forgives (charge) money. Requests without the header behave
+# exactly as before, so a legitimately repeated identical entry is never blocked.
+# In-memory on purpose: the backend is one process (see services.serialise_billing),
+# a restart only forgets keys that are minutes old, and no schema change is needed.
+_IDEM_TTL_ENTRIES = 2000
+_idem_lock = threading.Lock()
+_idem_seen: dict[str, int] = {}
 
 
 @router.get("", response_model=list[LedgerRead])
@@ -37,7 +50,26 @@ def create_ledger_entry(
     body: LedgerCreate,
     session: Session = Depends(get_session),
     operator: str = Depends(require_auth),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key", max_length=80),
 ):
+    if idempotency_key:
+        # Held across check + write + commit so two concurrent requests with one
+        # key can't both pass the check (the endpoint runs in a thread pool).
+        with _idem_lock:
+            seen_id = _idem_seen.get(idempotency_key)
+            if seen_id is not None:
+                existing = session.get(LedgerEntry, seen_id)
+                if existing is not None:
+                    return existing
+            entry = _write_entry(body, session, operator)
+            _idem_seen[idempotency_key] = entry.id
+            while len(_idem_seen) > _IDEM_TTL_ENTRIES:
+                _idem_seen.pop(next(iter(_idem_seen)))
+            return entry
+    return _write_entry(body, session, operator)
+
+
+def _write_entry(body: LedgerCreate, session: Session, operator: str) -> LedgerEntry:
     if body.customer_id is None and body.group_id is None:
         raise HTTPException(400, "Provide customer_id and/or group_id for this ledger entry")
     if body.customer_id is not None and not session.get(Customer, body.customer_id):
