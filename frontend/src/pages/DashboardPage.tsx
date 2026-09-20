@@ -216,7 +216,7 @@ export function DashboardPage() {
                       onClick={() => openAccount(a.account_id)}
                       username={a.marzban_username}
                       owner={null}
-                      metric={<span className="text-xs text-muted-foreground">assign a customer</span>}
+                      metric={a.balance > 0 ? <span className="font-medium text-destructive"><Money amount={a.balance} /></span> : <span className="text-xs text-muted-foreground">assign a customer</span>}
                     />
                   )}
                 />

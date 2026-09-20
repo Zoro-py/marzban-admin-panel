@@ -265,7 +265,7 @@ export interface ReportSummary {
   expired_accounts: { account_id: number; marzban_username: string; days_left: number; owner_name: string | null; has_next_plan: boolean }[]
   near_expiry_accounts: { account_id: number; marzban_username: string; days_left: number; owner_name: string | null; has_next_plan: boolean }[]
   no_rate_accounts: { account_id: number; marzban_username: string; owner_name: string | null }[]
-  unassigned_accounts: { account_id: number; marzban_username: string }[]
+  unassigned_accounts: { account_id: number; marzban_username: string; balance: number }[]
   pending_settlement: {
     type: 'group' | 'account'
     id: number
