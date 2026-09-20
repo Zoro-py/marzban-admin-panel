@@ -10,7 +10,7 @@ failure modes in this exact codebase and the discipline required around money lo
 | Entity | What it is |
 |---|---|
 | `Account` | Mirrors one Marzban user. Carries local billing fields Marzban has no concept of: `billing_mode`, `rate_per_gb`, `usage_baseline` (payg meter start point), `billed_data_limit` (prepay meter start point), `customer_id`/`group_id` (ownership). |
-| `Customer` | The person you actually deal with. Owns standalone accounts and/or represents a `Group`. |
+| `Customer` | The person you actually deal with. Owns standalone accounts and/or represents a `Group`. Carries a label-only `kind`: `individual` (default) or `family` — one payer owning several accounts (see "Families" below). |
 | `Group` | A pay-as-you-go-or-prepay billing unit — several accounts billed together against one representative `Customer`, on a shared cycle. A group's `billing_mode` governs every member's billing regardless of that member's own field (see §2). |
 | `LedgerEntry` | Append-only. `type` is `charge` (debt owed to you) or `credit` (payment received). Never edited or deleted — a balance is always a live sum, not a stored field. |
 | `QueuedPlan` | A next-plan "pending" row — see §4.2. |
@@ -235,6 +235,36 @@ Purely informational — no charge, no Marzban call — so unlike the money-movi
 has no self-healing "did this week already run" state: a failed send is logged and the next
 week's scheduled run simply tries again. Sends nothing most weeks by design (no customer
 matches); that's the "without creating noise" requirement working as intended, not a bug.
+
+**The «accruing» list (read-only, same endpoint).** `GET /api/notifications/debt-nudge` also
+returns `accruing`: customers whose net owed (posted + not-yet-invoiced) is positive but who are
+NOT in `overdue` — the debt is younger than 14 days, or was never billed (a prepay package nobody
+has charged). It is never nudged and has no payment buttons; the bot's `/debts` shows it as a
+quieter second section so «not overdue» can't be misread as «owes nothing». The nudge itself is
+unchanged: posted debt only, ≥14 days (owner decision).
+
+### Families (`Customer.kind = 'family'`)
+
+A family is **one customer who owns several accounts** — the operator talks to that one payer. It
+is a label, not a billing mode: a family's balance is the same account roll-up every customer
+gets, and no money code reads `kind`. What it changes is where things land:
+
+- `POST /api/accounts/bulk` with neither `customer_id` nor `group_id` attaches the whole batch to
+  ONE customer named after the base name — an existing same-named customer (case-insensitive) is
+  reused, otherwise a new `kind='family'` one is created in the transaction of the first account
+  that succeeds (a batch where every item fails leaves no empty customer). `unassigned=true` is
+  the explicit opt-out (test accounts). The bot's `/bulk` and the panel's Bulk dialog both go
+  through this rule.
+- Sync adopts an unknown Marzban user named `<base><number>` into an existing **family** customer
+  named `<base>`; anything else still gets its own personal customer (the standing «every account
+  is an individual by default» rule). Only families are matched, so an ordinary customer sharing
+  a name prefix is never swallowed.
+- Why it exists: before this, a batch made without an owner became N one-account customers
+  (live: `khanevadeh1..12`) — twelve rows in every debt list instead of one payer.
+- Existing fragmented families are folded with `scripts/merge_family_customers.py` (dry-run by
+  default; see `docs/runbooks/merge-family-customers.md`). It moves accounts and re-points ledger
+  `customer_id`; it never creates or edits a ledger amount and aborts if the ledger total, the
+  family's posted balance or the account count would change.
 
 ## 5. Dashboard-specific live widgets
 
