@@ -5,6 +5,7 @@ from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, Group, LedgerEntry, LedgerSource, LedgerType, MonthlySettlementBatch, utcnow
 from app.payg_monthly_job import maybe_run_monthly_payg_settlement
+from app.services import serialise_billing
 
 router = APIRouter(prefix="/api/payg-monthly", tags=["payg-monthly"], dependencies=[Depends(require_auth)])
 
@@ -52,14 +53,22 @@ def list_batches(period: str | None = None, session: Session = Depends(get_sessi
 
 
 @router.post("/batches/{batch_id}/mark-paid")
-def mark_batch_paid(batch_id: int, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
+@serialise_billing
+async def mark_batch_paid(batch_id: int, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     """Posts a credit for exactly this settlement's amount — not the
     entity's whole current balance, which could include unrelated debt from
     something else entirely. Lets the operator record "this month's bill got
     paid" the moment it actually happens, days after the charge was posted
     at settle time, without that gap affecting anything (see
     payg_monthly_job's own docstring — the charge already exists as a real
-    ledger entry regardless of when this gets clicked)."""
+    ledger entry regardless of when this gets clicked).
+
+    Runs under serialise_billing like every other money-moving endpoint: the
+    marked_paid_at check and the credit commit are only atomic against a
+    second concurrent call if both runs take the billing lock — a double-tap
+    on the mark-paid button that slips past the frontend's isPending guard
+    must credit once, not twice (a double credit invents money; the ledger
+    is append-only, so nothing would flag it)."""
     batch = session.get(MonthlySettlementBatch, batch_id)
     if not batch:
         raise HTTPException(404, "Settlement not found")
