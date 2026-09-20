@@ -12,11 +12,11 @@ backend's Docker volume, so run the script inside the backend container:
 cd /opt/marzban-admin-panel
 docker compose cp scripts/merge_family_customers.py backend:/tmp/merge_family_customers.py
 # 1) DRY RUN — prints the plan + invariants, changes nothing:
-docker compose exec backend python /tmp/merge_family_customers.py --db /app/vpn.db --base khanevadeh
+docker compose exec backend python /tmp/merge_family_customers.py --db /app/data/vpn.db --base khanevadeh
 # 2) Read the output: 12 customers, 12 accounts, ledger_total_before == ledger_total_after,
 #    family_posted_before == family_posted_after. Anything under SKIPPED stays untouched.
 # 3) Take a fresh panel backup first (POST /api/backup/run, or the bot's /backup), then apply:
-docker compose exec backend python /tmp/merge_family_customers.py --db /app/vpn.db --base khanevadeh --apply
+docker compose exec backend python /tmp/merge_family_customers.py --db /app/data/vpn.db --base khanevadeh --apply
 ```
 
 (Adjust `--db` to the real path: `docker compose exec backend sh -c 'echo $DATABASE_URL'`.) `--apply`
