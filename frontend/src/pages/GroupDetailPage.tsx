@@ -16,6 +16,7 @@ import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
 import { SettleGroupDialog } from '@/components/groups/SettleGroupDialog'
 import { ResetGroupCycleDialog } from '@/components/groups/ResetGroupCycleDialog'
 import { GroupSettingsDialog } from '@/components/groups/GroupSettingsDialog'
+import { BalanceSinceControl } from '@/components/BalanceSinceControl'
 import { UsageBar } from '@/components/UsageBar'
 import { StatusDot } from '@/components/StatusDot'
 import { StatCard } from '@/components/StatCard'
@@ -201,6 +202,12 @@ export function GroupDetailPage() {
           <SettleGroupDialog groupId={groupId} currentBalance={group.balance} />
         </div>
       </div>
+
+      {/* R22: the group answers the same "what do they owe FROM this date
+          forward" question the customer page and account inspector do —
+          a group's debt view without it was the gap the owner kept
+          hitting (H2). */}
+      <BalanceSinceControl scope={{ group_id: groupId }} />
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <StatCard
