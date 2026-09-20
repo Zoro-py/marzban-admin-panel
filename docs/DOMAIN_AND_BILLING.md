@@ -193,7 +193,15 @@ clicking "Settle" would (it *is* `settle_group`/`settle_account`, called directl
   doesn't stop the rest from settling — it's logged, reported in a follow-up admin message,
   and naturally gets picked up again next month's cycle (unbilled usage just keeps accruing).
 - Each settled group/account gets its own `MonthlySettlementBatch` row (`jalali_period`,
-  `billable_gb`, `amount`, `settled_at`) plus its own ready-to-forward customer message.
+  `billable_gb`, `amount`, `settled_at`) plus its own ready-to-forward customer message. The
+  batch row's `amount` is what the settle **actually posted** (recomputed at settle time),
+  never the figure computed minutes earlier in the aggregate phase — "mark as paid" credits
+  exactly this row, so the two must agree to the toman. Ledger rows and account events from
+  the run carry `created_by="system:payg-monthly"` (the settle endpoints refuse to run with
+  FastAPI's unresolved `Depends()` default — direct callers must name themselves). A member
+  whose Marzban reset failed inside a group settle is still charged (its local baseline rolls
+  forward from the pre-reset meter), does NOT count as a failed settle, and gets its own
+  warning message — the meter was never zeroed and somebody has to know.
 - **The web panel's "Monthly Settlements" page** (`/monthly-settlements`) is where "mark this
   period as paid" happens — deliberately decoupled from settle time, so a day or two of
   payment lag doesn't corrupt ongoing balance math. "Mark as paid" (`POST
@@ -203,12 +211,14 @@ clicking "Settle" would (it *is* `settle_group`/`settle_account`, called directl
 - `POST /api/payg-monthly/run` lets an operator trigger the same check manually (e.g. to
   verify the whole pipeline works) — most days it's a no-op (nothing unsettled yet).
 
-### 4.5 Weekly overdue-debt nudge (informational only, not on the sync cycle)
+### 4.5 Every-other-day overdue-debt nudge (informational only, not on the sync cycle)
 
-`app/debt_nudge_job.py`, on its own weekly cron (`debt_nudge_day_of_week`/`hour`/`minute`,
-default Monday 09:00 server time) — not part of the 60-second sync cycle, since it reads
-already-posted ledger history rather than anything from Marzban. Sends one Telegram summary
-of every customer whose **posted** (real, already-charged — never the pending/unbilled
+`app/debt_nudge_job.py`, on its own cron (`debt_nudge_hour`/`minute`, default 09:00 server
+time) — not part of the 60-second sync cycle, since it reads already-posted ledger history
+rather than anything from Marzban. The cron fires daily and the job itself skips every other
+calendar day (`toordinal()` parity — a plain "every 2 days" cron drifts at month boundaries,
+and a stateless parity check never needs "did it run yesterday" tracking). Sends one Telegram
+summary of every customer whose **posted** (real, already-charged — never the pending/unbilled
 estimate) debt has been continuously outstanding for at least `DEBT_NUDGE_MIN_DAYS` (14).
 
 Explicitly a **duration** gate, not an amount one, per the operator's own framing: a customer

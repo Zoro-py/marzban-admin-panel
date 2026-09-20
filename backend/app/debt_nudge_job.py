@@ -14,10 +14,10 @@ unbilled estimate — "real debt" per the operator's own framing, not a moving
 number that hasn't been invoiced yet.
 
 Purely informational: no charge, no Marzban call, nothing to roll back or
-retry. If a week's send fails, the next week's scheduled run tries again on
-its own — no self-healing "did this week already run" tracking needed, the
-kind the money-moving jobs (payg monthly settlement) require to never
-silently skip a cycle."""
+retry. If a scheduled send fails, the next run (every other day) tries
+again on its own — no self-healing "did this run already happen" tracking
+needed, the kind the money-moving jobs (payg monthly settlement) require
+to never silently skip a cycle."""
 
 import logging
 from datetime import datetime

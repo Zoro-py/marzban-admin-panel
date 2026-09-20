@@ -104,11 +104,17 @@ venv/Scripts/python bot.py
 
 Commands: `/report`, `/customer <name or id>`, `/charge <customer> <amount> [note]`,
 `/credit <customer> <amount> [note]`, `/extend <username> <days> [gb]`,
-`/bulk <name> <count> [30gb] [30d] [from=N]`, `/sync`,
+`/bill <name or id>` (one customer's whole money picture),
+`/since <name or id> [1405/06/01 | 2026-08-22 | 30d]` (Balance-since in the
+chat — Jalali or Gregorian dates, Persian digits fine),
+`/debts` (the payment console), `/bulk <name> <count> [30gb] [30d] [from=N] [cust=<id|name>] [group=<id>]`, `/sync`,
 `/backup` (on-demand DB backup, sent as a file to this chat).
 
 `/bulk` previews the exact usernames and waits for a confirmation tap before
-creating anything — see "Family batches" below.
+creating anything — and that confirm step also settles who the batch belongs
+to: the safe default creates a customer named after the batch (an unassigned
+batch can never be billed), or pass `cust=`/`group=` to attach an existing
+one — see "Family batches" below.
 
 Note: `BOT_TOKEN`/`BOT_ADMIN_CHAT_ID` in `backend/.env` are a **separate** thing from this
 bot process — the backend uses them directly (via `app/notify.py`) to push automatic
