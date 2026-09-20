@@ -263,7 +263,17 @@ async def settle_group(group_id: int, body: GroupSettleRequest = GroupSettleRequ
 
     Returns:
         dict: A summary containing group_id, charged_amount, settled_at, and individual lines.
+
+    Direct (non-HTTP) callers — the monthly payg job is one — MUST pass an
+    explicit `operator` identity: the Depends(require_auth) default only
+    resolves on the FastAPI path. Without it, the raw Depends object would
+    reach created_by and blow up at commit time, rolling back the whole
+    settlement. The guard below turns that into a loud, immediate error.
     """
+    if not isinstance(operator, str):
+        raise RuntimeError(
+            "settle_group called directly without an explicit operator — "
+            "pass operator='system:<job>' (the Depends() default is HTTP-only)")
     group = session.exec(select(Group).with_for_update().where(Group.id == group_id)).first()
     if not group:
         raise HTTPException(404, "Group not found")
@@ -463,6 +473,12 @@ async def settle_group_member(
     (unlike the full-group /settle) a Marzban failure here aborts cleanly
     before any charge is posted, same as settle_account.
     """
+    if not isinstance(operator, str):
+        # Same guard as settle_account: a direct caller forgetting operator=
+        # would otherwise reach created_by and fail at commit time.
+        raise RuntimeError(
+            "settle_group_member called directly without an explicit operator — "
+            "pass operator='system:<job>' (the Depends() default is HTTP-only)")
     group = session.get(Group, group_id)
     if not group:
         raise HTTPException(404, "Group not found")

@@ -732,7 +732,17 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
     balance goes red afterward if `mark_paid` isn't set: nothing has been
     paid yet, only billed. Pass mark_paid=True when the operator is
     collecting payment in the same moment (the common case) to also post a
-    credit that clears whatever is still outstanding after this charge."""
+    credit that clears whatever is still outstanding after this charge.
+
+    Direct (non-HTTP) callers — the monthly payg job is one — MUST pass an
+    explicit `operator` identity: the Depends(require_auth) default only
+    resolves on the FastAPI path. Without it, the raw Depends object would
+    reach created_by and blow up at commit time, rolling back the whole
+    settlement. The guard below turns that into a loud, immediate error."""
+    if not isinstance(operator, str):
+        raise RuntimeError(
+            "settle_account called directly without an explicit operator — "
+            "pass operator='system:<job>' (the Depends() default is HTTP-only)")
     account = session.exec(select(Account).with_for_update().where(Account.id == account_id)).first()
     if not account:
         raise HTTPException(404, "Account not found")

@@ -197,7 +197,8 @@ async def _run_monthly_payg_settlement(month_key: str, year: int, month: int) ->
     with Session(engine) as session:
         for r in group_rows:
             try:
-                await settle_group(r["group_id"], GroupSettleRequest(mark_paid=False), session)
+                await settle_group(r["group_id"], GroupSettleRequest(mark_paid=False), session,
+                                   operator="system:payg-monthly")
                 session.add(MonthlySettlementBatch(
                     jalali_period=month_key, group_id=r["group_id"], display_name=r["name"],
                     billable_gb=r["gb"], amount=r["amount"], settled_at=now,
@@ -216,7 +217,8 @@ async def _run_monthly_payg_settlement(month_key: str, year: int, month: int) ->
 
         for r in account_rows:
             try:
-                result = await settle_account(r["account_id"], AccountSettleRequest(mark_paid=False), session)
+                result = await settle_account(r["account_id"], AccountSettleRequest(mark_paid=False), session,
+                                              operator="system:payg-monthly")
                 # The amount the settle ACTUALLY posted, not the one computed
                 # minutes earlier: usage keeps accruing while the run works
                 # through the list, and the record has to match the ledger.
