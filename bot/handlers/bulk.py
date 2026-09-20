@@ -1,8 +1,12 @@
 """/bulk — create a family batch of accounts from one base name.
 
-Two steps on purpose. The command itself only PREVIEWS: it asks the backend
+Three steps on purpose. The command itself only PREVIEWS: it asks the backend
 which usernames are free and shows them, and nothing is created until the
-operator taps the confirm button. Creating N accounts in Marzban cannot be
+operator taps a confirm button — which also settles WHO the batch belongs to
+(a new customer named after the batch, an existing cust=/group= given in the
+command, or explicitly nobody). Unassigned accounts can never be billed (settle
+refuses them, the monthly job skips them), so the new-family-customer route is
+the safe default and comes first. Creating N accounts in Marzban cannot be
 undone, and a mistyped count in a chat window is far too easy — a one-shot
 command would make "/bulk khanevade 50" (meant as 5) an irreversible mistake
 with no moment to catch it.
@@ -28,13 +32,17 @@ from handlers.common import admin_only
 MAX_BULK_COUNT = 50
 
 USAGE = (
-    "Usage: /bulk <name> <count> [30gb] [30d] [from=7]\n\n"
+    "Usage: /bulk <name> <count> [30gb] [30d] [from=7] [cust=<id|name>] [group=<id>]\n\n"
     "Examples:\n"
     "  /bulk khanevade 5\n"
     "  /bulk khanevade 5 30gb 30d\n"
-    "  /bulk khanevade 3 50gb 60d from=8\n\n"
+    "  /bulk khanevade 3 50gb 60d from=8 cust=Ali\n"
+    "  /bulk khanevade 3 cust=12 group=2\n\n"
     "Creates <name>1, <name>2, … continuing after the highest number that "
-    "already exists, unless you give from=N. Nothing is charged."
+    "already exists, unless you give from=N. Nothing is charged.\n\n"
+    "Assignment: without cust=/group= the confirm step offers to create a new "
+    "customer named after the batch (the safe default — unassigned accounts "
+    "can't be billed), or create them with no owner."
 )
 
 # Telegram caps callback_data at 64 bytes, and a 28-character base name plus
@@ -50,6 +58,8 @@ CREATE_TIMEOUT_SECONDS = 300
 _GB_RE = re.compile(r"^(\d+(?:\.\d+)?)gb$", re.IGNORECASE)
 _DAYS_RE = re.compile(r"^(\d+)d$", re.IGNORECASE)
 _FROM_RE = re.compile(r"^(?:from|start)=(\d+)$", re.IGNORECASE)
+_CUST_RE = re.compile(r"^cust=(.+)$", re.IGNORECASE)
+_GROUP_RE = re.compile(r"^group=(\d+)$", re.IGNORECASE)
 
 
 def parse_bulk_args(args: list[str]) -> dict:
@@ -91,12 +101,20 @@ def parse_bulk_args(args: list[str]) -> dict:
             body["expire_days"] = int(m.group(1))
         elif (m := _FROM_RE.match(token)):
             body["start_index"] = int(m.group(1))
+        elif (m := _CUST_RE.match(token)):
+            # Held aside, not sent to the backend: the schema takes a
+            # customer_id, which the command resolves by id or exact name
+            # before anything is created.
+            body["_assign_customer"] = m.group(1).strip()
+        elif (m := _GROUP_RE.match(token)):
+            body["_assign_group"] = int(m.group(1))
         else:
             # Never silently ignored: a typo like "30g" would otherwise create
             # unlimited accounts while the operator believed they were 30GB.
             raise ValueError(
                 f"Didn't understand '{token}'. Use 30gb for volume, 30d for days, "
-                f"from=8 to start at a specific number."
+                f"from=8 to start at a specific number, cust=<id|name> or group=<id> "
+                f"to assign the batch."
             )
     return body
 
@@ -113,6 +131,13 @@ async def bulk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         body = parse_bulk_args(context.args or [])
     except ValueError as exc:
         await update.message.reply_text(str(exc))
+        return
+
+    assign_customer = body.pop("_assign_customer", None)
+    assign_group = body.pop("_assign_group", None)
+    if assign_customer is not None and assign_group is not None:
+        await update.message.reply_text(
+            "Assign the batch to a customer OR a group, not both — run /bulk again with one of cust=/group=.")
         return
 
     try:
@@ -135,11 +160,46 @@ async def bulk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
+    # Resolve the explicit assignment BEFORE anything exists to own — a batch
+    # created for a mistyped customer name must not go out unassigned just
+    # because nobody checked the name.
+    create_body = dict(body)
+    assignment_label = None
+    if assign_customer is not None or assign_group is not None:
+        try:
+            if assign_customer is not None:
+                customers = await backend.get("/api/customers")
+                match = next(
+                    (c for c in customers if str(c["id"]) == assign_customer
+                     or c["name"].strip().lower() == assign_customer.lower()),
+                    None,
+                )
+                if match is None:
+                    await update.message.reply_text(
+                        f"No customer '{assign_customer}' — rerun with cust=<id>, or drop "
+                        f"cust= and pick «New customer» on the confirm step.")
+                    return
+                create_body["customer_id"] = match["id"]
+                assignment_label = f"customer {match['name']} (id {match['id']})"
+            else:
+                groups = await backend.get("/api/groups")
+                match = next((g for g in groups if g["id"] == assign_group), None)
+                if match is None:
+                    await update.message.reply_text(
+                        f"No group with id {assign_group} — check /api/groups or drop group=.")
+                    return
+                create_body["group_id"] = match["id"]
+                assignment_label = f"group {match['name']} (id {match['id']})"
+        except Exception as exc:  # noqa: BLE001
+            await update.message.reply_text(f"Couldn't verify the assignment: {exc}")
+            return
+
     token = uuid.uuid4().hex[:12]
-    context.user_data[_PENDING_KEY] = {"token": token, "body": body}
+    context.user_data[_PENDING_KEY] = {"token": token, "body": create_body}
 
     lines = [
         f"About to create {len(free)} account(s) — {_plan_summary(body)}",
+        f"Assigned to: {assignment_label}" if assignment_label else "Assignment: none yet",
         "",
         *[f"• {n['marzban_username']}" for n in free],
     ]
@@ -148,46 +208,29 @@ async def bulk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         lines += [f"• {n['marzban_username']}" for n in taken]
     lines += ["", "Nothing is charged. Confirm to create them in Marzban."]
 
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"✅ Create {len(free)}", callback_data=f"bulk:go:{token}"),
-        InlineKeyboardButton("❌ Cancel", callback_data=f"bulk:no:{token}"),
-    ]])
+    if assignment_label:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(f"✅ Create {len(free)}", callback_data=f"bulk:go:{token}"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"bulk:no:{token}"),
+        ]])
+    else:
+        # The assignment step, with the safe default first: an unassigned batch
+        # can never be billed (settle refuses it, the monthly job skips it), so
+        # the new-family-customer route is the one the operator most likely wants.
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"👨‍👩‍👧 Create + new customer «{body['base_name']}»",
+                                  callback_data=f"bulk:asnew:{token}")],
+            [InlineKeyboardButton(f"👤 Create {len(free)} without owner", callback_data=f"bulk:go:{token}"),
+             InlineKeyboardButton("❌ Cancel", callback_data=f"bulk:no:{token}")],
+        ])
     # No parse_mode: usernames legitimately contain underscores, which Markdown
     # would either mangle or reject outright as unbalanced entities.
     await update.message.reply_text("\n".join(lines), reply_markup=keyboard)
 
 
-@admin_only
-async def bulk_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-
-    try:
-        _, action, token = query.data.split(":", 2)
-    except ValueError:
-        await query.edit_message_text("This button is malformed — run /bulk again.")
-        return
-
-    pending = context.user_data.get(_PENDING_KEY)
-    # The token check is what makes an OLD message's button harmless. Without
-    # it, scrolling up and tapping confirm on a previous batch would create a
-    # second batch the operator never asked for.
-    if not pending or pending.get("token") != token:
-        await query.edit_message_text(
-            "This batch is no longer pending (the bot restarted, or a newer /bulk replaced it). "
-            "Run /bulk again."
-        )
-        return
-
-    if action == "no":
-        context.user_data.pop(_PENDING_KEY, None)
-        await query.edit_message_text("Cancelled — nothing was created.")
-        return
-
-    # Consumed BEFORE the slow call, not after: a batch takes minutes, and a
-    # second tap during that window would otherwise start an identical batch.
-    context.user_data.pop(_PENDING_KEY, None)
-    body = pending["body"]
+async def _create_batch(query, body: dict) -> None:
+    """The slow shared tail of both confirm routes (assigned or not): POST the
+    batch and render whatever actually happened — created, failed, untracked."""
     await query.edit_message_text("Creating… this can take a minute. The QR codes will arrive as they're made.")
 
     try:
@@ -223,3 +266,58 @@ async def bulk_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         lines.append("No QR messages were queued — BOT_TOKEN/BOT_ADMIN_CHAT_ID isn't set on the backend.")
 
     await query.edit_message_text("\n".join(lines))
+
+
+@admin_only
+async def bulk_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        _, action, token = query.data.split(":", 2)
+    except ValueError:
+        await query.edit_message_text("This button is malformed — run /bulk again.")
+        return
+
+    pending = context.user_data.get(_PENDING_KEY)
+    # The token check is what makes an OLD message's button harmless. Without
+    # it, scrolling up and tapping confirm on a previous batch would create a
+    # second batch the operator never asked for.
+    if not pending or pending.get("token") != token:
+        await query.edit_message_text(
+            "This batch is no longer pending (the bot restarted, or a newer /bulk replaced it). "
+            "Run /bulk again."
+        )
+        return
+
+    if action == "no":
+        context.user_data.pop(_PENDING_KEY, None)
+        await query.edit_message_text("Cancelled — nothing was created.")
+        return
+
+    # Consumed BEFORE the slow call, not after: a batch takes minutes, and a
+    # second tap during that window would otherwise start an identical batch.
+    context.user_data.pop(_PENDING_KEY, None)
+    body = pending["body"]
+
+    if action == "asnew":
+        # The safe default from the confirm step: create (or reuse) a customer
+        # named after the batch and assign every account to it, so the batch is
+        # billable from the moment it exists. Idempotent on name — rerunning a
+        # cancelled batch won't mint a second «khanevade» customer.
+        base = body["base_name"]
+        try:
+            customers = await backend.get("/api/customers")
+            match = next((c for c in customers if c["name"].strip().lower() == base.lower()), None)
+            if match is not None:
+                body = dict(body, customer_id=match["id"])
+            else:
+                created = await backend.post("/api/customers", json={"name": base})
+                body = dict(body, customer_id=created["id"])
+        except Exception as exc:  # noqa: BLE001
+            await query.edit_message_text(
+                f"Couldn't set up the customer «{base}»: {exc}\n"
+                f"Nothing was created — run /bulk again.")
+            return
+
+    await _create_batch(query, body)
