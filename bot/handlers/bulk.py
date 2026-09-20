@@ -246,6 +246,8 @@ async def _create_batch(query, body: dict) -> None:
         return
 
     lines = [f"{result['created']} created, {result['skipped']} skipped, {result['failed']} failed."]
+    for warning in result.get("warnings", []):
+        lines.append(f"⚠️ {warning}")
     if result.get("customer_name") and result["created"]:
         lines.append(f"👨‍👩‍👧 Owner: «{result['customer_name']}» (customer #{result['customer_id']}) — one payer for the whole batch.")
     if result.get("aborted_reason"):
@@ -297,6 +299,13 @@ async def bulk_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.edit_message_text("Cancelled — nothing was created.")
         return
 
+    # Only the two confirm actions may create anything. An unknown/garbled
+    # action used to fall through to «create the batch», so it is refused here,
+    # BEFORE the pending batch is consumed (the operator can still confirm).
+    if action not in ("go", "asnew"):
+        await query.edit_message_text("This button isn't recognised — run /bulk again.")
+        return
+
     # Consumed BEFORE the slow call, not after: a batch takes minutes, and a
     # second tap during that window would otherwise start an identical batch.
     context.user_data.pop(_PENDING_KEY, None)
@@ -309,7 +318,7 @@ async def bulk_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # the bot no longer duplicates it — one implementation for panel and
         # bot, and no window where the customer exists but the batch failed.
         body = {k: v for k, v in body.items() if k not in ("customer_id", "group_id", "unassigned")}
-    elif action == "go" and "customer_id" not in body and "group_id" not in body:
+    elif action == "go" and not body.get("customer_id") and not body.get("group_id"):
         # The explicit «without owner» button: say so, because an owner-less
         # request is now the trigger for the family default.
         body = dict(body, unassigned=True)

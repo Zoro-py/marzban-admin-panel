@@ -140,6 +140,11 @@ def merge(conn: sqlite3.Connection, base: str, target_name: str, apply: bool) ->
             target_id = existing[0]
             if target_id in reps and target_id not in {c[0] for c in eligible}:
                 raise SystemExit(f"target customer '{existing[1]}' represents a group — pick another --name")
+            # Accounts moved into a delegate's or shop user's customer would
+            # become reachable through that link (delegates are scoped by
+            # customer). Refuse rather than widen anyone's access.
+            if target_id in delegate_ids or target_id in shop_ids:
+                raise SystemExit(f"target customer '{existing[1]}' is linked to a delegate or shop user — pick another --name")
         else:
             cur = conn.execute(
                 "INSERT INTO customer (name, contact, is_group_rep, kind, created_at) VALUES (?, NULL, 0, 'family', ?)",
@@ -150,6 +155,8 @@ def merge(conn: sqlite3.Connection, base: str, target_name: str, apply: bool) ->
 
         sources = [c for c in eligible if c[0] != target_id]
         source_ids = [c[0] for c in sources]
+        if not sources:
+            raise SystemExit("the only eligible customer is the target itself — nothing to merge")
 
         # Invariant inputs, measured before any UPDATE.
         posted_before = sum(_customer_posted(conn, c) for c in source_ids) + _customer_posted(conn, target_id)

@@ -197,6 +197,36 @@ async def main() -> None:
     upd7 = await scenario_command(fx7, ["khanevade", "2", "group=2"], {})
     check("group assignment label", any("group company-x" in t for t in upd7.message.texts))
 
+    print("== unknown callback action: refused, batch NOT created, still pending ==")
+    fx10 = FakeBackend()
+    user_data10: dict = {}
+    upd10 = await scenario_command(fx10, ["khanevade", "2"], user_data10)
+    token10 = callbacks(upd10.message.markups[0])[0].split(":")[2]
+    q10 = FakeQuery(f"bulk:weird:{token10}")
+    await bulk.bulk_callback(SimpleNamespace(callback_query=q10, effective_user=SimpleNamespace(id=ADMIN),
+                                             effective_chat=SimpleNamespace(id=ADMIN)),
+                             SimpleNamespace(user_data=user_data10))
+    check("nothing posted to /api/accounts/bulk", all(u != "/api/accounts/bulk" for u, _ in fx10.posts))
+    check("operator told the button isn't recognised", any("isn't recognised" in e for e in q10.edits))
+    check("the pending batch is still there to confirm", bool(user_data10.get(bulk._PENDING_KEY)))
+
+    print("== warnings from the backend are shown to the operator ==")
+    fx11 = FakeBackend()
+    async def _post_with_warning(url, json=None, timeout=20):
+        if url == "/api/accounts/bulk":
+            return {"created": 2, "skipped": 0, "failed": 0, "items": [], "notifications_queued": True,
+                    "warnings": ["The family customer could not be set up, so 2 account(s) were created WITHOUT an owner."]}
+        return await FakeBackend.post(fx11, url, json=json, timeout=timeout)
+    fx11.post = _post_with_warning
+    user_data11: dict = {}
+    upd11 = await scenario_command(fx11, ["khanevade", "2"], user_data11)
+    token11 = callbacks(upd11.message.markups[0])[0].split(":")[2]
+    q11 = FakeQuery(f"bulk:asnew:{token11}")
+    await bulk.bulk_callback(SimpleNamespace(callback_query=q11, effective_user=SimpleNamespace(id=ADMIN),
+                                             effective_chat=SimpleNamespace(id=ADMIN)),
+                             SimpleNamespace(user_data=user_data11))
+    check("warning text reaches the final message", any("WITHOUT an owner" in e for e in q11.edits), str(q11.edits))
+
     print()
     if failures:
         print(f"RESULT: {len(failures)} FAILURES: {failures}")
