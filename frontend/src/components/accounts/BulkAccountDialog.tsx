@@ -88,6 +88,12 @@ export function BulkAccountDialog({ defaultCustomerId, defaultGroupId, trigger }
     PREVIEW_DEBOUNCE_MS,
   )
 
+  // Choosing a group makes «No owner» meaningless and removes it from the list;
+  // don't leave the select holding a value that is no longer an option.
+  React.useEffect(() => {
+    if (groupId !== NONE && customerId === UNASSIGNED) setCustomerId(NONE)
+  }, [groupId, customerId])
+
   const nameInputValid = isValidBatchNames(trimmedBase, parsedCount, parsedStart)
   // The preview is keyed on the DEBOUNCED input, so it must be enabled by the
   // validity of that same debounced input — not of what is in the box right
@@ -118,7 +124,8 @@ export function BulkAccountDialog({ defaultCustomerId, defaultGroupId, trigger }
     count: parsedCount,
     start_index: parsedStart,
     customer_id: customerId === NONE || customerId === UNASSIGNED ? null : Number(customerId),
-    unassigned: customerId === UNASSIGNED,
+    // "No owner" only means something without a group; with one, the group owns them.
+    unassigned: customerId === UNASSIGNED && groupId === NONE,
     group_id: groupId === NONE ? null : Number(groupId),
     expire_days: expireDays.trim() === '' ? null : Number(expireDays),
     data_limit_gb: dataLimitGb.trim() === '' ? null : Number(dataLimitGb),
@@ -431,6 +438,11 @@ function NamePreview({
 function BatchResult({ result, onCopy }: { result: BulkAccountResult; onCopy: (text: string) => void }) {
   return (
     <div className="flex flex-col gap-3">
+      {result.warnings?.map((w) => (
+        <p key={w} className="rounded-md border border-warning/40 bg-warning/10 p-2 text-xs text-foreground">
+          {w}
+        </p>
+      ))}
       {result.customer_name && result.created > 0 && (
         <p className="text-xs text-muted-foreground">
           Owner: <span className="font-medium text-foreground">{result.customer_name}</span> — one payer for the whole batch.

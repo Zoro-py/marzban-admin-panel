@@ -120,6 +120,8 @@ export interface BulkAccountResult {
   // Who the batch was attached to (given, or the default family customer).
   customer_id: number | null
   customer_name: string | null
+  // Things to act on even though the batch "succeeded" (e.g. unowned accounts).
+  warnings?: string[]
 }
 
 export interface BulkAccountRequest {
