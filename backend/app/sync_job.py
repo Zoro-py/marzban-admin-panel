@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import math
+import re
 import time
 from datetime import datetime
 
@@ -566,6 +567,15 @@ async def _run_sync_impl() -> dict:
         existing = {a.marzban_username: a for a in session.exec(select(Account)).all()}
         touched: list[Account] = []
         pending_customers: list[tuple[Account, Customer]] = []
+        # A new Marzban user named <base><number> whose base matches an existing
+        # FAMILY customer joins that family instead of becoming yet another
+        # one-account customer — the way «khanevadeh1…12» fragmented before.
+        # Only kind='family' customers are ever matched, so an ordinary person
+        # who happens to share a name prefix is never swallowed.
+        family_ids = {
+            c.name.strip().lower(): c.id
+            for c in session.exec(select(Customer).where(Customer.kind == "family")).all()
+        }
 
         for mu in marzban_users:
             username = mu["username"]
@@ -577,9 +587,14 @@ async def _run_sync_impl() -> dict:
                 # something an operator has to opt every account out of.
                 # Named after the Marzban username as a starting point;
                 # rename it from the Customers page like any other customer.
-                personal_customer = Customer(name=username)
-                session.add(personal_customer)
-                pending_customers.append((account, personal_customer))
+                family_match = re.match(r"^(.+?)\d+$", username)
+                family_id = family_ids.get(family_match.group(1).lower()) if family_match else None
+                if family_id is not None:
+                    account.customer_id = family_id
+                else:
+                    personal_customer = Customer(name=username)
+                    session.add(personal_customer)
+                    pending_customers.append((account, personal_customer))
 
                 # first_seen_traffic baselines the MONTHLY-AVERAGE-USAGE
                 # ESTIMATE (a display figure) at this account's lifetime total

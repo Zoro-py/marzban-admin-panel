@@ -186,6 +186,39 @@ def test_kind_api() -> None:
     check("patch to family", (p.status_code, p.json()["kind"]), (200, "family"))
 
 
+def test_sync_adopts_into_family() -> None:
+    print("\n[7] sync: a new <family><n> Marzban user joins the family; others still get a personal customer")
+    import asyncio
+    from app import sync_job
+
+    client = _client(FakeMarzban())
+    fam_id = client.post("/api/customers", json={"name": "Khanevadeh", "kind": "family"}).json()["id"]
+    plain_id = client.post("/api/customers", json={"name": "solo", "kind": "individual"}).json()["id"]
+
+    def mu(name):
+        return {"username": name, "status": "active", "used_traffic": 0, "lifetime_used_traffic": 0,
+                "data_limit": 10 * 1024 ** 3, "expire": None, "online_at": None,
+                "subscription_url": f"/sub/{name}", "created_at": "2026-09-20T10:00:00"}
+
+    async def fake_fetch():
+        return [mu("khanevadeh13"), mu("solo2"), mu("stranger")]
+
+    real = sync_job._fetch_all_marzban_users
+    sync_job._fetch_all_marzban_users = fake_fetch
+    try:
+        out = asyncio.run(sync_job._run_sync_impl())
+    finally:
+        sync_job._fetch_all_marzban_users = real
+    check("three accounts created", out["created"], 3)
+    with Session(engine) as s:
+        by_user = {a.marzban_username: a.customer_id for a in s.exec(select(Account)).all()}
+        names = {c.id: c.name for c in s.exec(select(Customer)).all()}
+    check("khanevadeh13 joined the family", by_user["khanevadeh13"], fam_id)
+    check("solo2 did NOT join the individual «solo» (only families match)", by_user["solo2"] not in (plain_id, fam_id), True)
+    check("solo2 and stranger got personal customers named after them",
+          (names[by_user["solo2"]], names[by_user["stranger"]]), ("solo2", "stranger"))
+
+
 def main() -> int:
     init_db()
     test_migration_adds_kind()
@@ -194,6 +227,7 @@ def main() -> int:
     test_opt_out_and_explicit_owner()
     test_failed_first_item_leaves_no_empty_family()
     test_kind_api()
+    test_sync_adopts_into_family()
     print()
     if _failures:
         print(f"RESULT: {len(_failures)} FAILED: {_failures}")
