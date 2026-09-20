@@ -93,8 +93,17 @@ api.interceptors.response.use(
 
 export function apiErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
-    const detail = (error.response?.data as { detail?: string } | undefined)?.detail
-    return detail ?? error.message
+    const detail = (error.response?.data as { detail?: unknown } | undefined)?.detail
+    if (typeof detail === 'string') return detail
+    // FastAPI validation errors (422) arrive as a LIST of {loc, msg, …}; handing
+    // that object to a component that renders the message as text unmounts it.
+    if (Array.isArray(detail)) {
+      const msgs = detail
+        .map((d) => (d && typeof d === 'object' && 'msg' in d ? String((d as { msg: unknown }).msg) : null))
+        .filter((m): m is string => !!m)
+      if (msgs.length) return msgs.join('; ')
+    }
+    return error.message
   }
   return error instanceof Error ? error.message : 'Unexpected error'
 }

@@ -47,6 +47,18 @@ interface BulkAccountDialogProps {
   trigger?: React.ReactNode
 }
 
+function isValidBatchNames(base: string, count: number, start: number | null): boolean {
+  return (
+    /^[a-zA-Z0-9_]+$/.test(base) &&
+    base.length >= 2 &&
+    base.length <= 28 &&
+    Number.isInteger(count) &&
+    count >= 1 &&
+    count <= MAX_COUNT &&
+    (start === null || (Number.isInteger(start) && start >= 1))
+  )
+}
+
 export function BulkAccountDialog({ defaultCustomerId, defaultGroupId, trigger }: BulkAccountDialogProps) {
   const [open, setOpen] = React.useState(false)
   const [baseName, setBaseName] = React.useState('')
@@ -76,14 +88,14 @@ export function BulkAccountDialog({ defaultCustomerId, defaultGroupId, trigger }
     PREVIEW_DEBOUNCE_MS,
   )
 
-  const nameInputValid =
-    /^[a-zA-Z0-9_]+$/.test(trimmedBase) &&
-    trimmedBase.length >= 2 &&
-    trimmedBase.length <= 28 &&
-    Number.isInteger(parsedCount) &&
-    parsedCount >= 1 &&
-    parsedCount <= MAX_COUNT &&
-    (parsedStart === null || (Number.isInteger(parsedStart) && parsedStart >= 1))
+  const nameInputValid = isValidBatchNames(trimmedBase, parsedCount, parsedStart)
+  // The preview is keyed on the DEBOUNCED input, so it must be enabled by the
+  // validity of that same debounced input — not of what is in the box right
+  // now. Enabling it from the live value fired a request with the stale
+  // (still empty) base name the moment the second character was typed, and the
+  // resulting 422 unmounted the whole dialog.
+  const debouncedInput = JSON.parse(previewInput) as { base: string; count: number; start: number | null }
+  const previewInputValid = isValidBatchNames(debouncedInput.base, debouncedInput.count, debouncedInput.start)
 
   const previewQuery = useQuery({
     queryKey: ['accounts', 'bulk-preview', previewInput],
@@ -91,7 +103,7 @@ export function BulkAccountDialog({ defaultCustomerId, defaultGroupId, trigger }
       const { base, count: c, start } = JSON.parse(previewInput)
       return accountsApi.previewBulk({ base_name: base, count: c, start_index: start })
     },
-    enabled: open && nameInputValid && !result,
+    enabled: open && previewInputValid && !result,
     // The panel's user list barely moves between two previews seconds apart,
     // and refetching it on every dialog focus would be a full scan each time.
     staleTime: 30_000,
