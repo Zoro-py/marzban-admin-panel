@@ -50,7 +50,7 @@ def _normalize_digits(text: str) -> str:
 def parse_since(raw: Optional[str], today_utc: Optional[date] = None) -> str:
     """Date argument → an ISO 'YYYY-MM-DD' string, the form
     GET /api/ledger/balance accepts. Jalali vs Gregorian is detected by the
-    first component: >= 1000 means a Gregorian year, otherwise a Jalali one.
+    first component: >= 1700 means a Gregorian year (Jalali years are 13xx-14xx), otherwise a Jalali one.
     Raises ValueError with operator-readable text on garbage."""
     today = today_utc or datetime.now(timezone.utc).date()
     if raw is None or raw == "":

@@ -71,6 +71,9 @@ class FakeBackend:
             return {"overdue": [
                 {"name": "Ali", "customer_id": 5, "amount": FakeBackend.remaining_customer, "days": 40},
                 {"name": "Sara", "customer_id": 6, "amount": 50000.0, "days": 20},
+            ], "accruing": [
+                {"name": "khanevadeh", "customer_id": 7, "kind": "family", "posted": 150000.0, "pending": 900000.0, "amount": 1050000.0},
+                {"name": "Solo", "customer_id": 8, "kind": "individual", "posted": 0.0, "pending": 50000.0, "amount": 50000.0},
             ]}
         if url == "/api/customers/5":
             return {"name": "Ali", "balance": FakeBackend.remaining_customer}
@@ -118,6 +121,28 @@ context = SimpleNamespace(bot=SimpleNamespace(delete_message=_delete_message, ed
 
 
 async def main() -> None:
+    # 0) the hub shows the quiet «accruing» section — text only, no extra buttons
+    text0, markup0 = await debt._list_content()
+    check("hub lists overdue debtors as buttons", "debtnudge:5" in callbacks(markup0) and "debtnudge:6" in callbacks(markup0))
+    check("accruing customers are NOT buttons (nothing aged to pay against)",
+          "debtnudge:7" not in callbacks(markup0) and "debtnudge:8" not in callbacks(markup0))
+    check("accruing section header with count + total", "در جریان" in text0 and "2 نفر" in text0 and "1,100,000" in text0)
+    check("family is named and tagged, biggest first",
+          "khanevadeh 👨‍👩‍👧 — 1,050,000" in text0 and text0.index("khanevadeh") < text0.index("Solo"))
+    check("posted/pending parts are spelled out", "ثبت‌شده 150,000" in text0 and "در جریان 900,000" in text0)
+
+    class _NoOverdue(FakeBackend):
+        async def get(self, url):
+            data = await super().get(url)
+            if url.startswith("/api/notifications/debt-nudge"):
+                data = dict(data, overdue=[])
+            return data
+    saved, debt.backend = debt.backend, _NoOverdue()
+    text_e, markup_e = await debt._list_content()
+    debt.backend = saved
+    check("no overdue: still says so AND still shows the accruing section",
+          "کاری نیست" in text_e and "khanevadeh" in text_e)
+
     # 1) tapping a debtor on the nudge message → bucket breakdown
     q, upd = make_update("debtnudge:5")
     await debt.debt_nudge_callback(upd, context)

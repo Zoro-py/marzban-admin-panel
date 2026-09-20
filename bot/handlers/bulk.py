@@ -218,7 +218,7 @@ async def bulk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # can never be billed (settle refuses it, the monthly job skips it), so
         # the new-family-customer route is the one the operator most likely wants.
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"👨‍👩‍👧 Create + new customer «{body['base_name']}»",
+            [InlineKeyboardButton(f"👨‍👩‍👧 Create + one family customer «{body['base_name']}»",
                                   callback_data=f"bulk:asnew:{token}")],
             [InlineKeyboardButton(f"👤 Create {len(free)} without owner", callback_data=f"bulk:go:{token}"),
              InlineKeyboardButton("❌ Cancel", callback_data=f"bulk:no:{token}")],
@@ -246,6 +246,8 @@ async def _create_batch(query, body: dict) -> None:
         return
 
     lines = [f"{result['created']} created, {result['skipped']} skipped, {result['failed']} failed."]
+    if result.get("customer_name") and result["created"]:
+        lines.append(f"👨‍👩‍👧 Owner: «{result['customer_name']}» (customer #{result['customer_id']}) — one payer for the whole batch.")
     if result.get("aborted_reason"):
         lines.append(f"⚠️ Stopped early: {result['aborted_reason']}")
     failed = [i for i in result["items"] if i["status"] == "failed"]
@@ -301,23 +303,15 @@ async def bulk_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     body = pending["body"]
 
     if action == "asnew":
-        # The safe default from the confirm step: create (or reuse) a customer
-        # named after the batch and assign every account to it, so the batch is
-        # billable from the moment it exists. Idempotent on name — rerunning a
-        # cancelled batch won't mint a second «khanevade» customer.
-        base = body["base_name"]
-        try:
-            customers = await backend.get("/api/customers")
-            match = next((c for c in customers if c["name"].strip().lower() == base.lower()), None)
-            if match is not None:
-                body = dict(body, customer_id=match["id"])
-            else:
-                created = await backend.post("/api/customers", json={"name": base})
-                body = dict(body, customer_id=created["id"])
-        except Exception as exc:  # noqa: BLE001
-            await query.edit_message_text(
-                f"Couldn't set up the customer «{base}»: {exc}\n"
-                f"Nothing was created — run /bulk again.")
-            return
+        # The safe default from the confirm step. The backend owns the rule now
+        # (POST /api/accounts/bulk with no owner attaches the batch to one new
+        # or same-named «family» customer, created with the first account), so
+        # the bot no longer duplicates it — one implementation for panel and
+        # bot, and no window where the customer exists but the batch failed.
+        body = {k: v for k, v in body.items() if k not in ("customer_id", "group_id", "unassigned")}
+    elif action == "go" and "customer_id" not in body and "group_id" not in body:
+        # The explicit «without owner» button: say so, because an owner-less
+        # request is now the trigger for the family default.
+        body = dict(body, unassigned=True)
 
     await _create_batch(query, body)

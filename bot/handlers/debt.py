@@ -126,12 +126,40 @@ def _bucket_payload(kind: str, bucket_id: int, customer_id: int) -> dict:
     return payload
 
 
+_MAX_ACCRUING_LINES = 6
+
+
+def _accruing_block(accruing: list[dict]) -> list[str]:
+    """The quiet second section of the hub: customers who owe something (posted
+    debt and/or usage not yet invoiced) but are NOT in the overdue list — the
+    debt is younger than the nudge threshold or hasn't been billed yet. Text
+    only, no buttons: nothing here has aged posted debt to record a payment
+    against. Exists so «not in the overdue list» can't be misread as «owes
+    nothing» (a fresh family batch is exactly this case)."""
+    if not accruing:
+        return []
+    total = sum(r["amount"] for r in accruing)
+    lines = ["", f"🕓 در جریان / هنوز صورتحساب‌نشده — {len(accruing)} نفر، جمع {round(total):,} تومان"]
+    for r in accruing[:_MAX_ACCRUING_LINES]:
+        tag = " 👨‍👩‍👧" if r.get("kind") == "family" else ""
+        parts = []
+        if r.get("posted"):
+            parts.append(f"ثبت‌شده {round(r['posted']):,}")
+        if r.get("pending"):
+            parts.append(f"در جریان {round(r['pending']):,}")
+        lines.append(f"• {r['name']}{tag} — {round(r['amount']):,}" + (f" ({'، '.join(parts)})" if parts else ""))
+    if len(accruing) > _MAX_ACCRUING_LINES:
+        lines.append(f"و {len(accruing) - _MAX_ACCRUING_LINES} نفر دیگر — فهرست کامل در پنل > Finance.")
+    return lines
+
+
 async def _list_content(flash: str | None = None) -> tuple[str, Optional[InlineKeyboardMarkup]]:
     """(text, markup) for the hub list — shared by _render_list (which edits
     the console message) and the /debts command (which sends a fresh one)."""
     try:
         data = await backend.get("/api/notifications/debt-nudge")
         overdue: list[dict] = data["overdue"]
+        accruing: list[dict] = data.get("accruing", [])
     except Exception as exc:  # noqa: BLE001
         return f"خواندن فهرست بدهی‌ها شکست خورد: {exc}", None
 
@@ -140,11 +168,13 @@ async def _list_content(flash: str | None = None) -> tuple[str, Optional[InlineK
         lines += [flash, ""]
     if not overdue:
         lines.append("✅ بدهی قدیمیِ بالای ۱۴ روز نیست — کاری نیست.")
+        lines += _accruing_block(accruing)
         return "\n".join(lines), _kb(_nav_row(None))
 
     total = sum(r["amount"] for r in overdue)
     lines.append(f"⏳ بدهی‌های قدیمی — {len(overdue)} نفر، جمع {round(total):,} تومان")
     lines.append("برای ثبت پرداخت روی بدهکار بزنید (قدیمی‌ترین اول):")
+    lines += _accruing_block(accruing)
 
     rows: list[list[InlineKeyboardButton]] = []
     row: list[InlineKeyboardButton] = []

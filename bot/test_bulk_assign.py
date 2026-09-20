@@ -146,9 +146,10 @@ async def main() -> None:
     await bulk.bulk_callback(SimpleNamespace(callback_query=q, effective_user=SimpleNamespace(id=ADMIN),
                                              effective_chat=SimpleNamespace(id=ADMIN)), ctx5)
     created = [b for u, b in fx5.posts if u == "/api/accounts/bulk"]
-    check("customer created once", sum(1 for u, _ in fx5.posts if u == "/api/customers") == 1)
-    check("batch posted WITH the new customer_id",
-          len(created) == 1 and created[0].get("customer_id") == 9, str(created))
+    check("the bot no longer creates the customer itself (backend owns the family default)",
+          all(u != "/api/customers" for u, _ in fx5.posts))
+    check("batch posted with NO owner and NOT unassigned → backend attaches the family",
+          len(created) == 1 and "customer_id" not in created[0] and not created[0].get("unassigned"), str(created))
     check("batch body has no _assign leftovers", created and "_assign_customer" not in created[0])
 
     print("== asnew with existing same-name customer: reused, not duplicated ==")
@@ -162,10 +163,34 @@ async def main() -> None:
                                              effective_chat=SimpleNamespace(id=ADMIN)),
                              SimpleNamespace(user_data=user_data6))
     created6 = [b for u, b in fx6.posts if u == "/api/accounts/bulk"]
-    check("no NEW customer created (reused id 6)",
+    check("bot creates no customer (backend reuses the same-named one)",
           all(u != "/api/customers" for u, _ in fx6.posts))
-    check("batch attached to existing customer 6",
-          len(created6) == 1 and created6[0].get("customer_id") == 6, str(created6))
+    check("batch posted owner-less for the backend default",
+          len(created6) == 1 and "customer_id" not in created6[0] and not created6[0].get("unassigned"), str(created6))
+
+    print("== «without owner» button: explicit opt-out is sent as unassigned=True ==")
+    fx8 = FakeBackend()
+    user_data8: dict = {}
+    upd8 = await scenario_command(fx8, ["khanevade", "2"], user_data8)
+    token8 = [c for c in callbacks(upd8.message.markups[0]) if c.startswith("bulk:go:")][0].split(":")[2]
+    q8 = FakeQuery(f"bulk:go:{token8}")
+    await bulk.bulk_callback(SimpleNamespace(callback_query=q8, effective_user=SimpleNamespace(id=ADMIN),
+                                             effective_chat=SimpleNamespace(id=ADMIN)),
+                             SimpleNamespace(user_data=user_data8))
+    created8 = [b for u, b in fx8.posts if u == "/api/accounts/bulk"]
+    check("go with no owner posts unassigned=True", len(created8) == 1 and created8[0].get("unassigned") is True, str(created8))
+
+    print("== assigned «go»: customer_id kept, no unassigned flag ==")
+    fx9 = FakeBackend()
+    user_data9: dict = {}
+    upd9 = await scenario_command(fx9, ["khanevade", "2", "cust=Ali"], user_data9)
+    token9 = callbacks(upd9.message.markups[0])[0].split(":")[2]
+    q9 = FakeQuery(f"bulk:go:{token9}")
+    await bulk.bulk_callback(SimpleNamespace(callback_query=q9, effective_user=SimpleNamespace(id=ADMIN),
+                                             effective_chat=SimpleNamespace(id=ADMIN)),
+                             SimpleNamespace(user_data=user_data9))
+    created9 = [b for u, b in fx9.posts if u == "/api/accounts/bulk"]
+    check("customer_id 5 kept, not unassigned", len(created9) == 1 and created9[0].get("customer_id") == 5 and not created9[0].get("unassigned"), str(created9))
 
     print("== group=<id> valid: assigned to group ==")
     fx7 = FakeBackend()
