@@ -157,6 +157,84 @@ async def main() -> None:
         loud = False
     check("direct settle call without operator raises RuntimeError (guard)", loud)
 
+
+async def batch_amount_matches_charged() -> None:
+    """The group's MonthlySettlementBatch row must record the amount the
+    settle ACTUALLY posted (recomputed at settle time), not the amount
+    computed minutes earlier — 'mark as paid' credits exactly this row, so
+    any drift between the two becomes a permanent residual (or an invented
+    credit). Simulates usage accruing between the notify-first gate and the
+    settle loop — the exact window the original finding described.
+
+    Runs for the NEXT Jalali period (1405-07) against the DB the first
+    scenario just settled: the marker is at 1405-06, so faking today =
+    22 Oct 2026 (last day of Mehr) targets 1405-07."""
+    job.notify_admin = fake_notify
+    marzban_module.marzban_client.reset_user = fake_reset_user
+
+    with Session(engine) as s:
+        m0 = s.exec(select(Account).where(
+            Account.marzban_username == "monthly_member_0")).first()
+        sa = s.exec(select(Account).where(
+            Account.marzban_username == "monthly_standalone")).first()
+        m0_id, sa_id = m0.id, sa.id
+        m0.used_traffic = 10 * 1024**3  # a month's usage accrued
+        sa.used_traffic = 5 * 1024**3
+        s.add(m0)
+        s.add(sa)
+        s.commit()
+
+    real_today = jdatetime.date.today
+    jdatetime.date.today = classmethod(
+        lambda cls: jdatetime.date.fromgregorian(date=datetime(2026, 10, 22).date()))
+
+    accrual_fired = False
+
+    async def accruing_notify(text: str) -> None:
+        nonlocal accrual_fired
+        NOTIFIED.append(text)
+        if not accrual_fired:  # the gate is the FIRST notify — mutate after it
+            accrual_fired = True
+            with Session(engine) as s:
+                a = s.get(Account, m0_id)
+                a.used_traffic += 2 * 1024**3
+                s.add(a)
+                s.commit()
+
+    job.notify_admin = accruing_notify
+    try:
+        result = await job.maybe_run_monthly_payg_settlement()
+    finally:
+        jdatetime.date.today = real_today
+
+    check("accruing-notify mutation fired once", accrual_fired)
+    check("1405-07 pipeline settled everything", result.get("failed") == 0 and result.get("settled") == 2,
+          str(result))
+
+    with Session(engine) as s:
+        g_batch = s.exec(select(MonthlySettlementBatch).where(
+            MonthlySettlementBatch.jalali_period == "1405-07",
+            MonthlySettlementBatch.group_id.is_not(None))).first()
+        # precomputed was 50,000 (10 GB); 2 GB accrued before the group's
+        # settle recomputed → actually charged 60,000
+        check("group batch.amount == actually charged (60,000), not the precomputed 50,000",
+              g_batch is not None and abs(g_batch.amount - 60000.0) < 0.02,
+              f"batch={getattr(g_batch, 'amount', None)}")
+        m0_charges = s.exec(select(LedgerEntry).where(
+            LedgerEntry.account_id == m0_id, LedgerEntry.type == "charge").order_by(
+            LedgerEntry.id.desc())).all()
+        m0_charge = m0_charges[0] if m0_charges else None  # newest = this run's
+        check("ledger charge for the member matches the recomputed amount",
+              m0_charge is not None and abs(m0_charge.amount - 60000.0) < 0.02,
+              f"ledger={getattr(m0_charge, 'amount', None)}")
+
+        a_batch = s.exec(select(MonthlySettlementBatch).where(
+            MonthlySettlementBatch.jalali_period == "1405-07",
+            MonthlySettlementBatch.account_id.is_not(None))).first()
+        check("account batch.amount == actually charged (25,000)",
+              a_batch is not None and abs(a_batch.amount - 25000.0) < 0.02,
+              f"batch={getattr(a_batch, 'amount', None)}")
+
     print()
     if failures:
         print(f"RESULT: {len(failures)} FAILURES: {failures}")
@@ -165,3 +243,8 @@ async def main() -> None:
 
 
 asyncio.run(main())
+asyncio.run(batch_amount_matches_charged())
+if failures:
+    print(f"RESULT (batch-amount): {len(failures)} FAILURES: {failures}")
+    sys.exit(1)
+print("RESULT: batch-amount checks OK")

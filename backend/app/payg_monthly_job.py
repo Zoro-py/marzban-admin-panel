@@ -193,25 +193,44 @@ async def _run_monthly_payg_settlement(month_key: str, year: int, month: int) ->
     # ── Gate passed — now actually settle everyone, one failure at a time ──
     settled = 0
     failed: list[str] = []
+    # Members whose Marzban reset failed during a group settle: they WERE
+    # charged (their local baseline rolled forward from the pre-reset meter),
+    # so they are not a failed settle — but their meter was not zeroed, and
+    # without this list nobody would ever know.
+    reset_failed_notes: list[str] = []
 
     with Session(engine) as session:
         for r in group_rows:
             try:
-                await settle_group(r["group_id"], GroupSettleRequest(mark_paid=False), session,
-                                   operator="system:payg-monthly")
+                res = await settle_group(r["group_id"], GroupSettleRequest(mark_paid=False), session,
+                                         operator="system:payg-monthly")
+                # The amount the settle ACTUALLY posted (recomputed from live
+                # state at settle time), not the one computed minutes earlier:
+                # usage keeps accruing while the run works through the list,
+                # and "mark as paid" credits exactly this batch row — recording
+                # the stale figure would leave a permanent residual (or, if
+                # usage had fallen, invent a credit). Same rule as the
+                # account loop below.
+                charged = float(res.get("charged_amount", r["amount"])) if isinstance(res, dict) else r["amount"]
+                charged_gb = r["gb"]
+                if isinstance(res, dict) and res.get("lines"):
+                    charged_gb = round(sum(line.billable_gb for line in res["lines"]), 2)
                 session.add(MonthlySettlementBatch(
                     jalali_period=month_key, group_id=r["group_id"], display_name=r["name"],
-                    billable_gb=r["gb"], amount=r["amount"], settled_at=now,
+                    billable_gb=charged_gb, amount=charged, settled_at=now,
                 ))
                 session.commit()
                 settled += 1
+                missed = res.get("failed_resets") if isinstance(res, dict) else None
+                if missed:
+                    reset_failed_notes.append(f"{r['name']}: {'; '.join(missed)}")
             except Exception as exc:
                 session.rollback()
                 log.error("Monthly payg settle failed for group %s: %s", r["name"], exc)
                 failed.append(r["name"])
                 continue
             try:
-                await notify_admin(_settlement_message(r["gb"], r["amount"], period_label))
+                await notify_admin(_settlement_message(charged_gb, charged, period_label))
             except Exception as exc:
                 log.warning("Settled group %s but its forward-ready message failed to send: %s", r["name"], exc)
 
@@ -235,7 +254,7 @@ async def _run_monthly_payg_settlement(month_key: str, year: int, month: int) ->
                 failed.append(r["name"])
                 continue
             try:
-                await notify_admin(_settlement_message(r["gb"], r["amount"], period_label))
+                await notify_admin(_settlement_message(r["gb"], charged, period_label))
             except Exception as exc:
                 log.warning("Settled account %s but its forward-ready message failed to send: %s", r["name"], exc)
 
@@ -244,6 +263,16 @@ async def _run_monthly_payg_settlement(month_key: str, year: int, month: int) ->
             await notify_admin(
                 f"⚠️ {len(failed)} مورد از تسویه ماهانه {period_label} شکست خورد و بی‌حساب موند "
                 f"(ماه بعد دوباره حساب میشه، جمع میشه با این دوره): {'، '.join(failed)}"
+            )
+        except Exception:
+            pass
+
+    if reset_failed_notes:
+        try:
+            await notify_admin(
+                f"⚠️ در تسویهٔ ماهانه {period_label} برای این موارد مصرف شارژ شد ولی ریست Marzban "
+                f"شکست خورد (متر مشتری صفر نشده؛ مبنای محلی درست رول کرده، دوباره شارژ نمی‌شود):\n"
+                + "\n".join(reset_failed_notes)
             )
         except Exception:
             pass
