@@ -40,7 +40,7 @@ def summary(
     for c in customers:
         balance = book.customer_net(c)
         if balance > 0:
-            overdue_customers.append({"customer_id": c.id, "name": c.name, "balance": balance})
+            overdue_customers.append({"customer_id": c.id, "name": c.name, "balance": balance, "kind": c.kind})
     overdue_customers.sort(key=lambda x: -x["balance"])
 
     # Soft-deleted (see models.py's Account.deleted_at) accounts never show

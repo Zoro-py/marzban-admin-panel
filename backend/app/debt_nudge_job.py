@@ -171,6 +171,33 @@ def collect_overdue() -> list[dict]:
     return overdue
 
 
+def collect_accruing() -> list[dict]:
+    """The customers the nudge deliberately does NOT message but the operator
+    still needs to see: they owe something (posted debt + usage not yet
+    invoiced > 0) yet are not in collect_overdue() — the debt is younger than
+    DEBT_NUDGE_MIN_DAYS, or not billed at all yet (a prepay package nobody has
+    charged). Read-only, never sent as a nudge; the Telegram /debts screen
+    shows it as a second, quieter section so «not overdue» can't be mistaken
+    for «owes nothing» (a family batch created last week is exactly this).
+    Largest first. `amount` is the whole net, `posted`/`pending` its parts."""
+    overdue_ids = {r["customer_id"] for r in collect_overdue()}
+    with Session(engine) as session:
+        book = MoneyBook(session)
+        rows: list[dict] = []
+        for c in session.exec(select(Customer)).all():
+            if c.id in overdue_ids:
+                continue
+            net = book.customer_net(c)
+            if net <= 0:
+                continue
+            rows.append({
+                "customer_id": c.id, "name": c.name, "kind": c.kind,
+                "posted": book.customer_posted(c), "pending": book.customer_pending(c), "amount": net,
+            })
+    rows.sort(key=lambda r: -r["amount"])
+    return rows
+
+
 async def run_debt_nudge() -> dict:
     """Entry point, called every other day by the scheduler. Sends one
     actionable message for collect_overdue()'s result: a short summary plus

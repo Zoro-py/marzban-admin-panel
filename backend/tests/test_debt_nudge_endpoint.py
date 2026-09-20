@@ -111,6 +111,29 @@ callbacks2 = [b["callback_data"] for row in markup2["inline_keyboard"] for b in 
 check("only one more telegram send happened, without the recent debtor",
       len(sent_messages) == 2 and f"debtnudge:{recent_id}" not in callbacks2)
 
+# ---- the quieter second list: owed-but-not-nudge-worthy customers are visible, never nudged ----
+with Session(engine) as session:
+    fam = Customer(name="Accruing Family", kind="family")
+    session.add(fam)
+    session.commit()
+    session.refresh(fam)
+    fam_id = fam.id
+    session.add(LedgerEntry(type=LedgerType.charge, amount=80_000, customer_id=fam.id, date=now - timedelta(days=3)))
+    session.commit()
+
+body = client.get("/api/notifications/debt-nudge").json()
+accruing = {r["customer_id"]: r for r in body["accruing"]}
+check("overdue list is unchanged by the accruing addition", [r["customer_id"] for r in body["overdue"]] == [customer_id])
+check("a recent debtor shows up under accruing", recent_id in accruing and accruing[recent_id]["amount"] == 50_000.0)
+check("accruing rows carry kind", accruing[fam_id]["kind"] == "family" and accruing[recent_id]["kind"] == "individual")
+check("an overdue debtor is NOT repeated under accruing", customer_id not in accruing)
+check("accruing is largest-first", [r["amount"] for r in body["accruing"]] == sorted((r["amount"] for r in body["accruing"]), reverse=True))
+r = client.post("/api/notifications/debt-nudge/run")
+callbacks3 = [b["callback_data"] for row in sent_messages[-1][1]["inline_keyboard"] for b in row]
+check("the family is still NOT nudged (age rule unchanged)", f"debtnudge:{fam_id}" not in callbacks3)
+r = client.get("/api/reports/summary").json()
+check("dashboard summary rows carry kind", any(c["customer_id"] == fam_id and c["kind"] == "family" for c in r["overdue_customers"]))
+
 # ---- a Telegram failure surfaces as sent=false + error on a 200, per the job's contract ----
 
 
