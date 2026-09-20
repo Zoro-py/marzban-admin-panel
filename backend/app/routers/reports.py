@@ -117,9 +117,18 @@ def summary(
         # The sync job deliberately inserts Marzban users it discovers as
         # unassigned "so they show up in the dashboard's needs-assignment
         # view" (its own words) — but no such view ever existed on the
-        # dashboard. This bucket is that view.
+        # dashboard. This bucket is that view. The posted balance rides
+        # along because an unassigned account is exactly where money goes
+        # invisible: it appears in no customer's balance, no nudge, no bot
+        # debt list — the "no invisible money" invariant (see
+        # tests/test_ledger_invariant.py) counts on this row carrying the
+        # number.
         if a.customer_id is None and a.group_id is None:
-            unassigned_accounts.append({"account_id": a.id, "marzban_username": a.marzban_username})
+            unassigned_accounts.append({
+                "account_id": a.id,
+                "marzban_username": a.marzban_username,
+                "balance": round(book.account_posted(a), 2),
+            })
 
         # "No group" is not itself a problem (every account is standalone unless
         # explicitly grouped) — what actually needs attention is an account where
