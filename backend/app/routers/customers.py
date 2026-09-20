@@ -92,6 +92,11 @@ def update_customer(customer_id: int, body: CustomerUpdate, session: Session = D
     if not customer:
         raise HTTPException(404, "Customer not found")
     for field, value in body.model_dump(exclude_unset=True).items():
+        # An explicit JSON null is "leave it alone" for the columns that can't
+        # be NULL — writing it hit the NOT NULL constraint and came back as a
+        # misleading «Database integrity error».
+        if value is None and field in ("name", "kind", "is_group_rep"):
+            continue
         setattr(customer, field, value)
     session.add(customer)
     session.commit()

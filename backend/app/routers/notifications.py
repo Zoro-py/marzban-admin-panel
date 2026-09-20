@@ -16,7 +16,8 @@ async def debt_nudge_preview():
     `accruing` is the quieter second list — owed but not (yet) nudge-worthy;
     see collect_accruing. Additive: older clients that only read `overdue`
     are unaffected."""
-    return {"overdue": collect_overdue(), "accruing": collect_accruing()}
+    overdue = collect_overdue()
+    return {"overdue": overdue, "accruing": collect_accruing(overdue)}
 
 
 @router.post("/debt-nudge/run")

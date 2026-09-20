@@ -219,6 +219,70 @@ def test_sync_adopts_into_family() -> None:
           (names[by_user["solo2"]], names[by_user["stranger"]]), ("solo2", "stranger"))
 
 
+def test_council_findings() -> None:
+    print("\n[8] council findings: sync longest-base match, warnings, null PATCH, index, single-pass lists")
+    from app import sync_job
+    from app.routers import accounts as accounts_router
+    from app.debt_nudge_job import collect_accruing, collect_overdue
+
+    # -- sync: longest base wins; all-digit base never matches; oldest family wins a name clash
+    fam = {"fam": 1, "fam1": 2, "1": 3}
+    check("fam12 -> fam1 (longest base), not fam", sync_job._family_for_username("fam12", fam), 2)
+    check("fam2 -> fam", sync_job._family_for_username("fam2", fam), 1)
+    check("123 must not join a family literally named 1", sync_job._family_for_username("123", fam), None)
+    check("no trailing digits -> no family", sync_job._family_for_username("fam", fam), None)
+    check("case-insensitive", sync_job._family_for_username("FAM7", fam), 1)
+
+    client = _client(FakeMarzban())
+    a = client.post("/api/customers", json={"name": "Alpha", "kind": "family"}).json()["id"]
+    client.post("/api/customers", json={"name": "alpha", "kind": "family"})
+
+    async def fake_fetch():
+        return [{"username": "alpha1", "status": "active", "used_traffic": 0, "lifetime_used_traffic": 0,
+                 "data_limit": None, "expire": None, "online_at": None, "subscription_url": "/s", "created_at": "2026-09-20T10:00:00"}]
+    import asyncio
+    real = sync_job._fetch_all_marzban_users
+    sync_job._fetch_all_marzban_users = fake_fetch
+    try:
+        asyncio.run(sync_job._run_sync_impl())
+    finally:
+        sync_job._fetch_all_marzban_users = real
+    check("name clash between two families -> the OLDEST (lowest id) wins", _owners(), [a])
+
+    # -- bulk: family setup failing must be REPORTED, not silent
+    client = _client(FakeMarzban())
+    real_ensure = accounts_router._ensure_family_customer
+    def boom(session, base):
+        raise RuntimeError("db hiccup")
+    accounts_router._ensure_family_customer = boom
+    try:
+        r = client.post("/api/accounts/bulk", json={"base_name": "wfam", "count": 2}).json()
+    finally:
+        accounts_router._ensure_family_customer = real_ensure
+    check("accounts still created", r["created"], 2)
+    check("but the result carries a warning naming the count", len(r["warnings"]) == 1 and "2 account(s)" in r["warnings"][0], True)
+    client = _client(FakeMarzban())
+    check("a normal batch has no warnings", client.post("/api/accounts/bulk", json={"base_name": "okfam", "count": 2}).json()["warnings"], [])
+    check("nonexistent customer_id is still refused", client.post("/api/accounts/bulk", json={"base_name": "zz", "count": 1, "customer_id": 999}).status_code, 404)
+
+    # -- PATCH with explicit nulls leaves NOT NULL columns alone (was a generic 400 integrity error)
+    cid = client.post("/api/customers", json={"name": "Keep", "kind": "family"}).json()["id"]
+    p = client.patch(f"/api/customers/{cid}", json={"kind": None, "name": None, "contact": "@x"})
+    check("PATCH nulls: 200, kind/name untouched, contact set", (p.status_code, p.json()["kind"], p.json()["name"], p.json()["contact"]), (200, "family", "Keep", "@x"))
+
+    # -- migration: the index is created even when the column pre-exists without it
+    with engine.begin() as conn:
+        conn.execute(text("DROP INDEX IF EXISTS ix_customer_kind"))
+    _run_lightweight_migrations()
+    with engine.begin() as conn:
+        idx = [r[1] for r in conn.execute(text("PRAGMA index_list(customer)"))]
+    check("ix_customer_kind exists after migrations", "ix_customer_kind" in idx, True)
+
+    # -- one pass: accruing takes the overdue list it is given
+    o = collect_overdue()
+    check("collect_accruing accepts the already-computed overdue list", isinstance(collect_accruing(o), list), True)
+
+
 def main() -> int:
     init_db()
     test_migration_adds_kind()
@@ -228,6 +292,7 @@ def main() -> int:
     test_failed_first_item_leaves_no_empty_family()
     test_kind_api()
     test_sync_adopts_into_family()
+    test_council_findings()
     print()
     if _failures:
         print(f"RESULT: {len(_failures)} FAILED: {_failures}")

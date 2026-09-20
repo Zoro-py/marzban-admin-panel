@@ -335,6 +335,7 @@ async def create_bulk_accounts(
     # Default ownership: see BulkAccountCreateRequest.unassigned.
     needs_family = body.customer_id is None and body.group_id is None and not body.unassigned
     owner_customer: Optional[Customer] = session.get(Customer, body.customer_id) if body.customer_id is not None else None
+    unowned_created = 0
 
     for planned in plan.names:
         if aborted_reason is not None:
@@ -459,6 +460,8 @@ async def create_bulk_accounts(
                 ))
             continue
 
+        if needs_family and account.customer_id is None:
+            unowned_created += 1
         items.append(BulkAccountItem(
             marzban_username=planned.username,
             status="created",
@@ -506,6 +509,11 @@ async def create_bulk_accounts(
         aborted_reason=aborted_reason,
         customer_id=owner_customer.id if owner_customer is not None else None,
         customer_name=owner_customer.name if owner_customer is not None else None,
+        warnings=(
+            [f"The family customer «{body.base_name}» could not be set up, so {unowned_created} account(s) were "
+             f"created WITHOUT an owner. Assign them to a customer from the Accounts page before billing."]
+            if unowned_created else []
+        ),
     )
 
 

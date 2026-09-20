@@ -154,12 +154,58 @@ def test_refuses_when_nothing_to_do() -> None:
     check("db intact", len(_q("SELECT id FROM customer")), 7)
 
 
+def test_refuses_delegate_target_and_lone_target() -> None:
+    print(chr(10) + "[5] target linked to a delegate is refused; a lone eligible customer that IS the target has nothing to merge")
+    _seed()
+    c = sqlite3.connect(_DB)
+    c.execute("INSERT INTO customer (id, name, is_group_rep, kind, created_at) VALUES (21,'khanevadeh',0,'individual','2026-09-14 10:00:00.000000')")
+    c.execute("INSERT INTO delegate (id, customer_id, telegram_id, is_active, daily_create_cap, username_prefix, default_duration_days, created_at) "
+              "VALUES (1,21,555,1,20,'d',30,'2026-09-14 10:00:00.000000')")
+    c.commit(); c.close()
+    conn = sqlite3.connect(_DB, isolation_level=None)
+    try:
+        mf.merge(conn, "khanevadeh", "khanevadeh", apply=True)
+        msg = ""
+    except SystemExit as e:
+        msg = str(e)
+    finally:
+        conn.close()
+    check("delegate-linked target refused", "delegate" in msg, True)
+    check("nothing moved", _q("SELECT customer_id FROM account WHERE id=1")[0][0], 1)
+    probe = sqlite3.connect(_DB, timeout=1, isolation_level=None)
+    try:
+        probe.execute("BEGIN IMMEDIATE")   # would raise "database is locked" if the failed merge left its transaction open
+        probe.execute("ROLLBACK")
+        writer_ok = True
+    except sqlite3.OperationalError:
+        writer_ok = False
+    finally:
+        probe.close()
+    check("no transaction left open after a refusal (a new writer can start)", writer_ok, True)
+
+    _seed()
+    c = sqlite3.connect(_DB)
+    c.execute("DELETE FROM ledgerentry WHERE account_id IN (2,3,4) OR customer_id IN (2,3,4)")
+    c.execute("DELETE FROM account WHERE id IN (2,3,4)"); c.execute("DELETE FROM customer WHERE id IN (2,3,4)")
+    c.commit(); c.close()
+    conn = sqlite3.connect(_DB, isolation_level=None)
+    try:
+        mf.merge(conn, "khanevadeh", "khanevadeh1", apply=True)
+        msg2 = ""
+    except SystemExit as e:
+        msg2 = str(e)
+    finally:
+        conn.close()
+    check("target == the only eligible customer -> nothing to merge", "nothing to merge" in msg2, True)
+
+
 def main() -> int:
     init_db()
     test_dry_run_changes_nothing()
     test_apply_merges_and_conserves_money()
     test_extends_existing_family_case_insensitive()
     test_refuses_when_nothing_to_do()
+    test_refuses_delegate_target_and_lone_target()
     print()
     if _failures:
         print(f"RESULT: {len(_failures)} FAILED: {_failures}")

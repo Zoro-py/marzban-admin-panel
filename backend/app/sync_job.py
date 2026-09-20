@@ -1,9 +1,9 @@
 import asyncio
 import logging
 import math
-import re
 import time
 from datetime import datetime
+from typing import Optional
 
 from sqlmodel import Session, select
 
@@ -352,6 +352,20 @@ def _parse_online_at(value) -> datetime | None:
         return None
 
 
+def _family_for_username(username: str, family_ids: dict[str, int]) -> Optional[int]:
+    """The family customer a new <base><number> username belongs to, or None.
+    Every split of the name into base + all-digit tail is tried LONGEST base
+    first, so with families «fam» and «fam1» the user «fam12» goes to «fam1»
+    (a plain non-greedy regex would only ever try «fam»). A base made only of
+    digits never matches (a family literally named «1» must not swallow «123»)."""
+    lowered = username.lower()
+    for cut in range(len(lowered) - 1, 0, -1):
+        base, tail = lowered[:cut], lowered[cut:]
+        if tail.isdigit() and not base.isdigit() and base in family_ids:
+            return family_ids[base]
+    return None
+
+
 async def _fetch_all_marzban_users() -> list[dict]:
     # Same paging loop as before, now owned by the client so the bulk-account
     # path can reuse it without a second copy (see MarzbanClient.list_all_users).
@@ -572,9 +586,11 @@ async def _run_sync_impl() -> dict:
         # one-account customer — the way «khanevadeh1…12» fragmented before.
         # Only kind='family' customers are ever matched, so an ordinary person
         # who happens to share a name prefix is never swallowed.
+        # Newest first, so when two families collide on the same lower-cased
+        # name the OLDEST one (lowest id) wins deterministically.
         family_ids = {
             c.name.strip().lower(): c.id
-            for c in session.exec(select(Customer).where(Customer.kind == "family")).all()
+            for c in session.exec(select(Customer).where(Customer.kind == "family").order_by(Customer.id.desc())).all()
         }
 
         for mu in marzban_users:
@@ -587,8 +603,7 @@ async def _run_sync_impl() -> dict:
                 # something an operator has to opt every account out of.
                 # Named after the Marzban username as a starting point;
                 # rename it from the Customers page like any other customer.
-                family_match = re.match(r"^(.+?)\d+$", username)
-                family_id = family_ids.get(family_match.group(1).lower()) if family_match else None
+                family_id = _family_for_username(username, family_ids)
                 if family_id is not None:
                     account.customer_id = family_id
                 else:

@@ -46,6 +46,9 @@ def _run_lightweight_migrations() -> None:
             # Label only ('individual' | 'family'); every pre-existing customer
             # stays 'individual', which is what they were. No money reads it.
             conn.execute(text("ALTER TABLE customer ADD COLUMN kind VARCHAR NOT NULL DEFAULT 'individual'"))
+        if existing_customer:
+            # Also when the column was already there (added by hand or by an
+            # older partial run): the index must exist whenever the column does.
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_customer_kind ON customer (kind)"))
 
         existing_group = {row[1] for row in conn.execute(text("PRAGMA table_info(\"group\")"))}

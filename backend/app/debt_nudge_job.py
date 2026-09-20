@@ -21,6 +21,7 @@ to never silently skip a cycle."""
 
 import logging
 from datetime import datetime
+from typing import Optional
 
 from sqlmodel import Session, or_, select
 
@@ -171,7 +172,7 @@ def collect_overdue() -> list[dict]:
     return overdue
 
 
-def collect_accruing() -> list[dict]:
+def collect_accruing(overdue: Optional[list[dict]] = None) -> list[dict]:
     """The customers the nudge deliberately does NOT message but the operator
     still needs to see: they owe something (posted debt + usage not yet
     invoiced > 0) yet are not in collect_overdue() — the debt is younger than
@@ -180,7 +181,10 @@ def collect_accruing() -> list[dict]:
     shows it as a second, quieter section so «not overdue» can't be mistaken
     for «owes nothing» (a family batch created last week is exactly this).
     Largest first. `amount` is the whole net, `posted`/`pending` its parts."""
-    overdue_ids = {r["customer_id"] for r in collect_overdue()}
+    # Pass the overdue list you already have so both lists come from ONE
+    # computation (two separate passes could disagree if a payment landed
+    # between them, listing a customer twice or not at all).
+    overdue_ids = {r["customer_id"] for r in (overdue if overdue is not None else collect_overdue())}
     with Session(engine) as session:
         book = MoneyBook(session)
         rows: list[dict] = []

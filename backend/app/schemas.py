@@ -508,6 +508,9 @@ class BulkAccountCreateResult(BaseModel):
     # attached to a group.
     customer_id: Optional[int] = None
     customer_name: Optional[str] = None
+    # Things the operator must act on even though the batch "succeeded" — e.g.
+    # the family customer couldn't be set up so some accounts are unowned.
+    warnings: list[str] = []
 
 
 # ---- Self-serve shop ----------------------------------------------------
