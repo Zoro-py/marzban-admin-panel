@@ -21,12 +21,14 @@ class CustomerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100, pattern=r".*\S.*")
     contact: Optional[str] = None
     is_group_rep: bool = False
+    kind: str = Field(default="individual", pattern=r"^(individual|family)$")
 
 
 class CustomerUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=100, pattern=r"\S")
     contact: Optional[str] = Field(default=None, max_length=120)
     is_group_rep: Optional[bool] = None
+    kind: Optional[str] = Field(default=None, pattern=r"^(individual|family)$")
 
 
 class CustomerRead(BaseModel):
@@ -34,6 +36,7 @@ class CustomerRead(BaseModel):
     name: str
     contact: Optional[str]
     is_group_rep: bool
+    kind: str = "individual"
     created_at: datetime
 
 
@@ -421,6 +424,12 @@ class BulkAccountCreateRequest(BaseModel):
 
     customer_id: Optional[int] = None
     group_id: Optional[int] = None
+    # With neither customer_id nor group_id, the batch is given ONE new (or
+    # same-named existing) "family" customer named after the base name — an
+    # ownerless account can't be billed (settle refuses it, the monthly job
+    # skips it) and used to end up as N separate one-account customers once
+    # sync adopted it. True opts out deliberately (test/one-off accounts).
+    unassigned: bool = False
     role: AccountRole = AccountRole.primary
     rate_per_gb: Optional[float] = Field(default=None, ge=0.0)
 
@@ -494,6 +503,11 @@ class BulkAccountCreateResult(BaseModel):
     # Set when the batch stopped early because Marzban became unreachable
     # mid-run. Everything before it was still really created.
     aborted_reason: Optional[str] = None
+    # The customer the batch's accounts were attached to (the given one, or
+    # the family customer created/reused by default); None when unassigned or
+    # attached to a group.
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
 
 
 # ---- Self-serve shop ----------------------------------------------------

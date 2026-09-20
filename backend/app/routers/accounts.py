@@ -286,6 +286,23 @@ async def preview_bulk_accounts(body: BulkAccountCreateRequest, session: Session
     )
 
 
+def _ensure_family_customer(session: Session, base_name: str) -> tuple[Customer, bool]:
+    """The customer a default (owner-less) bulk batch is attached to: an
+    existing customer with exactly this name (case-insensitive — rerunning or
+    extending a family must not mint a second «khanevade»), else a new one
+    with kind='family'. Flushed, not committed: it lands in the SAME
+    transaction as the first account that needs it, so a failed first
+    account leaves no empty customer behind. Returns (customer, created)."""
+    wanted = base_name.strip().lower()
+    for c in session.exec(select(Customer)).all():
+        if c.name.strip().lower() == wanted:
+            return c, False
+    customer = Customer(name=base_name.strip(), kind="family")
+    session.add(customer)
+    session.flush()
+    return customer, True
+
+
 @router.post("/bulk", response_model=BulkAccountCreateResult)
 async def create_bulk_accounts(
     body: BulkAccountCreateRequest,
@@ -314,6 +331,10 @@ async def create_bulk_accounts(
     items: list[BulkAccountItem] = []
     deliveries: list[DeliveryItem] = []
     aborted_reason: Optional[str] = None
+
+    # Default ownership: see BulkAccountCreateRequest.unassigned.
+    needs_family = body.customer_id is None and body.group_id is None and not body.unassigned
+    owner_customer: Optional[Customer] = session.get(Customer, body.customer_id) if body.customer_id is not None else None
 
     for planned in plan.names:
         if aborted_reason is not None:
@@ -365,9 +386,16 @@ async def create_bulk_accounts(
 
         subscription_url = resolve_subscription_url(marzban_user.get("subscription_url"))
         now = utcnow()
+        family_created_here = False
+        if needs_family and owner_customer is None:
+            try:
+                owner_customer, family_created_here = _ensure_family_customer(session, body.base_name)
+            except Exception:  # noqa: BLE001 — falls through to an unowned row rather than losing the account
+                session.rollback()
+                logger.exception("Bulk batch '%s': couldn't set up the family customer", body.base_name)
         account = Account(
             marzban_username=planned.username,
-            customer_id=body.customer_id,
+            customer_id=owner_customer.id if owner_customer is not None else body.customer_id,
             group_id=body.group_id,
             role=body.role,
             rate_per_gb=body.rate_per_gb,
@@ -404,6 +432,10 @@ async def create_bulk_accounts(
             session.refresh(account)
         except Exception as exc:  # noqa: BLE001 — the Marzban user already exists; never swallow silently
             session.rollback()
+            if family_created_here:
+                # The customer row was in the rolled-back transaction with the
+                # account; forget it so the next account creates it again.
+                owner_customer = None
             logger.exception(
                 "Bulk batch '%s': created %s in Marzban but failed to track it locally",
                 body.base_name, planned.username,
@@ -472,6 +504,8 @@ async def create_bulk_accounts(
         items=items,
         notifications_queued=notifications_queued,
         aborted_reason=aborted_reason,
+        customer_id=owner_customer.id if owner_customer is not None else None,
+        customer_name=owner_customer.name if owner_customer is not None else None,
     )
 
 

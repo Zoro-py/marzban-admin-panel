@@ -40,6 +40,12 @@ class Customer(SQLModel, table=True):
     name: str
     contact: Optional[str] = None  # telegram handle / phone
     is_group_rep: bool = False
+    # "individual" (the default: one person, usually one account) or "family"
+    # (one payer who owns several accounts — the operator talks to that one
+    # person only). A label for filtering and display; it changes no money
+    # math — a family's balance is the same account roll-up every customer
+    # gets (see services.MoneyBook).
+    kind: str = Field(default="individual", index=True)
     created_at: datetime = Field(default_factory=utcnow)
 
 

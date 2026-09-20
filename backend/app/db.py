@@ -41,6 +41,13 @@ def _run_lightweight_migrations() -> None:
         if existing and "billing_mode" not in existing:
             conn.execute(text("ALTER TABLE account ADD COLUMN billing_mode VARCHAR NOT NULL DEFAULT 'prepay'"))
 
+        existing_customer = {row[1] for row in conn.execute(text("PRAGMA table_info(customer)"))}
+        if existing_customer and "kind" not in existing_customer:
+            # Label only ('individual' | 'family'); every pre-existing customer
+            # stays 'individual', which is what they were. No money reads it.
+            conn.execute(text("ALTER TABLE customer ADD COLUMN kind VARCHAR NOT NULL DEFAULT 'individual'"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_customer_kind ON customer (kind)"))
+
         existing_group = {row[1] for row in conn.execute(text("PRAGMA table_info(\"group\")"))}
         if existing_group and "billing_mode" not in existing_group:
             # Default existing groups to 'payg' (not 'prepay') on backfill — every

@@ -51,10 +51,16 @@ def _with_balance(book: MoneyBook, c: Customer, groups_for_c: list[Group]) -> Cu
 def list_customers(
     offset: int = 0,
     limit: Optional[int] = None,
+    kind: Optional[str] = None,
     session: Session = Depends(get_session)
 ):
     book = MoneyBook(session)
-    stmt = select(Customer).offset(offset)
+    stmt = select(Customer)
+    if kind is not None:
+        if kind not in ("individual", "family"):
+            raise HTTPException(400, "kind must be 'individual' or 'family'")
+        stmt = stmt.where(Customer.kind == kind)
+    stmt = stmt.offset(offset)
     if limit is not None:
         stmt = stmt.limit(limit)
     customers = session.exec(stmt).all()
