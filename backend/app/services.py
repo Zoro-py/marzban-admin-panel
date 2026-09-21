@@ -59,6 +59,19 @@ manual entries, are excluded from the GB/derived sums but still count
 toward charged_amount, which is plain money)."""
 
 
+ChargeMeta = tuple[int, int, float]
+"""(charge_count, charge_count_with_gb, amount_of_charges_with_gb) for one
+scope/window. Exists because gb_charged only sums the rows that CARRY a GB
+figure while charged_amount sums every charge — printed side by side
+(«5 GB charged (200,000 T)») they read as one quantity when they are not. The
+counts and the money of the GB-carrying rows let a caller say how much of the
+window the GB figure actually covers."""
+
+
+def _merge_meta(a: ChargeMeta, b: ChargeMeta) -> ChargeMeta:
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+
 def _merge_opt(total: Optional[float], value: Optional[float]) -> Optional[float]:
     """None-propagating addition for optional money/GB figures: unknown +
     unknown stays unknown, but a known figure among unknowns is still worth
@@ -198,6 +211,28 @@ class MoneyBook:
             for scope_id, gb_c, gb_u, amt, amt_u in session.exec(stmt).all():
                 bucket[scope_id] = (gb_c, gb_u, amt, amt_u)
 
+        # Charge counts per scope/window — see ChargeMeta.
+        from sqlalchemy import case
+        self._meta_by_account: dict[int, ChargeMeta] = {}
+        self._meta_group_only: dict[int, ChargeMeta] = {}
+        self._meta_customer_only: dict[int, ChargeMeta] = {}
+        gb_known_amount = func.coalesce(func.sum(case((LedgerEntry.gb_amount.is_not(None), LedgerEntry.amount), else_=0.0)), 0.0)
+        meta_specs = (
+            (LedgerEntry.account_id, (LedgerEntry.account_id.is_not(None),), self._meta_by_account),
+            (LedgerEntry.group_id, (LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_not(None)), self._meta_group_only),
+            (LedgerEntry.customer_id, (LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_(None), LedgerEntry.customer_id.is_not(None)), self._meta_customer_only),
+        )
+        for id_col, conditions, bucket in meta_specs:
+            stmt = (
+                select(id_col, func.count(LedgerEntry.id), func.count(LedgerEntry.gb_amount), gb_known_amount)
+                .where(*conditions, LedgerEntry.type == LedgerType.charge)
+                .group_by(id_col)
+            )
+            if since is not None:
+                stmt = stmt.where(LedgerEntry.date >= since)
+            for scope_id, n_all, n_gb, amt_gb in session.exec(stmt).all():
+                bucket[scope_id] = (int(n_all), int(n_gb), float(amt_gb))
+
         # How much of each account's current meter epoch its charges have
         # ALREADY attributed as consumed (see attributable_consumed_gb) —
         # accrued usage minus this is the live "in progress" figure
@@ -239,6 +274,7 @@ class MoneyBook:
                 self._owned_directly[a.customer_id].append(a)
 
         self._pending_cache: dict[int, float] = {}
+        self._pending_gb_cache: dict[int, float] = {}
 
     # ------------------------------------------------------------- accounts
     def account_posted(self, account: Account) -> float:
@@ -256,8 +292,21 @@ class MoneyBook:
             group = self._groups.get(account.group_id) if account.group_id else None
             mode = effective_billing_mode(self.session, account, group)
             billable_gb = billable_bytes(account, mode) / GB
+            self._pending_gb_cache[account.id] = round(billable_gb, 3)
             self._pending_cache[account.id] = round(billable_gb * effective_rate(self.session, account, group), 2)
         return self._pending_cache[account.id]
+
+    def account_pending_gb(self, account: Account) -> float:
+        """The GB sibling of account_pending: what is BILLABLE but not yet
+        invoiced — the whole unbilled package for prepay, the metered usage
+        for payg. NOT account_gb_pending, which is live usage (a 40 GB package
+        with 2.3 GB used is 40 here and 2.3 there); only this one belongs next
+        to account_pending's money."""
+        self.account_pending(account)
+        return self._pending_gb_cache[account.id]
+
+    def account_charge_meta(self, account: Account) -> ChargeMeta:
+        return self._meta_by_account.get(account.id, (0, 0, 0.0))
 
     def account_net(self, account: Account) -> float:
         return round(self.account_posted(account) + self.account_pending(account), 2)
@@ -296,6 +345,15 @@ class MoneyBook:
 
     def group_net(self, group: Group) -> float:
         return round(self.group_posted(group) + self.group_pending(group), 2)
+
+    def group_pending_gb(self, group: Group) -> float:
+        return round(sum(self.account_pending_gb(a) for a in self.group_members(group)), 3)
+
+    def group_charge_meta(self, group: Group) -> ChargeMeta:
+        meta: ChargeMeta = self._meta_group_only.get(group.id, (0, 0, 0.0))
+        for a in self.group_members(group):
+            meta = _merge_meta(meta, self.account_charge_meta(a))
+        return meta
 
     def group_gb(self, group: Group) -> GbTotals:
         totals: GbTotals = (None, None, None, None)
@@ -339,6 +397,19 @@ class MoneyBook:
 
     def customer_net(self, customer: Customer) -> float:
         return round(self.customer_posted(customer) + self.customer_pending(customer), 2)
+
+    def customer_pending_gb(self, customer: Customer) -> float:
+        total = sum(self.account_pending_gb(a) for a in self.customer_accounts(customer))
+        total += sum(self.group_pending_gb(g) for g in self.represented_groups(customer))
+        return round(total, 3)
+
+    def customer_charge_meta(self, customer: Customer) -> ChargeMeta:
+        meta: ChargeMeta = self._meta_customer_only.get(customer.id, (0, 0, 0.0))
+        for a in self.customer_accounts(customer):
+            meta = _merge_meta(meta, self.account_charge_meta(a))
+        for g in self.represented_groups(customer):
+            meta = _merge_meta(meta, self.group_charge_meta(g))
+        return meta
 
     def customer_gb(self, customer: Customer) -> GbTotals:
         """Same roll-up shape as customer_posted: directly-owned accounts +

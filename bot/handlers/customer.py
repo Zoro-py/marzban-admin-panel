@@ -40,6 +40,16 @@ async def customer_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         f"*{md(customer['name'])}*  (#{customer['id']})",
         f"Contact: {md(customer.get('contact') or '—')}",
         f"Balance: {format_toman(balance['balance'])} ({'owed' if balance['balance'] > 0 else 'credit' if balance['balance'] < 0 else 'settled'})",
+    ]
+    # Same «Owes now» the dashboard shows: posted + not invoiced yet. Without it
+    # this card reported only the invoiced part.
+    if balance.get("pending_amount"):
+        lines.append(f"Not invoiced yet: {format_toman(balance['pending_amount'])}")
+        net = balance.get("net_owed")
+        if net is None:
+            net = balance["balance"] + balance["pending_amount"]
+        lines.append(f"Owes now: {format_toman(net)}")
+    lines += [
         "",
         f"*Accounts ({len(accounts)})*",
     ]

@@ -134,6 +134,8 @@ def get_balance(
         credited_amount = book.customer_credits(customer)
         gb_pending = book.customer_gb_pending(customer)
         pending_amount = book.customer_pending(customer)
+        pending_gb = book.customer_pending_gb(customer)
+        meta = book.customer_charge_meta(customer)
         entity_type, entity_id = "customer", customer_id
     elif group_id is not None:
         group = session.get(Group, group_id)
@@ -144,6 +146,8 @@ def get_balance(
         credited_amount = book.group_credits(group)
         gb_pending = book.group_gb_pending(group)
         pending_amount = book.group_pending(group)
+        pending_gb = book.group_pending_gb(group)
+        meta = book.group_charge_meta(group)
         entity_type, entity_id = "group", group_id
     else:
         account = session.get(Account, account_id)
@@ -154,6 +158,8 @@ def get_balance(
         credited_amount = book.account_credits(account)
         gb_pending = book.account_gb_pending(account)
         pending_amount = book.account_pending(account)
+        pending_gb = book.account_pending_gb(account)
+        meta = book.account_charge_meta(account)
         entity_type, entity_id = "account", account_id
 
     # total_charge/total_credit are reported as the netted balance split into
@@ -175,4 +181,14 @@ def get_balance(
         consumed_amount=round(consumed_amount, 2) if consumed_amount is not None else None,
         credited_amount=round(credited_amount, 2) if credited_amount is not None else None,
         pending_amount=round(pending_amount, 2),
+        # Headline: what they owe from `since`, INCLUDING what isn't invoiced
+        # yet. `pending_amount` is window-blind by nature (usage can't be
+        # attributed to a sub-range), so this is exactly «posted since the
+        # date» + «the open, not-yet-invoiced part» — the same two parts
+        # «Owes now» adds, restricted on the posted side to the window.
+        net_owed=round(balance + pending_amount, 2),
+        pending_gb=round(pending_gb, 3),
+        charge_count=meta[0],
+        charge_count_with_gb=meta[1],
+        charged_amount_gb_known=round(meta[2], 2),
     )

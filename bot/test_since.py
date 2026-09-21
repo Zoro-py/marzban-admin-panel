@@ -51,7 +51,8 @@ class FakeBackend:
                 "balance": 775000.0, "gb_charged": 155.0, "gb_consumed": None,
                 "consumed_amount": None, "charged_amount": 1025000.0,
                 "credited_amount": 250000.0, "gb_pending": 28.961,
-                "pending_amount": 500000.0,
+                "pending_amount": 500000.0, "net_owed": 1275000.0, "pending_gb": 100.0,
+                "charge_count": 9, "charge_count_with_gb": 3, "charged_amount_gb_known": 400000.0,
             }
         raise AssertionError(f"unexpected GET {url} {params}")
 
@@ -101,10 +102,13 @@ def main() -> None:
     msg = asyncio.run(run(["boojar_family", "1405/06/01"]))
     text = "\n".join(msg.texts)
     check("customer resolved and labeled", "boojar_family (مشتری #13)" in text, text[:80])
-    check("four R22 rows present",
-          all(k in text for k in ("شارژشده", "مصرف صورت‌حساب‌شده", "پرداخت‌شده", "در جریان")))
+    check("charge rows present (count + GB coverage), usage, payments, not-invoiced",
+          all(k in text for k in ("شارژها: 9 مورد", "فقط روی 3 از 9", "مصرف صورت‌حساب‌شده", "پرداخت‌شده", "هنوز صورتحساب‌نشده")))
+    check("headline is the NET incl. not-invoiced (1,275,000), posted shown separately",
+          "1,275,000 T" in text and "775,000 T" in text and "بدهی از این تاریخ (با صورتحساب‌نشده‌ها): 1,275,000 T" in text, text)
+    check("not-invoiced line carries the billable GB (100 GB), not live usage", "500,000 T (100 GB)" in text, text)
     check("None GB renders as —", "—" in text)
-    check("debt line present", "بدهی از این تاریخ" in text and "775,000 T" in text)
+    check("debt line present", "بدهی از این تاریخ" in text)
 
     msg2 = asyncio.run(run(["Sadegi"]))
     check("account username resolves", any("Sadegi (اکانت #54)" in t for t in msg2.texts))
