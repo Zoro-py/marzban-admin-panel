@@ -152,13 +152,31 @@ async def since_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except ValueError:
         boundary = since_iso
 
+    posted = bal.get("balance") or 0.0
+    pending = bal.get("pending_amount") or 0.0
+    net = bal.get("net_owed")
+    if net is None:  # older backend without the headline field
+        net = posted + pending
+    n_all, n_gb = bal.get("charge_count"), bal.get("charge_count_with_gb")
+    if n_all is not None:
+        charged = f"شارژها: {n_all} مورد — {format_toman(bal.get('charged_amount') or 0.0)}"
+    else:
+        charged = f"شارژشده: {format_toman(bal.get('charged_amount') or 0.0)}"
+    if bal.get("gb_charged") is not None:
+        partial = n_all is not None and n_gb is not None and n_gb < n_all
+        charged += f" (حجم ثبت‌شده: {_fmt_gb(bal.get('gb_charged'))}" + (f" فقط روی {n_gb} از {n_all}" if partial else "") + ")"
+    elif n_all:
+        charged += " (حجم ثبت نشده)"
     lines = [
         f"📅 از {since_iso} (بامداد UTC → {boundary} به وقت تهران)",
         f"— {display}",
-        f"شارژشده: {_fmt_gb(bal.get('gb_charged'))} — {format_toman(bal.get('charged_amount') or 0.0)}",
+        charged,
         f"مصرف صورت‌حساب‌شده: {_fmt_gb(bal.get('gb_consumed'))} — {format_toman(bal.get('consumed_amount') or 0.0)}",
         f"پرداخت‌شده: {format_toman(bal.get('credited_amount') or 0.0)}",
-        f"در جریان (ثبت‌نشده): {_fmt_gb(bal.get('gb_pending'))} — {format_toman(bal.get('pending_amount') or 0.0)}",
-        f"بدهی از این تاریخ: {format_toman(bal.get('balance') or 0.0)}",
+        f"صورتحساب‌شده از این تاریخ: {format_toman(posted)}",
     ]
+    if pending > 0:
+        gb = bal.get("pending_gb")
+        lines.append(f"هنوز صورتحساب‌نشده: {format_toman(pending)}" + (f" ({_fmt_gb(gb)})" if gb else ""))
+    lines.append(f"بدهی از این تاریخ (با صورتحساب‌نشده‌ها): {format_toman(net)}")
     await update.message.reply_text("\n".join(lines))
