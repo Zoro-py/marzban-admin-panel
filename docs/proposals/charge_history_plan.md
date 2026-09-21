@@ -41,12 +41,14 @@ route در `App.tsx`، nav بعد از Finance در `AppShell.tsx`.
 
 ## وضعیت فازها
 
-- [x] فاز ۱: خواندن (AGENTS, DOMAIN §1/§3, D1–D12, models, schemas, ledger/reports routers, تست‌ها, DESIGN, RevenueChart, BalanceSinceControl, HistorySection, AppShell/App, api/types)
-- [ ] فاز ۲: backend + تست‌ها
-- [ ] فاز ۳: فرانت (Picker/Range → Table → Timeline → Cumulative → Tiles → صفحه)
-- [ ] فاز ۴: مرورگر واقعی
-- [ ] فاز ۵: مستندات
-- [ ] فاز ۶: سه دور بازبینی → docs/audits/2026-09-21_charge_history_review.md
+- [x] فاز ۱: خواندن
+- [x] فاز ۲: backend + تست‌ها (GLM؛ سشن قطع شد بعد از این فاز)
+- [x] فاز ۳: فرانت — شش کامپوننت (GLM، همان سشن) + صفحه/route/nav (تفویض‌شده به GLM 5.3 در worktree ایزوله، تأیید مستقل با tsc/build و بازتولید روی این شاخه)
+- [x] فاز ۴: مرورگر واقعی (Claude Code؛ Playwright دسکتاپ+موبایل، DB زندهٔ واقعی)
+- [x] فاز ۵: مستندات (همین فایل + audit)
+- [x] فاز ۶: بازبینی چندمدلی (Claude Code؛ Antigravity، ۹ مدل × ۶ کامپوننت + endpoint) → `docs/audits/2026-09-21_charge_history_review.md`
+
+**نتیجه:** کار در `docs/audits/2026-09-21_charge_history_review.md` مستند است. Deploy نشده — منتظر تأیید مالک.
 
 ## یافته‌های مهم خواندن
 
