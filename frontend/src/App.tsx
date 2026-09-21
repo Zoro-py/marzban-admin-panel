@@ -12,6 +12,7 @@ const GroupsPage = lazy(() => import('@/pages/GroupsPage').then(m => ({ default:
 const GroupDetailPage = lazy(() => import('@/pages/GroupDetailPage').then(m => ({ default: m.GroupDetailPage })))
 const AccountsPage = lazy(() => import('@/pages/AccountsPage').then(m => ({ default: m.AccountsPage })))
 const FinancePage = lazy(() => import('@/pages/FinancePage').then(m => ({ default: m.FinancePage })))
+const ChargeHistoryPage = lazy(() => import('@/pages/ChargeHistoryPage').then(m => ({ default: m.ChargeHistoryPage })))
 const MonthlySettlementsPage = lazy(() => import('@/pages/MonthlySettlementsPage').then(m => ({ default: m.MonthlySettlementsPage })))
 const ShopPage = lazy(() => import('@/pages/ShopPage').then(m => ({ default: m.ShopPage })))
 const DelegatesPage = lazy(() => import('@/pages/DelegatesPage').then(m => ({ default: m.DelegatesPage })))
@@ -56,6 +57,7 @@ function App() {
             <Route path="/groups/:id" element={<GroupDetailPage />} />
             <Route path="/accounts" element={<AccountsPage />} />
             <Route path="/finance" element={<FinancePage />} />
+            <Route path="/history" element={<ChargeHistoryPage />} />
             <Route path="/shop" element={<ShopPage />} />
             <Route path="/delegates" element={<DelegatesPage />} />
             <Route path="/servers" element={<ServersPage />} />
