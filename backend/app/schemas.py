@@ -396,6 +396,21 @@ class BalanceRead(BaseModel):
     # next to gb_pending so the widget states the full picture of a period:
     # "posted 43,288 + accruing 153,115", not just the settled slice.
     pending_amount: Optional[float] = None
+    # What the scope owes FROM `since` including what has not been invoiced yet:
+    # balance (posted in the window) + pending_amount (window-blind, open
+    # cycle). The headline number — `balance` alone left out an unbilled
+    # package and read lower than «Owes now» for the same account.
+    net_owed: Optional[float] = None
+    # GB that is BILLABLE but not invoiced yet (whole unbilled package for
+    # prepay, metered usage for payg) — the GB sibling of pending_amount.
+    # gb_pending (live usage) is a different quantity; don't pair it with money.
+    pending_gb: Optional[float] = None
+    # How many charges the window holds, how many of them carry a GB figure,
+    # and the money of just those — so «5 GB charged» can say it covers 1 of 3
+    # charges instead of sitting next to the money of all three.
+    charge_count: Optional[int] = None
+    charge_count_with_gb: Optional[int] = None
+    charged_amount_gb_known: Optional[float] = None
 
 
 # ---- Bulk ("family") account creation ----------------------------------
@@ -943,3 +958,106 @@ class MonitorIngestIn(BaseModel):
     server_id: str = Field(max_length=64)
     metrics: Optional[MonitorMetricIn] = None
     events: list[MonitorEventIn] = Field(default_factory=list, max_length=100)
+
+
+# ---- Charge history (read-only) -------------------------------------------
+# Shapes for GET /api/history/charges — a windowed HISTORY of what happened,
+# not a balance. Every money figure below is summed directly from the ledger
+# rows inside the selected window (the endpoint never calls MoneyBook, whose
+# sums answer "what does this entity owe right now" at account/group/customer
+# scope — a different question with different row-selection rules, e.g.
+# group-level entries roll up there but never appear per-account here).
+
+
+class HistoryAccount(BaseModel):
+    """A selected account as the history view needs it — emitted for EVERY
+    requested id, even ones with zero rows in the window (the chart shows
+    them as an empty lane with "no charges in this period", they don't
+    silently vanish)."""
+
+    id: int
+    username: str
+    status: Optional[str] = None
+    deleted: bool = False
+    customer_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    group_id: Optional[int] = None
+    group_name: Optional[str] = None
+    # The raw persisted field, NOT the effective mode (a grouped account
+    # bills as its group's mode — see schemas.AccountRow.effective_billing_mode
+    # for where that distinction matters). History reports what was stored;
+    # it makes no billing decision.
+    billing_mode: BillingMode
+
+
+class HistoryEntry(BaseModel):
+    """One ledger row inside the window. `date` is serialized with a UTC
+    marker — the column is stored naive-UTC, so attaching UTC here states the
+    truth the column always had."""
+
+    id: int
+    account_id: int
+    date: datetime
+    type: LedgerType
+    amount: float
+    # NULL = unknown ("—", never 0) — charges predating GB tracking or manual
+    # money-only entries. See LedgerEntry.gb_amount.
+    gb_amount: Optional[float] = None
+    consumed_gb: Optional[float] = None
+    source: LedgerSource
+    created_by: Optional[str] = None
+    note: Optional[str] = None
+
+
+class HistoryPackage(BaseModel):
+    """A structured "package became active" event (QueuedPlan with
+    status='activated') — the only structured record of volume being added.
+    pending/cancelled plans are deliberately excluded: they never changed
+    the account."""
+
+    account_id: int
+    activated_at: datetime
+    data_limit_gb: float
+    duration_days: int
+
+
+class HistoryMarker(BaseModel):
+    """A non-money AccountEvent shown as a tick on the timeline. `detail` is
+    free text for the tooltip ONLY — it is never parsed for numbers."""
+
+    account_id: int
+    date: datetime
+    action: str
+    detail: str
+
+
+class HistorySummary(BaseModel):
+    """Per-account (or selection-wide) aggregates over the window's rows.
+    charged_gb_known sums ONLY rows with a non-NULL gb_amount and is None when
+    no charge in the window carries one — NULL is never flattened to 0; pair
+    it with charged_gb_known_count to state honestly how many charges
+    contributed (e.g. "20 GB recorded on 3 of 7 charges")."""
+
+    charge_count: int
+    charged_amount: float
+    charged_gb_known: Optional[float] = None
+    charged_gb_known_count: int = 0
+    credit_count: int = 0
+    # None when credit_count == 0 (no credit row to display) — mirrors
+    # BalanceRead.credited_amount's "None = displayed as —" convention.
+    credited_amount: Optional[float] = None
+    first_charge_at: Optional[datetime] = None
+    last_charge_at: Optional[datetime] = None
+    # Mean gap between consecutive charges in days; needs >= 2 charges to
+    # mean anything, hence None otherwise.
+    avg_days_between_charges: Optional[float] = None
+
+
+class ChargeHistoryResponse(BaseModel):
+    accounts: list[HistoryAccount]
+    entries: list[HistoryEntry]
+    packages: list[HistoryPackage]
+    markers: list[HistoryMarker]
+    # Keyed by str(account_id) — JSON object keys are strings.
+    summaries: dict[str, HistorySummary]
+    totals: HistorySummary
