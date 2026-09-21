@@ -9,6 +9,7 @@ import type {
   BulkAccountPreview,
   BulkAccountRequest,
   BulkAccountResult,
+  ChargeHistory,
   Customer,
   CustomerWithBalance,
   Delegate,
@@ -17,6 +18,7 @@ import type {
   Group,
   GroupInvoice,
   GroupWithBalance,
+  HistoryAccount,
   LedgerEntry,
   MonitorEvent,
   MonthlySettlementBatch,
@@ -325,4 +327,14 @@ export const monitorApi = {
     (await api.get<ServerMetricPoint[]>(`/api/monitor/servers/${encodeURIComponent(serverId)}/history`, { params: { hours } })).data,
   events: async (params: { limit?: number; server_id?: string; severity?: string } = {}) =>
     (await api.get<MonitorEvent[]>('/api/monitor/events', { params })).data,
+}
+
+// ---- charge history (read-only) ----
+export const historyApi = {
+  // Every account INCLUDING soft-deleted ones — the history picker needs
+  // deleted accounts selectable (their ledger history outlives them), while
+  // GET /api/accounts is deliberately the live fleet view and filters them out.
+  accounts: async () => (await api.get<HistoryAccount[]>('/api/history/accounts')).data,
+  charges: async (params: { account_ids: string; since: string; until: string; include_credits?: boolean }) =>
+    (await api.get<ChargeHistory>('/api/history/charges', { params })).data,
 }

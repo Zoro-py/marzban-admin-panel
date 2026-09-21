@@ -598,3 +598,69 @@ export interface MonitorEvent {
   severity: MonitorSeverity
   detail: string
 }
+
+// ---- charge history (read-only) ----
+
+export interface HistoryAccount {
+  id: number
+  username: string
+  status: string | null
+  deleted: boolean
+  customer_id: number | null
+  customer_name: string | null
+  group_id: number | null
+  group_name: string | null
+  billing_mode: BillingMode
+}
+
+export interface HistoryEntry {
+  id: number
+  account_id: number
+  // ISO UTC — the backend stores naive UTC and stamps +00:00 on the way out.
+  date: string
+  type: LedgerType
+  amount: number
+  // null = unknown ("—", never 0) — charges predating GB tracking or manual
+  // money-only entries.
+  gb_amount: number | null
+  consumed_gb: number | null
+  source: LedgerSource
+  created_by: string | null
+  note: string | null
+}
+
+export interface HistoryPackage {
+  account_id: number
+  activated_at: string
+  data_limit_gb: number
+  duration_days: number
+}
+
+export interface HistoryMarker {
+  account_id: number
+  date: string
+  action: string
+  // Free text for display only — never parsed for numbers.
+  detail: string
+}
+
+export interface HistorySummary {
+  charge_count: number
+  charged_amount: number
+  charged_gb_known: number | null
+  charged_gb_known_count: number
+  credit_count: number
+  credited_amount: number | null
+  first_charge_at: string | null
+  last_charge_at: string | null
+  avg_days_between_charges: number | null
+}
+
+export interface ChargeHistory {
+  accounts: HistoryAccount[]
+  entries: HistoryEntry[]
+  packages: HistoryPackage[]
+  markers: HistoryMarker[]
+  summaries: Record<string, HistorySummary>
+  totals: HistorySummary
+}
