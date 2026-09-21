@@ -75,7 +75,13 @@ export function resolveRange(value: RangeValue): { since: string; until: string 
 
 export function isRangeValid(value: RangeValue): boolean {
   if (value.code !== 'custom') return true
-  return /^\d{4}-\d{2}-\d{2}$/.test(value.customSince) && /^\d{4}-\d{2}-\d{2}$/.test(value.customUntil)
+  const YMD = /^\d{4}-\d{2}-\d{2}$/
+  if (!YMD.test(value.customSince) || !YMD.test(value.customUntil)) return false
+  // Format-only was not enough: an inverted pick (since > until) passed this
+  // check, sent an inverted window to the backend (which 400s on it) and, in
+  // the caption below, rendered a "2026-06-10 -> 2026-06-01" span as if it
+  // were valid. Found by multi-model review.
+  return value.customSince <= value.customUntil
 }
 
 /** The picked day is taken at LOCAL midnight and kept as a date-only string
@@ -179,7 +185,7 @@ export function RangePicker({ value, onChange }: RangePickerProps) {
 
       <p className="truncate text-[11px] text-muted-foreground" title={caption}>
         {caption}
-        {value.code !== 'custom' && ` (${formatDate(new Date())} today)`}
+        {value.code !== 'custom' && ` (${formatDate(new Date().toISOString())} today)`}
       </p>
     </div>
   )

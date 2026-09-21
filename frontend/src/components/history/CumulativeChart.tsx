@@ -2,6 +2,7 @@ import * as React from 'react'
 import { useTheme } from '@/lib/theme'
 import type { ChargeHistory } from '@/lib/types'
 import { parseDate } from '@/lib/utils'
+import { formatJalali } from '@/lib/jalali'
 import { accountColor } from './palette'
 
 /* Cumulative charged Toman over the window — one step line per account plus a
@@ -36,13 +37,14 @@ export function CumulativeChart({ data, sinceMs, untilMs }: { data: ChargeHistor
   const [tip, setTip] = React.useState<{ x: number; y: number; label: string; value: number } | null>(null)
 
   const span = Math.max(1, untilMs - sinceMs)
-  const x = (t: number) => PAD_L + Math.min(1, Math.max(0, (t - sinceMs) / span)) * (W - PAD_L - PAD_R)
+  const x = (t: number) => PAD_L + ((t - sinceMs) / span) * (W - PAD_L - PAD_R)
 
   const series = React.useMemo<Series[]>(() => {
     const out: Series[] = []
     data.accounts.forEach((a, i) => {
       const charges = data.entries
         .filter((e) => e.account_id === a.id && e.type === 'charge')
+        .filter((e) => { const t = parseDate(e.date).getTime(); return t >= sinceMs && t <= untilMs })
         .sort((p, q) => p.date.localeCompare(q.date))
       if (charges.length === 0) return
       let cum = 0
@@ -51,6 +53,7 @@ export function CumulativeChart({ data, sinceMs, untilMs }: { data: ChargeHistor
     })
     const all = [...data.entries]
       .filter((e) => e.type === 'charge')
+      .filter((e) => { const t = parseDate(e.date).getTime(); return t >= sinceMs && t <= untilMs })
       .sort((p, q) => p.date.localeCompare(q.date))
     if (all.length > 0) {
       let cum = 0
@@ -58,7 +61,7 @@ export function CumulativeChart({ data, sinceMs, untilMs }: { data: ChargeHistor
       out.push({ label: 'Total', color: 'foreground', points, final: cum, total: true })
     }
     return out
-  }, [data, resolved])
+  }, [data, resolved, sinceMs, untilMs])
 
   if (series.length === 0) {
     return (
@@ -87,7 +90,7 @@ export function CumulativeChart({ data, sinceMs, untilMs }: { data: ChargeHistor
   // End labels: sort by final value and push down to keep a minimum 13px gap
   // so two lines finishing near each other don't overwrite each other's label.
   const labelPos = [...series]
-    .sort((a, b) => a.final - b.final)
+    .sort((a, b) => b.final - a.final)
     .reduce<{ s: Series; ly: number }[]>((acc, s) => {
       const target = y(s.final)
       const prev = acc[acc.length - 1]
@@ -153,10 +156,16 @@ export function CumulativeChart({ data, sinceMs, untilMs }: { data: ChargeHistor
 
           {Array.from({ length: 5 }, (_, i) => {
             const t = sinceMs + (span * i) / 4
+            const d = new Date(t)
             return (
-              <text key={`ax-${i}`} x={x(t)} y={H - 8} textAnchor="middle" className="fill-muted-foreground" fontSize={9.5}>
-                {new Date(t).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-              </text>
+              <g key={`ax-${i}`}>
+                <text x={x(t)} y={H - 18} textAnchor="middle" className="fill-muted-foreground" fontSize={9.5}>
+                  {d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                </text>
+                <text x={x(t)} y={H - 7} textAnchor="middle" className="fill-muted-foreground/70" fontSize={8.5}>
+                  {formatJalali(d)}
+                </text>
+              </g>
             )
           })}
         </svg>

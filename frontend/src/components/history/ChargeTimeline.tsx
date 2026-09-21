@@ -36,12 +36,40 @@ interface ChargeTimelineProps {
   untilMs: number
 }
 
+/** Every stored timestamp is naive UTC; slicing the raw ISO string (an
+ * earlier version of this file did) reads the UTC calendar date/time
+ * literally, which is wrong here — the rest of this panel treats the
+ * operator's browser-local clock as Tehran (see BalanceSinceControl's own
+ * "picking Aug 17 in a Tehran browser" convention) and expects the same.
+ * `parseDate` already builds the correct Date instant; this just formats it
+ * with the browser's LOCAL getters instead of re-reading the UTC string. */
+function fmtDateTime(iso: string): string {
+  const d = parseDate(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  const date = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  const time = d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+  return `${date} ${time}`
+}
+
+function fmtDateOnly(iso: string): string {
+  const d = parseDate(iso)
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
 export function ChargeTimeline({ data, sinceMs, untilMs }: ChargeTimelineProps) {
   const { resolved } = useTheme()
   const [tip, setTip] = React.useState<Tip | null>(null)
 
   const span = Math.max(1, untilMs - sinceMs)
-  const x = (t: number) => PLOT_X + Math.min(1, Math.max(0, (t - sinceMs) / span)) * PLOT_W
+  // Deliberately NOT clamped: a point outside [sinceMs, untilMs] is filtered
+  // out at each call site below instead of being drawn stacked on the plot
+  // edge (clamping made an out-of-window point look like a real one AT the
+  // boundary, which is a different, wrong fact). The two windows can
+  // legitimately disagree by a few hours — the backend's date-only `until`
+  // is extended to literal UTC day-end, while this axis is the browser's
+  // local (Tehran) day — so this guard is not just defensive.
+  const inWindow = (t: number) => t >= sinceMs && t <= untilMs
+  const x = (t: number) => PLOT_X + ((t - sinceMs) / span) * PLOT_W
   const height = PAD_T + data.accounts.length * LANE_H + PAD_B
 
   const maxAmount = Math.max(1, ...data.entries.filter((e) => e.type === 'charge').map((e) => e.amount))
@@ -55,8 +83,6 @@ export function ChargeTimeline({ data, sinceMs, untilMs }: ChargeTimelineProps) 
     for (const k of data.markers) m.get(k.account_id)?.markers.push(k)
     return m
   }, [data])
-
-  const names = React.useMemo(() => new Map(data.accounts.map((a) => [a.id, a.username])), [data.accounts])
 
   function tipFor(base: Omit<Tip, 'x' | 'laneY'>, tMs: number, laneCenter: number): Tip {
     return { ...base, x: x(tMs), laneY: laneCenter }
@@ -86,7 +112,7 @@ export function ChargeTimeline({ data, sinceMs, untilMs }: ChargeTimelineProps) 
                   </text>
                 )}
 
-                {bag?.packages.map((p, pi) => {
+                {bag?.packages.filter((p) => inWindow(parseDate(p.activated_at).getTime())).map((p, pi) => {
                   const t = parseDate(p.activated_at).getTime()
                   const px = x(t)
                   const key = `p${a.id}-${pi}`
@@ -98,14 +124,14 @@ export function ChargeTimeline({ data, sinceMs, untilMs }: ChargeTimelineProps) 
                       key={key}
                       tabIndex={0}
                       role="img"
-                      aria-label={`${a.username}: package activated ${label} for ${p.duration_days} days on ${p.activated_at.slice(0, 10)}`}
+                      aria-label={`${a.username}: package activated ${label} for ${p.duration_days} days on ${fmtDateOnly(p.activated_at)}`}
                       onMouseEnter={() =>
                         setTip(
                           tipFor(
                             {
                               title: `${a.username} — package activated`,
                               rows: [
-                                ['Date', `${p.activated_at.slice(0, 10)} · ${formatJalali(parseDate(p.activated_at))}`],
+                                ['Date', `${fmtDateTime(p.activated_at)} · ${formatJalali(parseDate(p.activated_at))}`],
                                 ['Package', `${p.data_limit_gb} GB / ${p.duration_days} days`],
                               ],
                             },
@@ -121,7 +147,7 @@ export function ChargeTimeline({ data, sinceMs, untilMs }: ChargeTimelineProps) 
                             {
                               title: `${a.username} — package activated`,
                               rows: [
-                                ['Date', `${p.activated_at.slice(0, 10)} · ${formatJalali(parseDate(p.activated_at))}`],
+                                ['Date', `${fmtDateTime(p.activated_at)} · ${formatJalali(parseDate(p.activated_at))}`],
                                 ['Package', `${p.data_limit_gb} GB / ${p.duration_days} days`],
                               ],
                             },
@@ -144,12 +170,12 @@ export function ChargeTimeline({ data, sinceMs, untilMs }: ChargeTimelineProps) 
                   )
                 })}
 
-                {bag?.entries.map((e) => {
+                {bag?.entries.filter((e) => inWindow(parseDate(e.date).getTime())).map((e) => {
                   const t = parseDate(e.date).getTime()
                   const isCharge = e.type === 'charge'
                   const r = isCharge ? radius(e.amount) : 5
                   const gbTxt = e.gb_amount != null ? `${e.gb_amount} GB` : 'GB —'
-                  const aria = `${a.username} ${e.type} ${formatToman(e.amount)} on ${e.date.slice(0, 10)} (${formatJalali(
+                  const aria = `${a.username} ${e.type} ${formatToman(e.amount)} on ${fmtDateTime(e.date)} (${formatJalali(
                     parseDate(e.date),
                   )}), ${gbTxt}, source ${e.source}${e.created_by ? `, by ${e.created_by}` : ''}${e.note ? `, ${e.note}` : ''}`
                   const handlers = {
@@ -176,21 +202,21 @@ export function ChargeTimeline({ data, sinceMs, untilMs }: ChargeTimelineProps) 
                   )
                 })}
 
-                {bag?.markers.map((k, ki) => {
+                {bag?.markers.filter((k) => inWindow(parseDate(k.date).getTime())).map((k, ki) => {
                   const t = parseDate(k.date).getTime()
                   return (
                     <g
                       key={`k${ki}-${a.id}`}
                       tabIndex={0}
                       role="img"
-                      aria-label={`${a.username}: ${k.action.replace(/_/g, ' ')} on ${k.date.slice(0, 10)} — ${k.detail}`}
+                      aria-label={`${a.username}: ${k.action.replace(/_/g, ' ')} on ${fmtDateOnly(k.date)} — ${k.detail}`}
                       onMouseEnter={() =>
                         setTip(
                           tipFor(
                             {
                               title: `${a.username} — ${k.action.replace(/_/g, ' ')}`,
                               rows: [
-                                ['Date', `${k.date.slice(0, 10)} · ${formatJalali(parseDate(k.date))}`],
+                                ['Date', `${fmtDateTime(k.date)} · ${formatJalali(parseDate(k.date))}`],
                                 ['Detail', k.detail],
                               ],
                             },
@@ -206,7 +232,7 @@ export function ChargeTimeline({ data, sinceMs, untilMs }: ChargeTimelineProps) 
                             {
                               title: `${a.username} — ${k.action.replace(/_/g, ' ')}`,
                               rows: [
-                                ['Date', `${k.date.slice(0, 10)} · ${formatJalali(parseDate(k.date))}`],
+                                ['Date', `${fmtDateTime(k.date)} · ${formatJalali(parseDate(k.date))}`],
                                 ['Detail', k.detail],
                               ],
                             },
@@ -266,7 +292,7 @@ export function ChargeTimeline({ data, sinceMs, untilMs }: ChargeTimelineProps) 
 
 function mkTip(username: string, e: ChargeHistory['entries'][number]): Omit<Tip, 'x' | 'laneY'> {
   const rows: [string, string][] = [
-    ['Date', `${e.date.slice(0, 10)} ${e.date.slice(11, 16)} UTC · ${formatJalali(parseDate(e.date))}`],
+    ['Date', `${fmtDateTime(e.date)} · ${formatJalali(parseDate(e.date))}`],
     [e.type === 'charge' ? 'Charged' : 'Paid', formatToman(e.amount)],
     ['GB', e.gb_amount != null ? String(e.gb_amount) : '— (not recorded)'],
     ['Source', e.source + (e.created_by ? ` · ${e.created_by}` : '')],

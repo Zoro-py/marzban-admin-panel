@@ -9,6 +9,20 @@ import type { ChargeHistory } from '@/lib/types'
 import { cn, formatToman, parseDate } from '@/lib/utils'
 import { formatJalali } from '@/lib/jalali'
 
+/** Local (Tehran, per the panel's convention — the operator's browser is
+ * treated as being there, same as BalanceSinceControl and ChargeTimeline)
+ * date/time strings, built from the Date's LOCAL getters. `d.toISOString()`
+ * (used here before) reads the UTC calendar fields, which can disagree with
+ * the Jalali column right next to it (formatJalali is already local) by a
+ * whole day near midnight — found by multi-model review.
+ */
+function localYmd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+function localHm(d: Date): string {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 /** "18.00 GB" → "18 GB"; null stays null so the caller renders "—". */
 function fmtGb(gb: number | null): string | null {
   return gb == null ? null : String(Number(gb.toFixed(2)))
@@ -58,7 +72,7 @@ export function ChargeTable({ data }: ChargeTableProps) {
         [
           r.date,
           formatJalali(d),
-          d.toISOString().slice(0, 10),
+          localYmd(d),
           names.get(r.account_id) ?? String(r.account_id),
           r.type,
           r.amount,
@@ -115,7 +129,7 @@ export function ChargeTable({ data }: ChargeTableProps) {
               return (
                 <TableRow key={r.id}>
                   <TableCell className="whitespace-nowrap">
-                    <span className="tabular-nums">{d.toISOString().slice(0, 10)} {d.toISOString().slice(11, 16)}</span>
+                    <span className="tabular-nums">{localYmd(d)} {localHm(d)}</span>
                     <span className="ml-1.5 text-[11px] text-muted-foreground">{formatJalali(d)}</span>
                   </TableCell>
                   <TableCell className="max-w-[160px] truncate font-mono text-[12px]">{names.get(r.account_id) ?? r.account_id}</TableCell>
