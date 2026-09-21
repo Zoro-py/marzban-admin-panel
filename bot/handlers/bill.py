@@ -87,16 +87,24 @@ async def _render_bill(edit: Editor, customer: dict) -> None:
 
     posted = balance.get("balance", 0.0)
     pending_amount = balance.get("pending_amount")
-    gb_pending = balance.get("gb_pending")
+    # The GB that sits next to pending_amount is the BILLABLE GB (pending_gb —
+    # whole unbilled package for prepay); gb_pending is live usage and paired
+    # a 2.3 GB usage figure with a 40 GB package's money. Older backends only
+    # have gb_pending, so fall back to it.
+    pending_gb = balance.get("pending_gb")
+    if pending_gb is None:
+        pending_gb = balance.get("gb_pending")
     username_by_id = {a["id"]: a["marzban_username"] for a in accounts}
 
     owe = "بدهکار" if posted > 0 else ("اعتبار" if posted < 0 else "تسویه")
     lines = [f"🧾 صورتحساب {customer['name']} (#{cid})",
              f"بدهی ثبت‌شده: {format_toman(posted)} — {owe}"]
-    if gb_pending:
-        toman = format_toman(pending_amount) if pending_amount is not None else "—"
-        lines.append(f"هنوز صورت‌حساب نشده: {gb_pending:g} GB ({toman})")
-        lines.append(f"اگر همین حالا تسویه شود: {format_toman(posted + (pending_amount or 0.0))}")
+    # Keyed on the MONEY that is not invoiced, not on GB: an unbilled prepay
+    # package can sit next to ~0 GB of live usage, and gating on usage hid it.
+    if pending_amount:
+        gb = f"{pending_gb:g} GB " if pending_gb else ""
+        lines.append(f"هنوز صورت‌حساب نشده: {gb}({format_toman(pending_amount)})")
+        lines.append(f"اگر همین حالا تسویه شود: {format_toman(posted + pending_amount)}")
 
     if txs:
         lines.append("")

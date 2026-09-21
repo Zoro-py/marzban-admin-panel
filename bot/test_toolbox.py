@@ -60,7 +60,7 @@ class FakeBackend:
         if url == "/api/customers/5/accounts":
             return [{"id": 9, "marzban_username": "acc1", "net_owed": 120000.0}]
         if "ledger/balance" in url and (params or {}).get("customer_id") == 5:
-            return {"balance": 120000.0, "gb_pending": 30.5, "pending_amount": 152500.0}
+            return {"balance": 120000.0, "gb_pending": 30.5, "pending_amount": 152500.0, "pending_gb": 30.5, "net_owed": 272500.0}
         if url.startswith("/api/ledger"):
             return [
                 {"date": "2026-09-18 12:00:00", "type": "credit", "amount": 250000.0, "account_id": 9},
@@ -123,6 +123,22 @@ async def main() -> None:
     check("bill lists recent transactions with account names", "acc1" in text and "بدهی" in text and "پرداخت" in text)
     cb = callbacks(markup)
     check("bill has refresh + payment handoff + close", "bill:refresh:5" in cb and "debtnudge:5" in cb and "bill:close" in cb)
+
+    # 1b) a prepay customer whose new package is unbilled but whose live usage is ~0: the
+    #     old gate («if gb_pending») hid the whole block, and the GB shown was usage, not the package
+    class _Prepay(FakeBackend):
+        async def get(self, url, params=None):
+            if "ledger/balance" in url and (params or {}).get("customer_id") == 5:
+                return {"balance": 200000.0, "gb_pending": 0.0, "pending_amount": 200000.0, "pending_gb": 40.0, "net_owed": 400000.0}
+            return await super().get(url, params)
+    saved_backend, bill.backend = bill.backend, _Prepay()
+    ctx1b, upd1b, replies1b = make_command(["Ali"])
+    await bill.bill_command(upd1b, ctx1b)
+    text1b = replies1b[-1][0]
+    bill.backend = saved_backend
+    check("prepay bill: unbilled package shown even with ~0 GB of live usage (was hidden)", "هنوز صورت‌حساب نشده" in text1b and "200,000 T" in text1b)
+    check("prepay bill: the GB beside the money is the 40 GB package, not usage", "40 GB" in text1b)
+    check("prepay bill: settle-now total = posted + not invoiced (400,000)", "400,000 T" in text1b)
 
     # 2) /bill by marzban username
     ctx, upd, replies = make_command(["acc1"])
