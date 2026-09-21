@@ -45,7 +45,10 @@ async def customer_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # this card reported only the invoiced part.
     if balance.get("pending_amount"):
         lines.append(f"Not invoiced yet: {format_toman(balance['pending_amount'])}")
-        lines.append(f"Owes now: {format_toman(balance.get('net_owed', balance['balance'] + balance['pending_amount']))}")
+        net = balance.get("net_owed")
+        if net is None:
+            net = balance["balance"] + balance["pending_amount"]
+        lines.append(f"Owes now: {format_toman(net)}")
     lines += [
         "",
         f"*Accounts ({len(accounts)})*",

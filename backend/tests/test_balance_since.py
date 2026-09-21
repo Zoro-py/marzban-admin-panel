@@ -248,6 +248,41 @@ check("customer scope rolls up the same numbers (net 400,000, 40 GB, 3 charges /
 no_gb = client.get("/api/ledger/balance", params={"account_id": account_id, "since": since_after_all}).json()
 check("a window with no charges reports zero counts (not null) and still nets the pending", no_gb["charge_count"] == 0 and no_gb["net_owed"] == no_gb["balance"] + no_gb["pending_amount"])
 
+# ---- roll-up: an account that belongs to a group AND has a customer must be counted ONCE in the customer's scope ----
+# (council round 3 suspected a double count through customer_accounts + represented groups; MoneyBook attributes a
+# grouped account to its GROUP only — this pins that for pending_gb and the charge metadata too)
+with Session(engine) as session:
+    rep = Customer(name="Group Rep")
+    session.add(rep)
+    session.commit()
+    session.refresh(rep)
+    grp = Group(name="RollUp Group", representative_customer_id=rep.id, billing_mode=BillingMode.prepay)
+    session.add(grp)
+    session.commit()
+    session.refresh(grp)
+    member = Account(marzban_username="grp_member", customer_id=rep.id, group_id=grp.id, billing_mode=BillingMode.prepay,
+                     rate_per_gb=5000, data_limit=10 * GBYTES, billed_data_limit=0, used_traffic=0, usage_baseline=0)
+    session.add(member)
+    session.commit()
+    session.refresh(member)
+    rep_id, grp_id, member_id = rep.id, grp.id, member.id
+    session.add(LedgerEntry(type=LedgerType.charge, amount=10_000, account_id=member_id, group_id=grp_id, customer_id=rep_id,
+                            date=now - timedelta(days=2), gb_amount=2.0))
+    session.add(LedgerEntry(type=LedgerType.charge, amount=7_000, account_id=member_id, group_id=grp_id, customer_id=rep_id,
+                            date=now - timedelta(days=1)))
+    session.commit()
+w = (now - timedelta(days=10)).replace(tzinfo=timezone.utc).isoformat()
+ra = client.get("/api/ledger/balance", params={"account_id": member_id, "since": w}).json()
+rg = client.get("/api/ledger/balance", params={"group_id": grp_id, "since": w}).json()
+rc2 = client.get("/api/ledger/balance", params={"customer_id": rep_id, "since": w}).json()
+check("grouped account: account, group and its representative agree on charge_count (2, not 4) and 1 with GB",
+      ra["charge_count"] == rg["charge_count"] == rc2["charge_count"] == 2
+      and ra["charge_count_with_gb"] == rg["charge_count_with_gb"] == rc2["charge_count_with_gb"] == 1)
+check("grouped account: pending_gb is the 10 GB package ONCE at every level",
+      ra["pending_gb"] == rg["pending_gb"] == rc2["pending_gb"] == 10.0)
+check("grouped account: net_owed agrees at every level (17,000 posted + 50,000 pending)",
+      ra["net_owed"] == rg["net_owed"] == rc2["net_owed"] == 67_000.0)
+
 print()
 if failures:
     print(f"{len(failures)} FAILURES: {failures}")

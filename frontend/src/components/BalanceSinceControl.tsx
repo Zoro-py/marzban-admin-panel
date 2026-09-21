@@ -211,7 +211,11 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
             <span className="text-muted-foreground">Loading…</span>
           ) : (
             <>
-              <Money amount={query.data?.net_owed ?? query.data?.balance ?? 0} zero="settled" className="text-sm" />
+              <Money
+                amount={query.data ? (query.data.net_owed ?? query.data.balance + (query.data.pending_amount ?? 0)) : 0}
+                zero="settled"
+                className="text-sm"
+              />
               {query.data && <OwedBreakdown balance={query.data} />}
               <GbSummary balance={query.data} />
             </>
