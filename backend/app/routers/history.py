@@ -116,11 +116,18 @@ def _parse_account_ids(raw: str) -> list[int]:
     Malformed input is a client bug worth a clear 400 (not a bare 422): a
     copied URL with "a=3,,46" or "a=3;46" should say exactly what's wrong.
     """
-    tokens = [t.strip() for t in raw.split(",") if t.strip()]
-    if not tokens:
+    # Every comma-separated slot is checked, not just the non-empty ones — a
+    # slot that strips to "" ("3,,46" or a trailing "3,") is exactly the
+    # malformed input the docstring above promises a clear 400 for; silently
+    # dropping it (an earlier version of this filter did) instead accepted
+    # the input and quietly served fewer accounts than the caller named.
+    tokens = [t.strip() for t in raw.split(",")]
+    if not raw.strip() or tokens == [""]:
         raise HTTPException(400, "account_ids is required — a comma-separated list of account ids")
     ids: list[int] = []
     for token in tokens:
+        if not token:
+            raise HTTPException(400, f"account_ids has an empty entry — got {raw!r}")
         # ASCII digits only — "۳" is technically int()-able but accepting it
         # would make error messages and logs ambiguous; same convention as the
         # bot's ASCII-only digit handling.
@@ -181,7 +188,11 @@ def charge_history(
         if until_naive.time() == datetime.min.time():
             until_naive = until_naive + timedelta(days=1) - timedelta(microseconds=1)
     if since is None:
-        since_naive = now - timedelta(days=DEFAULT_WINDOW_DAYS)
+        # Anchored to `until`, not to `now`: a caller who passed only an old
+        # `until` (e.g. "show me last year") got a `since` computed from
+        # today and landed after `until`, an unconditional 400 for a
+        # perfectly sensible request. Found by multi-model review.
+        since_naive = until_naive - timedelta(days=DEFAULT_WINDOW_DAYS)
     else:
         since_naive = _to_naive_utc(since)
     if since_naive > until_naive:
@@ -209,6 +220,13 @@ def charge_history(
         select(QueuedPlan)
         .where(QueuedPlan.account_id.in_(ids))  # type: ignore[arg-type]
         .where(QueuedPlan.status == QueuedPlanStatus.activated)
+        # Windowed exactly like entries/markers — an unfiltered query here
+        # returned every activated plan ever, for the whole account lifetime,
+        # regardless of the requested since/until (found by independent
+        # multi-model review, confirmed by reading the query: it carried no
+        # date predicate at all).
+        .where(QueuedPlan.activated_at >= since_naive)
+        .where(QueuedPlan.activated_at <= until_naive)
         .order_by(QueuedPlan.activated_at, QueuedPlan.id)
     ).all()
     events = session.exec(

@@ -284,6 +284,17 @@ def run_main_tests(IDS: dict) -> None:
     r = client.get("/api/history/charges", params={"since": "2026-08-01"})
     check("missing account_ids → 422 (required param)", r.status_code == 422, str(r.status_code))
 
+    # ── Group 6b: council-found bugs (empty token, default-since anchor) ──
+    r = client.get("/api/history/charges", params={"account_ids": f"{A1},,{A2}"})
+    check("empty token between commas ('3,,46') -> 400, not silently dropped", r.status_code == 400, str(r.status_code))
+    r = client.get("/api/history/charges", params={"account_ids": f"{A1},"})
+    check("trailing comma -> 400", r.status_code == 400, str(r.status_code))
+    # only `until`, far enough in the past that "now - 180d" would land AFTER it —
+    # the old code anchored the default `since` to `now`, so this always 400'd.
+    r = client.get("/api/history/charges", params={"account_ids": str(A1), "until": "2025-01-05"})
+    check("only an old `until` given: default `since` anchors to `until`, not `now` (no 400)",
+          r.status_code == 200, r.text[:200])
+
     # ── Group 7: packages + markers ────────────────────────────────────────
     # until extended past the A4 deletion event (2026-09-01) so the marker
     # is inside the window; markers must also RESPECT the window.
@@ -292,6 +303,11 @@ def run_main_tests(IDS: dict) -> None:
     check("packages: only the two activated plans of A2 (20 then 50 GB)",
           pkgs == [(A2, 20.0), (A2, 50.0)], str(pkgs))
     check("packages: activated_at present", all(p["activated_at"] for p in b["packages"]))
+    # A narrower window that EXCLUDES both A2 packages' activation dates: the
+    # unfiltered query used to return them anyway (found by multi-model review).
+    b_narrow = call([A2], since="2026-08-20", until="2026-08-20").json()
+    check("packages respect the window: a window with neither activation date returns none",
+          b_narrow["packages"] == [], b_narrow["packages"])
     acts = [(m["account_id"], m["action"]) for m in b["markers"]]
     allowed = {"external_data_limit_increase", "adjust", "external_usage_reset",
                "payg_cap_hit_reset", "settle_reset", "deleted_from_marzban"}
