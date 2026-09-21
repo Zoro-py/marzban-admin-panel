@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useTheme } from '@/lib/theme'
 import type { ChargeHistory } from '@/lib/types'
-import { parseDate } from '@/lib/utils'
+import { cn, formatToman, parseDate } from '@/lib/utils'
 import { formatJalali } from '@/lib/jalali'
 import { accountColor } from './palette'
 
@@ -32,9 +32,22 @@ interface Series {
   total?: boolean
 }
 
+/** The step line's value at an arbitrary time t: the running total as of the
+ * LAST real charge at or before t (0 before the first charge). Used to
+ * follow the mouse continuously instead of only snapping to charge events. */
+function valueAtTime(s: Series, t: number): number {
+  let v = 0
+  for (const p of s.points) {
+    if (p.t > t) break
+    v = p.v
+  }
+  return v
+}
+
 export function CumulativeChart({ data, sinceMs, untilMs }: { data: ChargeHistory; sinceMs: number; untilMs: number }) {
   const { resolved } = useTheme()
-  const [tip, setTip] = React.useState<{ x: number; y: number; label: string; value: number } | null>(null)
+  const [hoverT, setHoverT] = React.useState<number | null>(null)
+  const svgRef = React.useRef<SVGSVGElement>(null)
 
   const span = Math.max(1, untilMs - sinceMs)
   const x = (t: number) => PAD_L + ((t - sinceMs) / span) * (W - PAD_L - PAD_R)
@@ -102,7 +115,49 @@ export function CumulativeChart({ data, sinceMs, untilMs }: { data: ChargeHistor
   return (
     <div className="overflow-x-auto">
       <div className="relative min-w-[560px]">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Cumulative charges per account">
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${W} ${H}`}
+          className="w-full"
+          role="img"
+          aria-label="Cumulative charges per account — hover or move your finger along the plot to read every account's running total at that moment"
+          onMouseMove={(evt) => {
+            const svg = svgRef.current
+            if (!svg) return
+            const pt = svg.createSVGPoint()
+            pt.x = evt.clientX
+            pt.y = evt.clientY
+            const ctm = svg.getScreenCTM()
+            if (!ctm) return
+            const local = pt.matrixTransform(ctm.inverse())
+            const plotL = PAD_L
+            const plotR = W - PAD_R
+            if (local.x < plotL || local.x > plotR) {
+              setHoverT(null)
+              return
+            }
+            const t = sinceMs + ((local.x - plotL) / (plotR - plotL)) * span
+            setHoverT(Math.min(untilMs, Math.max(sinceMs, t)))
+          }}
+          onMouseLeave={() => setHoverT(null)}
+          onTouchMove={(evt) => {
+            const svg = svgRef.current
+            const touch = evt.touches[0]
+            if (!svg || !touch) return
+            const pt = svg.createSVGPoint()
+            pt.x = touch.clientX
+            pt.y = touch.clientY
+            const ctm = svg.getScreenCTM()
+            if (!ctm) return
+            const local = pt.matrixTransform(ctm.inverse())
+            const plotL = PAD_L
+            const plotR = W - PAD_R
+            if (local.x < plotL || local.x > plotR) return
+            const t = sinceMs + ((local.x - plotL) / (plotR - plotL)) * span
+            setHoverT(Math.min(untilMs, Math.max(sinceMs, t)))
+          }}
+          onTouchEnd={() => setHoverT(null)}
+        >
           {Array.from({ length: 5 }, (_, i) => {
             const v = (maxV * i) / 4
             return (
@@ -139,20 +194,40 @@ export function CumulativeChart({ data, sinceMs, untilMs }: { data: ChargeHistor
             </text>
           ))}
 
-          {/* hover read-out along the total line */}
-          {series
-            .find((s) => s.total)
-            ?.points.map((p, i) => (
-              <circle
-                key={`tip-${i}`}
-                cx={x(p.t)}
-                cy={y(p.v)}
-                r={7}
-                fill="transparent"
-                onMouseEnter={() => setTip({ x: x(p.t), y: y(p.v), label: 'Total charged', value: p.v })}
-                onMouseLeave={() => setTip(null)}
+          {/* Crosshair: follows the mouse/finger continuously (not just at charge
+              events) and shows every series' running total at that instant —
+              the "trace the trend" reading the chart alone doesn't give. */}
+          {hoverT != null && (
+            <>
+              <line
+                x1={x(hoverT)}
+                y1={PAD_T}
+                x2={x(hoverT)}
+                y2={H - PAD_B}
+                className="stroke-muted-foreground"
+                strokeWidth={1}
+                strokeDasharray="3 3"
+                pointerEvents="none"
               />
-            ))}
+              {series.map((s) => (
+                <circle
+                  key={`cross-${s.label}`}
+                  cx={x(hoverT)}
+                  cy={y(valueAtTime(s, hoverT))}
+                  r={s.total ? 3.5 : 3}
+                  className={cn(s.total ? 'fill-foreground' : undefined, 'stroke-card')}
+                  fill={s.total ? undefined : s.color}
+                  strokeWidth={1.5}
+                  pointerEvents="none"
+                />
+              ))}
+            </>
+          )}
+
+          {/* Invisible full-height strip over the plot area — this, not the
+              individual series paths, is what actually receives the pointer
+              events above (a 1.6px step line is too thin a target). */}
+          <rect x={PAD_L} y={PAD_T} width={W - PAD_L - PAD_R} height={H - PAD_T - PAD_B} fill="transparent" />
 
           {Array.from({ length: 5 }, (_, i) => {
             const t = sinceMs + (span * i) / 4
@@ -170,15 +245,40 @@ export function CumulativeChart({ data, sinceMs, untilMs }: { data: ChargeHistor
           })}
         </svg>
 
-        {tip && (
-          <div
-            className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs shadow-md"
-            style={{ left: `${(tip.x / W) * 100}%`, top: `${(tip.y / H) * 100}%` }}
-          >
-            <span className="font-medium tabular-nums">{tip.value.toLocaleString('en-US')}</span>{' '}
-            <span className="text-muted-foreground">Toman — {tip.label}</span>
-          </div>
-        )}
+        {hoverT != null && (() => {
+          const d = new Date(hoverT)
+          const rows = [...series].sort((a, b) => valueAtTime(b, hoverT) - valueAtTime(a, hoverT))
+          const crossX = x(hoverT)
+          // Flip to the left of the crosshair once it's past ~70% of the plot
+          // width, so the box never runs off the right edge under the labels.
+          const flip = crossX > PAD_L + (W - PAD_L - PAD_R) * 0.7
+          return (
+            <div
+              className="pointer-events-none absolute z-10 min-w-[150px] -translate-y-1/2 rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs shadow-md"
+              style={{
+                left: `${(crossX / W) * 100}%`,
+                top: '50%',
+                transform: `translateY(-50%) translateX(${flip ? 'calc(-100% - 10px)' : '10px'})`,
+              }}
+            >
+              <p className="mb-1 whitespace-nowrap font-medium">
+                {d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} · {formatJalali(d)}
+              </p>
+              {rows.map((s) => (
+                <p key={s.label} className="flex items-center gap-1.5 whitespace-nowrap">
+                  <span
+                    className={cn('inline-block h-2 w-2 shrink-0 rounded-full', s.total && 'bg-foreground')}
+                    style={s.total ? undefined : { background: s.color }}
+                  />
+                  <span className={cn('truncate', s.total ? 'font-medium' : 'text-muted-foreground')}>
+                    {s.label}
+                  </span>
+                  <span className="ml-auto tabular-nums">{formatToman(valueAtTime(s, hoverT))}</span>
+                </p>
+              ))}
+            </div>
+          )
+        })()}
       </div>
     </div>
   )
