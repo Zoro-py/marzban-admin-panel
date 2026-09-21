@@ -51,45 +51,73 @@ function utcBoundary(since: string): string {
   return `from ${since.replace('T', ' ').slice(0, 16)} UTC`
 }
 
-function GbSummary({ balance }: {
-  balance: {
-    gb_charged: number | null
-    gb_consumed: number | null
-    charged_amount: number | null
-    consumed_amount: number | null
-    credited_amount: number | null
-    gb_pending: number | null
-    pending_amount: number | null
-  } | undefined
-}) {
+type BalanceData = {
+  balance: number
+  net_owed?: number | null
+  pending_amount: number | null
+  pending_gb?: number | null
+  gb_charged: number | null
+  gb_consumed: number | null
+  charged_amount: number | null
+  charged_amount_gb_known?: number | null
+  charge_count?: number | null
+  charge_count_with_gb?: number | null
+  consumed_amount: number | null
+  credited_amount: number | null
+}
+
+/** What the headline is made of, so it can be checked against «Owes now»:
+ * invoiced-in-window + not-invoiced-yet. Both parts always shown when the
+ * second exists — a headline that silently omitted the unbilled package read
+ * 200,000 next to «Owes now 400,000» for the same account. */
+function OwedBreakdown({ balance }: { balance: BalanceData }) {
+  const pending = balance.pending_amount ?? 0
+  if (pending <= 0) return null
+  return (
+    <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+      = <span className="text-foreground">{formatToman(balance.balance)}</span> invoiced
+      {' + '}
+      <span className="text-foreground">{formatToman(pending)}</span> not invoiced yet
+      {balance.pending_gb != null && balance.pending_gb > 0.001 && <> ({fmtGb(balance.pending_gb)} GB)</>}
+    </span>
+  )
+}
+
+function GbSummary({ balance }: { balance: BalanceData | undefined }) {
   if (!balance) return null
-  const { gb_charged, gb_consumed, charged_amount, consumed_amount, credited_amount, gb_pending, pending_amount } = balance
-  if (gb_charged == null && gb_consumed == null && charged_amount == null && consumed_amount == null && credited_amount == null && !gb_pending) {
-    return null
-  }
+  const { gb_charged, gb_consumed, charged_amount, charged_amount_gb_known, charge_count, charge_count_with_gb, consumed_amount, credited_amount } = balance
+  if (!charge_count && gb_charged == null && gb_consumed == null && credited_amount == null) return null
+  // «5 GB charged» only covers the charges that carry a GB figure, while the
+  // money is every charge — say so instead of pairing one row's GB with all
+  // rows' Toman.
+  const partial = charge_count != null && charge_count_with_gb != null && charge_count_with_gb < charge_count
   return (
     <span
-      title="Usage rows cover what was actually BILLED inside this window — the live Marzban counter keeps its own continuous total and is not summed here."
-      className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-[11px] text-muted-foreground">
-      <span className="whitespace-nowrap">
-        <span className="text-foreground">{gb_charged != null ? `${fmtGb(gb_charged)} GB` : '—'}</span>
-        {' '}charged
-        {charged_amount != null && <> ({formatToman(charged_amount)})</>}
-      </span>
-      <span className="whitespace-nowrap">
-        <span className="text-foreground">{gb_consumed != null ? `${fmtGb(gb_consumed)} GB` : '—'}</span>
-        {' '}billed usage
-        {consumed_amount != null && <> ({formatToman(consumed_amount)})</>}
-      </span>
+      title="GB is only recorded on some charges (older ones carry none — shown as '—', never as 0). Billed usage covers what was actually BILLED inside this window; the live Marzban counter keeps its own continuous total."
+      className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+      {!!charge_count && (
+        <span className="whitespace-nowrap">
+          <span className="text-foreground">{charge_count}</span> charge{charge_count === 1 ? '' : 's'}
+          {charged_amount != null && <> · {formatToman(charged_amount)}</>}
+          {gb_charged != null && (
+            <>
+              {' '}— <span className="text-foreground">{fmtGb(gb_charged)} GB</span> recorded
+              {partial && <> on {charge_count_with_gb} of {charge_count}</>}
+              {charged_amount_gb_known != null && partial && <> ({formatToman(charged_amount_gb_known)})</>}
+            </>
+          )}
+          {gb_charged == null && <> — GB not recorded</>}
+        </span>
+      )}
+      {gb_consumed != null && (
+        <span className="whitespace-nowrap">
+          <span className="text-foreground">{fmtGb(gb_consumed)} GB</span> billed usage
+          {consumed_amount != null && <> ({formatToman(consumed_amount)})</>}
+        </span>
+      )}
       {credited_amount != null && (
         <span className="whitespace-nowrap">
           <span className="text-foreground">{formatToman(credited_amount)}</span> credited
-        </span>
-      )}
-      {gb_pending != null && gb_pending > 0.001 && (
-        <span className="whitespace-nowrap">
-          {fmtGb(gb_pending)} GB accruing
-          {pending_amount != null && <> ({formatToman(pending_amount)})</>}
         </span>
       )}
     </span>
@@ -183,7 +211,8 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
             <span className="text-muted-foreground">Loading…</span>
           ) : (
             <>
-              <Money amount={query.data?.balance ?? 0} zero="settled" className="text-sm" />
+              <Money amount={query.data?.net_owed ?? query.data?.balance ?? 0} zero="settled" className="text-sm" />
+              {query.data && <OwedBreakdown balance={query.data} />}
               <GbSummary balance={query.data} />
             </>
           )}

@@ -247,6 +247,16 @@ export interface Balance {
   // current rate, same window-blind semantics. Shown as the accruing tag's
   // Toman equivalent so the widget states posted AND accruing together.
   pending_amount: number | null
+  // Headline: balance (posted in the window) + pending_amount (not invoiced
+  // yet). Null only from an older backend — fall back to `balance`.
+  net_owed?: number | null
+  // Billable GB not yet invoiced (whole unbilled package for prepay, metered
+  // usage for payg) — the GB sibling of pending_amount. Not gb_pending.
+  pending_gb?: number | null
+  // Charges in the window, how many carry a GB figure, and the money of those.
+  charge_count?: number | null
+  charge_count_with_gb?: number | null
+  charged_amount_gb_known?: number | null
 }
 
 export interface InvoiceLine {
