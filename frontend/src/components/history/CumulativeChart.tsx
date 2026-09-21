@@ -113,7 +113,11 @@ export function CumulativeChart({ data, sinceMs, untilMs }: { data: ChargeHistor
     }, [])
 
   return (
-    <div className="overflow-x-auto">
+    <div className="flex flex-col gap-1">
+      <p className="text-[11px] text-muted-foreground">
+        Posted charges only — doesn&apos;t include this cycle&apos;s not-yet-invoiced package/usage.
+      </p>
+      <div className="overflow-x-auto">
       <div className="relative min-w-[560px]">
         <svg
           ref={svgRef}
@@ -279,6 +283,7 @@ export function CumulativeChart({ data, sinceMs, untilMs }: { data: ChargeHistor
             </div>
           )
         })()}
+      </div>
       </div>
     </div>
   )

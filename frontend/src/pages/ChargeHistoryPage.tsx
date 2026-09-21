@@ -129,6 +129,11 @@ export function ChargeHistoryPage() {
         <p className="text-xs text-muted-foreground">
           Read-only charge history per account — ledger entries, packages and payments over any window.
         </p>
+        <p className="text-xs text-muted-foreground">
+          Totals below are charges already posted to the ledger — they do NOT include this cycle&apos;s
+          not-yet-invoiced package/usage, and are not netted against payments. For an account, group or
+          customer&apos;s full current debt, see its own Balance page.
+        </p>
       </div>
 
       <AccountPicker options={accountsQuery.data ?? []} selected={state.ids} onChange={setIds} />
