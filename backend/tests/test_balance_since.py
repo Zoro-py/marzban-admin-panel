@@ -200,6 +200,54 @@ check("gb_pending matches the same accrual", r.json()["gb_pending"] == 5.0)
 r = client.get("/api/ledger/balance", params={"account_id": account_id, "since": since_after_all})
 check("pending_amount is window-blind (same value with and without since)", r.json()["pending_amount"] == 5000.0)
 
+# ---- the «Tabatabaei» case (2026-09-21): a prepay account whose NEW 40 GB package is not invoiced yet ----
+# Three old auto-settle charges (two with no GB recorded, one with 5 GB) + a fresh 40 GB package at 5,000 T/GB.
+# The widget used to headline only the posted 200,000 while «Owes now» said 400,000, and printed
+# «5 GB charged (200,000 T)» — one row's GB next to all three rows' money.
+GBYTES = 1024 ** 3
+with Session(engine) as session:
+    tc = Customer(name="Tabatabaei-like")
+    session.add(tc)
+    session.commit()
+    session.refresh(tc)
+    tab = Account(marzban_username="tab_like", customer_id=tc.id, billing_mode=BillingMode.prepay,
+                  rate_per_gb=5000, data_limit=40 * GBYTES, billed_data_limit=0, used_traffic=int(2.3 * GBYTES),
+                  usage_baseline=0)
+    session.add(tab)
+    session.commit()
+    session.refresh(tab)
+    tab_id, tab_cust = tab.id, tc.id
+    d0 = now - timedelta(days=40)
+    session.add(LedgerEntry(type=LedgerType.charge, amount=150_000, account_id=tab_id, customer_id=tab_cust, date=d0))
+    session.add(LedgerEntry(type=LedgerType.charge, amount=25_000, account_id=tab_id, customer_id=tab_cust, date=d0 + timedelta(days=25)))
+    session.add(LedgerEntry(type=LedgerType.charge, amount=25_000, account_id=tab_id, customer_id=tab_cust, date=now - timedelta(days=1),
+                            gb_amount=5.0, consumed_gb=5.005, consumed_amount=25_025.0))
+    session.commit()
+
+wide = (now - timedelta(days=100)).replace(tzinfo=timezone.utc).isoformat()
+r = client.get("/api/ledger/balance", params={"account_id": tab_id, "since": wide}).json()
+check("Tabatabaei-like: posted balance in the window is 200,000", r["balance"] == 200_000.0)
+check("...the unbilled 40 GB package is 200,000 pending", r["pending_amount"] == 200_000.0)
+check("...headline net_owed = posted + not invoiced = 400,000 (matches «Owes now»)", r["net_owed"] == 400_000.0)
+check("...pending_gb is the BILLABLE 40 GB package, not the live-usage figure (which is <= 2.3 GB)", r["pending_gb"] == 40.0 and r["gb_pending"] <= 2.31)
+check("...3 charges in the window, GB recorded on 1", r["charge_count"] == 3 and r["charge_count_with_gb"] == 1)
+check("...gb_charged covers only the GB-carrying row (5 GB) and its money is 25,000 of the 200,000",
+      r["gb_charged"] == 5.0 and r["charged_amount_gb_known"] == 25_000.0 and r["charged_amount"] == 200_000.0)
+
+recent_since = (now - timedelta(days=2)).replace(tzinfo=timezone.utc).isoformat()
+r = client.get("/api/ledger/balance", params={"account_id": tab_id, "since": recent_since}).json()
+check("narrower window: only the last charge counts, pending is window-blind, net follows",
+      r["charge_count"] == 1 and r["balance"] == 25_000.0 and r["net_owed"] == 225_000.0)
+
+allt = client.get("/api/ledger/balance", params={"account_id": tab_id}).json()
+acct_row = [a for a in client.get("/api/customers/%d/accounts" % tab_cust).json() if a["id"] == tab_id][0]
+check("all-time net_owed equals the account's own «Owes now» (net_owed on the row)", allt["net_owed"] == acct_row["net_owed"] == 400_000.0)
+rc = client.get("/api/ledger/balance", params={"customer_id": tab_cust, "since": wide}).json()
+check("customer scope rolls up the same numbers (net 400,000, 40 GB, 3 charges / 1 with GB)",
+      rc["net_owed"] == 400_000.0 and rc["pending_gb"] == 40.0 and rc["charge_count"] == 3 and rc["charge_count_with_gb"] == 1)
+no_gb = client.get("/api/ledger/balance", params={"account_id": account_id, "since": since_after_all}).json()
+check("a window with no charges reports zero counts (not null) and still nets the pending", no_gb["charge_count"] == 0 and no_gb["net_owed"] == no_gb["balance"] + no_gb["pending_amount"])
+
 print()
 if failures:
     print(f"{len(failures)} FAILURES: {failures}")

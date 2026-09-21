@@ -396,6 +396,21 @@ class BalanceRead(BaseModel):
     # next to gb_pending so the widget states the full picture of a period:
     # "posted 43,288 + accruing 153,115", not just the settled slice.
     pending_amount: Optional[float] = None
+    # What the scope owes FROM `since` including what has not been invoiced yet:
+    # balance (posted in the window) + pending_amount (window-blind, open
+    # cycle). The headline number — `balance` alone left out an unbilled
+    # package and read lower than «Owes now» for the same account.
+    net_owed: Optional[float] = None
+    # GB that is BILLABLE but not invoiced yet (whole unbilled package for
+    # prepay, metered usage for payg) — the GB sibling of pending_amount.
+    # gb_pending (live usage) is a different quantity; don't pair it with money.
+    pending_gb: Optional[float] = None
+    # How many charges the window holds, how many of them carry a GB figure,
+    # and the money of just those — so «5 GB charged» can say it covers 1 of 3
+    # charges instead of sitting next to the money of all three.
+    charge_count: Optional[int] = None
+    charge_count_with_gb: Optional[int] = None
+    charged_amount_gb_known: Optional[float] = None
 
 
 # ---- Bulk ("family") account creation ----------------------------------
