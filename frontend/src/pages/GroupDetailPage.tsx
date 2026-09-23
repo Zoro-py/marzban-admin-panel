@@ -17,6 +17,7 @@ import { SettleGroupDialog } from '@/components/groups/SettleGroupDialog'
 import { ResetGroupCycleDialog } from '@/components/groups/ResetGroupCycleDialog'
 import { GroupSettingsDialog } from '@/components/groups/GroupSettingsDialog'
 import { BalanceSinceControl } from '@/components/BalanceSinceControl'
+import { ChargeHistoryPreview } from '@/components/history/ChargeHistoryPreview'
 import { UsageBar } from '@/components/UsageBar'
 import { StatusDot } from '@/components/StatusDot'
 import { StatCard } from '@/components/StatCard'
@@ -208,6 +209,10 @@ export function GroupDetailPage() {
           a group's debt view without it was the gap the owner kept
           hitting (H2). */}
       <BalanceSinceControl scope={{ group_id: groupId }} />
+
+      {/* Charges across the whole membership — zero members renders nothing
+          (see ChargeHistoryPreview). */}
+      <ChargeHistoryPreview accountIds={(accountsQuery.data ?? []).map((a) => a.id)} />
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         <StatCard

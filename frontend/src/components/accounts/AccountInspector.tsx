@@ -21,6 +21,7 @@ import { accountsApi, settingsApi, customersApi, groupsApi, ledgerApi, apiErrorM
 import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
 import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import { BalanceSinceControl } from '@/components/BalanceSinceControl'
+import { ChargeHistoryPreview } from '@/components/history/ChargeHistoryPreview'
 import type { AccountRow, AccountRole, BillingMode, LedgerSource, LedgerType } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -1075,6 +1076,9 @@ function HistorySection({ account }: { account: AccountRow }) {
           </li>
         ))}
       </ol>
+      {/* The recent-rows list answers "what happened"; this answers "how is
+          the money trending" — same History section, no extra trip to /history. */}
+      <ChargeHistoryPreview accountIds={[account.id]} />
     </Section>
   )
 }

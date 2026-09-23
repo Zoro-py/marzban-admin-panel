@@ -8,6 +8,7 @@ import { LedgerActionDialog } from '@/components/ledger/LedgerActionDialog'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
 import { BalanceSinceControl } from '@/components/BalanceSinceControl'
+import { ChargeHistoryPreview } from '@/components/history/ChargeHistoryPreview'
 import { UsageBar } from '@/components/UsageBar'
 import { Money } from '@/components/Money'
 import { StatusDot } from '@/components/StatusDot'
@@ -59,6 +60,10 @@ export function CustomerDetailPage() {
       </div>
 
       <BalanceSinceControl scope={{ customer_id: customerId }} />
+
+      {/* Charges across everything this customer owns, directly — zero
+          accounts renders nothing (see ChargeHistoryPreview). */}
+      <ChargeHistoryPreview accountIds={(accountsQuery.data ?? []).map((a) => a.id)} />
 
       {customer.represented_group_names.length > 0 && (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5 text-xs">
