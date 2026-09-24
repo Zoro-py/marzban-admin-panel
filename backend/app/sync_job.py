@@ -30,6 +30,31 @@ NEAR_EXPIRY_AUTO_QUEUE_REMAINING_DAYS = 1.0
 # field at all; see groups.py's is_due gating).
 AUTO_NEXT_PLAN_DURATION_DAYS = 31
 
+# BILLING-side trust thresholds for the size this auto-queue picks — NOT the
+# display path's. monthly_avg_usage itself trusts a current-cycle pace after
+# just services.MIN_CYCLE_PACE_DAYS (0.5 days), which is fine for the
+# dashboard's "Monthly average": there a bad extrapolation is a wrong number
+# on a screen, read by a human with context. Here the number becomes a
+# package SIZE, and prepay bills the full package size when the plan settles
+# regardless of how little the customer actually consumes — so a short burst
+# linearly extrapolated to 30 days is exactly how two live accounts (2026-09)
+# got mis-sized: a 20 GB package burned through in ~2.9 days read as
+# "197 GB/mo" and auto-queued a 195 GB next package (~975,000 T against that
+# account's normal ~100-125k bill) off what was a one-time burst, not
+# sustained demand. Below 5 observed days a cycle's pace is treated as too
+# short to price a package from AT ALL — see _dampened_package_size_gb for
+# what happens instead of the extrapolation.
+BILLING_MIN_CYCLE_DAYS = 5.0
+# Even with a long-enough sample, growth is capped relative to the package
+# that's ENDING (account.data_limit at decision time): real sustained growth
+# in this customer base is gradual (35 -> 55 -> 65 GB across cycles, each
+# step well under 2x), while an extrapolated monthly rate above 2x the
+# current size means the current package only ever survives a fraction of a
+# month — the burst signature again, just spread over a slightly longer
+# window. 2.0 still allows genuinely doubling demand cycle-over-cycle; it
+# only bounds the damage a too-short/too-hot sample can do to a real bill.
+MAX_GROWTH_MULTIPLE = 2.0
+
 # payg has no package to renew, but a payg account can still carry a
 # Marzban data_limit as a hard technical cap (independent of billing, which
 # is metered) — reaching it gets the account BLOCKED by Marzban itself.
@@ -61,6 +86,41 @@ def _round_package_size(gb: float, minimum: float = 5.0) -> float:
     return max(minimum, math.floor(gb / 5) * 5)
 
 
+def _dampened_package_size_gb(account: Account, avg_gb: float, observed_days: float) -> float:
+    """Billing-specific dampening of monthly_avg_usage's raw estimate before
+    it becomes a package size. The raw figure is fine where the dashboard
+    shows it — cosmetic, reversible, read by a human — but here it prices a
+    package the customer is charged for IN FULL at settlement, however little
+    they end up using, so the bar for trusting an extrapolation is much
+    higher (see BILLING_MIN_CYCLE_DAYS / MAX_GROWTH_MULTIPLE above for why
+    those numbers and not the display path's):
+
+    - observed_days < BILLING_MIN_CYCLE_DAYS: too little of the cycle has
+      elapsed to tell a one-time burst from a sustained pace. Repeat the
+      CURRENT package size (account.data_limit at call time — the package
+      that's ending: sync mirrors it from Marzban before this runs, and
+      _activate_next_plan is the only thing that ever swaps it) instead of
+      extrapolating at all. Deliberately NOT a bug: under-sizing self-heals —
+      prepay auto-queue re-triggers when the repeated package burns through
+      again, next time measured off a properly-long cycle — while over-sizing
+      never does; it just bills the customer for capacity they didn't ask for.
+    - otherwise: trust the pace, capped at MAX_GROWTH_MULTIPLE times the
+      current package size — a monthly rate that high means the current
+      package only ever survives a fraction of a month, which is the burst
+      signature, not steady growth.
+
+    A missing/zero data_limit (Marzban writes 0 for "unlimited") leaves no
+    package to dampen against: an unlimited prepay account reaches here only
+    via near-expiry, and its sizing has always been the raw estimate, so that
+    behavior is kept rather than crashed on."""
+    current_package_gb = (account.data_limit or 0) / GB
+    if current_package_gb <= 0:
+        return avg_gb
+    if observed_days < BILLING_MIN_CYCLE_DAYS:
+        return current_package_gb
+    return min(avg_gb, current_package_gb * MAX_GROWTH_MULTIPLE)
+
+
 def _usage_status_line(account: Account, remaining_days: float | None) -> str:
     """Plain-text stand-in for the screenshot an operator was attaching
     alongside this message so the customer could see their OWN status, not
@@ -87,13 +147,17 @@ def _usage_status_line(account: Account, remaining_days: float | None) -> str:
     return "، ".join(parts)
 
 
-def _renewal_forward_message(gb: float, near_quota: bool, near_expiry: bool, status_line: str) -> str:
+def _renewal_forward_message(gb: float, near_quota: bool, near_expiry: bool, status_line: str, dampened: bool = False) -> str:
     """The exact customer-facing text an operator was typing by hand for
     every near-quota account, gb substituted in — meant to be copied
     straight out of the Telegram notification below and forwarded as-is.
     The opening line names whichever of data/time is actually running out —
     "آخرای حجم" (out of data) would be simply false to send someone who
-    still has plenty of GB left but is a day from expiring."""
+    still has plenty of GB left but is a day from expiring.
+    dampened=True drops the "معادل میانگین مصرف ماه گذشته" claim — when
+    _dampened_package_size_gb capped the size below the measured average,
+    telling the customer this size EQUALS that average would be false in the
+    very message they read verbatim."""
     if near_quota and near_expiry:
         reason = "آخرای حجم و مدت اشتراکتون هست"
     elif near_expiry:
@@ -104,7 +168,7 @@ def _renewal_forward_message(gb: float, near_quota: bool, near_expiry: bool, sta
     if status_line:
         lines.append(f"وضعیت فعلی اشتراکتون: {status_line}")
     lines.append(
-        f"{reason}، من {gb:g} گیگ معادل میانگین مصرف ماه گذشته "
+        f"{reason}، من {gb:g} گیگ {'' if dampened else 'معادل میانگین مصرف ماه گذشته '}"
         "براتون شارژ کردم که به محض اتمام این اشتراک فعال بشه"
     )
     lines.append("اگه کم و زیاده بفرمایید تغییرش بدم")
@@ -116,7 +180,11 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
     of its package OR within NEAR_EXPIRY_AUTO_QUEUE_REMAINING_DAYS of its
     expire date, queue a next plan sized at its own observed monthly average
     (see services.monthly_avg_usage — the same figure the dashboard shows,
-    rounded down to a multiple of 5) and notify the operator with a
+    rounded down to a multiple of 5, then damped by _dampened_package_size_gb:
+    a sample shorter than BILLING_MIN_CYCLE_DAYS repeats the current package
+    size instead of extrapolating, and growth beyond MAX_GROWTH_MULTIPLE of
+    it is capped — a display-grade extrapolation must not become a real bill
+    on its own) and notify the operator with a
     ready-to-forward message. Runs independent of "limited"/"expired"
     specifically — the whole point is catching this BEFORE the account
     actually runs out, while it's still nominally active.
@@ -186,7 +254,7 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
         status_bits.append(f"{remaining_days:.1f} روز تا انقضا")
     status_text = " و ".join(status_bits)
 
-    avg_gb, _confidence, _observed_days = monthly_avg_usage(account, now.replace(tzinfo=None))
+    avg_gb, _confidence, observed_days = monthly_avg_usage(account, now.replace(tzinfo=None))
     if avg_gb is None:
         # Not enough observed history for a trustworthy average — surfaced
         # as a heads-up so the operator still finds out, but no plan is
@@ -198,7 +266,16 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
         )
         return
 
-    queue_gb = _round_package_size(avg_gb)
+    # The billing decision takes the DAMPENED estimate, not the raw one
+    # (see _dampened_package_size_gb — the raw figure stays untouched for the
+    # dashboard's own display). raw_queue_gb exists only so the notification
+    # and the AccountEvent below can say WHEN dampening changed the answer:
+    # this audit trail is how the 2026-09 over-sizing was diagnosed in the
+    # first place, so the raw figure goes on record next to the damped one
+    # instead of silently replacing it.
+    dampened_gb = _dampened_package_size_gb(account, avg_gb, observed_days)
+    queue_gb = _round_package_size(dampened_gb)
+    raw_queue_gb = _round_package_size(avg_gb)
 
     # TWO separate Telegram messages, not one with the customer text embedded
     # in the middle — the first version needed manual copy/retyping to pull
@@ -214,20 +291,38 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
     # would still activate on schedule regardless — this is the same
     # "external step succeeds first, local write only happens after"
     # ordering _activate_next_plan already uses for the exact same reason.
+    # Same parenthetical as before when dampening changed nothing; when it
+    # did, the operator sees both figures and the WHY — they're the one who
+    # has to explain the size to the customer, and "the average says 197 but
+    # you queued 20" is exactly the question this preempts.
+    sizing_note = (
+        f"(میانگین ماه گذشته: {avg_gb:g} گیگ)"
+        if queue_gb == raw_queue_gb
+        else f"(میانگین ماه گذشته: {avg_gb:g} گیگ؛ محدود شد به {queue_gb:g} گیگ چون نمونه کوتاه/رشد زیاد بود)"
+    )
     await _notify_admin(
         f"🔔 اکانت «{account.marzban_username}» {status_text} — پلن بعدی خودکار ثبت شد: "
-        f"{queue_gb:g} گیگ / {AUTO_NEXT_PLAN_DURATION_DAYS} روز (میانگین ماه گذشته: {avg_gb:g} گیگ).\n"
+        f"{queue_gb:g} گیگ / {AUTO_NEXT_PLAN_DURATION_DAYS} روز {sizing_note}.\n"
         "پیام بعدی رو مستقیم فوروارد کن برای مشتری 👇"
     )
     await _notify_admin(
-        _renewal_forward_message(queue_gb, near_quota, near_expiry, _usage_status_line(account, remaining_days))
+        _renewal_forward_message(
+            queue_gb, near_quota, near_expiry,
+            _usage_status_line(account, remaining_days),
+            dampened=queue_gb != raw_queue_gb,
+        )
     )
 
     session.add(QueuedPlan(account_id=account.id, data_limit_gb=queue_gb, duration_days=AUTO_NEXT_PLAN_DURATION_DAYS))
     session.add(AccountEvent(
         account_id=account.id,
         action="next_plan_auto_queued",
-        detail=f"Auto-queued {queue_gb:g} GB / {AUTO_NEXT_PLAN_DURATION_DAYS} days ({status_text}, monthly avg {avg_gb:g} GB)",
+        detail=(
+            f"Auto-queued {queue_gb:g} GB / {AUTO_NEXT_PLAN_DURATION_DAYS} days ({status_text}, monthly avg {avg_gb:g} GB"
+            + (f"; dampened from raw {raw_queue_gb:g} GB over {observed_days:.2f} observed days"
+               if queue_gb != raw_queue_gb else "")
+            + ")"
+        ),
         date=now,
         source=LedgerSource.sync,
     ))
