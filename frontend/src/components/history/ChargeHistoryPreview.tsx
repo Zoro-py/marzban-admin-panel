@@ -35,10 +35,6 @@ export function ChargeHistoryPreview({ accountIds, title = 'Charge history' }: {
 
   if (accountIds.length === 0) return null
 
-  // include_credits is false, so any entry the API returns is a charge inside
-  // the requested window — mirror the chart's own "has anything to plot" test.
-  const hasCharges = (chargesQuery.data?.entries ?? []).some((e) => e.type === 'charge')
-
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between gap-2 pb-2">
@@ -59,11 +55,14 @@ export function ChargeHistoryPreview({ accountIds, title = 'Charge history' }: {
           </p>
         ) : chargesQuery.isLoading ? (
           <Skeleton className="h-64 w-full" />
-        ) : chargesQuery.data && hasCharges ? (
+        ) : chargesQuery.data ? (
+          // CumulativeChart owns its own "nothing to plot" empty state (same
+          // series/date-window logic ChargeHistoryPage relies on) — gating on
+          // a second, independently-computed "has charges" check here could
+          // disagree with it at the window boundary and show two different
+          // empty messages depending on which one is "right".
           <CumulativeChart data={chargesQuery.data} sinceMs={sinceMs} untilMs={untilMs} />
-        ) : (
-          <p className="py-6 text-center text-xs text-muted-foreground">No charges in the last 6 months.</p>
-        )}
+        ) : null}
       </CardContent>
     </Card>
   )
