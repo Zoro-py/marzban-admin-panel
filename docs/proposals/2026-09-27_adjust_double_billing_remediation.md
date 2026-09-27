@@ -60,6 +60,15 @@ because the current package was auto-activated fresh and the adjust flag didn't 
 
 ### Proposed correction (billing baseline only — it writes NO ledger row and changes no past money)
 
+**Owner follow-up 2026-09-27 (fresh read-only copy, integrity ok):** the owner did not recognize
+these two ids, so they were resolved against the live copy — **108 = `Sobar_new` (customer 100)**
+and **128 = `erfan-blue` (customer 120)**; the panel holds no contact info for either (contact
+column NULL), so reaching them means the usual sales channel. Both still active prepay with
+`billed_data_limit = 0`, so the double-bill is still pending. **Benyamin (customer 35):** a full
+ledger replay since 2026-08-10 shows **no compensating credit anywhere** (the only unlabeled
+credit is #193, 323,885.59 T on 08-23 — an ordinary top-up shape, not a 300,000 refund) and the
+customer's net balance today is 0 — i.e. the 300,000 was paid twice and never returned.
+
 ```sql
 -- Mark the already-invoiced adjust GB as billed, exactly what bill_added_gb=true
 -- does going forward. BEFORE/after pending shown per row.
