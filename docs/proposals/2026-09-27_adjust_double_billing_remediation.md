@@ -1,10 +1,15 @@
 # Proposal — remediation for the adjust double-billing (MONEY-ADJ-1) on live data
 
-**Status: PROPOSAL ONLY — nothing here has been executed on live data** (red line: no live
-financial writes from this session). The code fix shipped on branch
-`fix/vpn-full-review-2026-09-27` (commit `e1bf05b`); it prevents FUTURE doubles but does not
-touch already-billed rows or the currently-wrong `billed_data_limit` baselines. Those need the
-owner's word and an operator-executed run.
+**Status: EXECUTED on live 2026-09-27, owner-ordered («مواردی که گفتی راجع مشتری ها رو حل کن»).**
+Pre-change backup `predeploy-backups/vpn-remediation-20260927-095717.db` (integrity ok, 329 ledger
+rows). One transaction inside the backend container: refund credit = ledger row **#331** (credit
+300,000 T, customer 35, account 39, note "Refund: +60GB of 2026-07-28 was billed twice (adjust
+charge #62 and settlement charge #103)", created_by `claude:owner-approved-2026-09-27`); both
+UPDATEs applied. Verified after: account 108 billed 25 GB / pending 50 GB, account 128 billed
+30 GB / pending 20 GB; customer 35 net balance **-300,000** (the panel now owes him) — visible in
+the API (`/api/customers/35` → balance -300000.0). Ledger signed sum moved exactly -300,000
+(17,879,176.09 → 17,579,176.09; the morning audit copy showed 17,729,176.09 — a day of normal
+business happened in between, delta matches). Nothing else changed.
 
 **Evidence base:** read-only copy of the live France DB taken 2026-09-27
 (`backend/vpn_audit_copy_20260927.db`, integrity ok; 163 accounts / 155 customers / 329 ledger

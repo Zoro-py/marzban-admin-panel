@@ -241,3 +241,15 @@ drop-in `/etc/ssh/sshd_config.d/00-hardening.conf` (جلوتر از 50/60-cloud-
 **این تصمیم، تصمیم قبلیِ ثبت‌شدهٔ respina را (فایل `01-shiraze-hardening.conf` با استدلال
 «پسورد ۲۸کاراکتری + fail2ban») باطل می‌کند** — دستور صریحِ جدیدِ مالک مقدم است؛ خود آن فایل
 دست نخورده و ۰۰- از آن جلوتر می‌برد. rollback: برگرداندن `.bak` + حذف drop-in + reload.
+
+## D20 — مدل SSH نهایی به انتخاب مالک: رمز باز می‌ماند + بن بعد از ۵ تلاش برای هر IP (باطل‌کردن D19)
+
+مالک ۲۰۲۶-۰۹-۲۷ بازگشت زد: «سرورها رو فقط به کلید محدود نکن و تا ۵ تلاش برای هر آیپی بذار» —
+مدل همان respina-ی قدیمی (ورود رمزی باز برای دسترسی از دستگاه‌های دیگر + محدودیت brute-force)
+روی کل ناوگان یکدست شد. اجرا: کانفیگ اصلی از بکاپ `sshd_config.bak-*` برگشت (PasswordAuthentication
+yes، PermitRootLogin yes)، `MaxAuthTries 5` در همه، drop-in `/etc/fail2ban/jail.d/00-sshd-5strikes.conf`
+(maxretry=5، findtime=10m، bantime=1h، backend=systemd فقط وقتی auth.log نیست) و fail2ban روی هر ۶
+سرور نصب/فعال — تأیید زنده: france 1 IP بن‌شده، detroit 4، phoenix 5، extra1 2، extra2 1
+(سرویسش KILL+restart خواست؛ زیر بار CPU-steal بود)، respina 37. نکتهٔ ماندگار: با رمز باز، طول و
+تصادفی‌بودن پسورد روت بار امنیتی واقعی دارد (الگوی درست: ۲۸ کاراکتر تصادفی respina).
+Rollback D19→D20: فایل‌های `.bak` سرورها + drop-in ها.
