@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 # Env must exist BEFORE importing handlers/api_client (they read these at
 # import time; the test never opens a real connection).
-os.environ.setdefault("ADMIN_CHAT_ID", "777")
+os.environ["ADMIN_CHAT_ID"] = "777"  # hard-set: CI exports its own value and the admin gate compares against it (setdefault would lose)
 os.environ.setdefault("API_BASE_URL", "https://panel.test")
 os.environ.setdefault("MARZBAN_USERNAME", "test")
 os.environ.setdefault("MARZBAN_PASSWORD", "test")
