@@ -7,7 +7,35 @@ on:
   workflow_dispatch:
 
 jobs:
+  # D18 (2026-09-27): without the four DEPLOY_* secrets this workflow used to
+  # fail red halfway through the SSH step, which read as "deploy broke" when
+  # the real answer was "deploy was never configured". The gate below turns
+  # that into a green no-op with an explicit notice. Decided against deleting
+  # the workflow (deploys-per-UI are a real fallback if SSH-from-laptop is
+  # ever unavailable) and against hard-failing (a manual-only path nobody has
+  # configured yet is not an incident).
+  secrets-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      ok: ${{ steps.check.outputs.ok }}
+    steps:
+      - id: check
+        env:
+          H: ${{ secrets.DEPLOY_HOST }}
+          U: ${{ secrets.DEPLOY_USER }}
+          K: ${{ secrets.DEPLOY_SSH_KEY }}
+          P: ${{ secrets.DEPLOY_PATH }}
+        run: |
+          if [ -n "$H" ] && [ -n "$U" ] && [ -n "$K" ] && [ -n "$P" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::DEPLOY_HOST / DEPLOY_USER / DEPLOY_SSH_KEY / DEPLOY_PATH are not set on this repo — skipping the deploy. Set them under Settings → Secrets and variables → Actions to enable this workflow, or deploy from the server per README ('Deployment')."
+          fi
+
   deploy:
+    needs: secrets-gate
+    if: needs.secrets-gate.outputs.ok == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: SSH deploy
