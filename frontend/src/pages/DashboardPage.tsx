@@ -70,6 +70,23 @@ export function DashboardPage() {
         <p className="text-xs text-muted-foreground">
           {data.total_accounts} accounts across {data.total_customers} customers.
         </p>
+        {/* C12/D16: every automated job reports (or gates) through the one
+            operator Telegram channel — when THAT is down, nothing else can say
+            so. The summary fields are the backend heartbeat; null is its own
+            state ("never succeeded"), distinct from a fresh 0. */}
+        {data.notify_heartbeat_minutes_ago == null ? (
+          <p className="text-xs text-destructive">
+            Operator notifications: no successful send recorded — nudge, settle and sync reports may be going nowhere.
+          </p>
+        ) : data.notify_heartbeat_minutes_ago >= 60 ? (
+          <p className="text-xs text-warning">
+            Operator notifications: last success {data.notify_heartbeat_minutes_ago} min ago.
+          </p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Operator notifications: healthy (last success {data.notify_heartbeat_minutes_ago}&thinsp;min ago).
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">

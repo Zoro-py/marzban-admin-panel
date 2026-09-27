@@ -304,6 +304,11 @@ export interface ReportSummary {
   total_pending: number
   total_accounts: number
   total_customers: number
+  // C12 notify heartbeat (D16): when the operator notify channel last had a
+  // successful send. null/missing = never succeeded — a real alarm state, not
+  // "0 minutes ago". Dashboard shows all three states (never / stale / ok).
+  last_notify_success_at?: string | null
+  notify_heartbeat_minutes_ago?: number | null
 }
 
 export interface AccountEvent {
