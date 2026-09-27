@@ -116,6 +116,12 @@ jobs:
           DELEGATE_BOT_API_KEY: ci
           API_BASE_URL: http://localhost:8000
         run: python test_renew_guard.py
+      - name: Run delegate-bot flood-guard test (DEL-1 regression)
+        env:
+          DELEGATE_BOT_TOKEN: "123:ci"
+          DELEGATE_BOT_API_KEY: ci
+          API_BASE_URL: http://localhost:8000
+        run: python test_list_flood_guard.py
 
   frontend:
     runs-on: ubuntu-latest

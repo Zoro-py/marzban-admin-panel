@@ -22,11 +22,28 @@ double-charging.
 
 from __future__ import annotations
 
+import asyncio
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram.error import RetryAfter
 from telegram.ext import ContextTypes
 
 import texts
 from api_client import DelegateApiError, backend
+
+
+async def _send_list_line(message, text: str, **kwargs) -> None:
+    """DEL-1 (2026-09-27 audit): the accounts list sends up to 26 messages
+    back-to-back, and on a busy bot Telegram starts answering 429 RetryAfter
+    long before the last one — the loop died halfway and on_error turned the
+    rest into a generic error. One polite wait-and-retry keeps the burst path
+    intact. Deliberately NOT a general send wrapper: only this known burst
+    path uses it, so a retry storm elsewhere can't hide behind this helper."""
+    try:
+        await message.reply_text(text, **kwargs)
+    except RetryAfter as exc:
+        await asyncio.sleep(exc.retry_after + 1)
+        await message.reply_text(text, **kwargs)
 
 # In-memory, per-process — guards ONLY "renew" (see the module docstring
 # for why create/delete don't need this). Keyed by (telegram_id,
@@ -110,10 +127,11 @@ async def _list_accounts(update: Update) -> None:
             InlineKeyboardButton("🔄 تمدید", callback_data=f"d:renew_ask:{account['id']}"),
             InlineKeyboardButton("🗑 حذف", callback_data=f"d:del_ask:{account['id']}"),
         ]])
-        await update.effective_message.reply_text(line, reply_markup=keyboard)
+        await _send_list_line(update.effective_message, line, reply_markup=keyboard)
     if len(accounts) > len(shown):
-        await update.effective_message.reply_text(
-            f"…و {texts.fa(len(accounts) - len(shown))} اکانت دیگر — با تیم فروش هماهنگ کنید."
+        await _send_list_line(
+            update.effective_message,
+            f"…و {texts.fa(len(accounts) - len(shown))} اکانت دیگر — با تیم فروش هماهنگ کنید.",
         )
 
 
