@@ -225,3 +225,19 @@ override) روی موفقیت هر ارسالِ کانال اپراتور، و �
 پیاده‌سازی قیمت پله‌ای فقط اگر مالک جدول پله‌ای واقعی و جدید بیاورد باز می‌شود (طراحی آن در D17
 مانده است). متغیر زندهٔ نرخ همان مسیر قبلی است (`rate_per_gb` اکانت / `ShopSettings`) — هیچ
 تغییری در کد لازم نداشت.
+
+## D19 — SSH hardening کل ناوگان به دستور مالک (۲۰۲۶-۰۹-۲۷)
+
+مالک صریحاً دستور داد: «فونیکس و دیترویت و هر کدوم دیگه که ناامن هست رو امن کن.» اجرا شد روی
+هر ۶ سروری که SSHشان پاسخ می‌داد — france-vpn، vpn-detroit، vpn-phoenix، marzban-extra1،
+marzban-extra2، vps-respina — که همه `PasswordAuthentication yes` + `PermitRootLogin yes`
+داشتند (اسکن فقط‌خواندنی ۰۹-۲۷). روی هر سرور: بکاپ `sshd_config.bak-<ts>` کنار فایل،
+drop-in `/etc/ssh/sshd_config.d/00-hardening.conf` (جلوتر از 50/60-cloud-init می‌ایستد)،
+همسان‌سازی خود `sshd_config` با sed، `sshd -t` قبل از reload (در خطا rollback خودکار)، و
+تأیید دوطرفه: `sshd -T` روی سرور + اتصال تازهٔ کلیدی از لپ‌تاپ (همه سبز: passwordauthentication no).
+حالت نهایی: `PermitRootLogin prohibit-password` (root فقط با کلید — همون مسیر فعلی ابزارها) و
+`PasswordAuthentication no` (دور زدن رمز کاملاً بسته؛ **هر مسیر انسانیِ رمز-محور از دستگاه دیگر
+هم بسته شد**). دو نود marzban-node1/2 اصلاً banner نمی‌دهند (همان حذف‌شده‌ها) و دستی نخوردند.
+**این تصمیم، تصمیم قبلیِ ثبت‌شدهٔ respina را (فایل `01-shiraze-hardening.conf` با استدلال
+«پسورد ۲۸کاراکتری + fail2ban») باطل می‌کند** — دستور صریحِ جدیدِ مالک مقدم است؛ خود آن فایل
+دست نخورده و ۰۰- از آن جلوتر می‌برد. rollback: برگرداندن `.bak` + حذف drop-in + reload.
