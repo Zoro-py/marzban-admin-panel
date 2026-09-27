@@ -352,12 +352,16 @@ function AdjustSection({ account, canBill }: { account: AccountRow; canBill: boo
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const updated = await accountsApi.adjust(account.id, {
-        extend_days: extendDays ? Number(extendDays) : undefined,
-        extend_gb: extendGb ? Number(extendGb) : undefined,
-        note: note || undefined,
-      })
-      if (recordCharge && canBill && chargeAmount && Number(chargeAmount) > 0) {
+      // MONEY-ADJ-1: the charge goes FIRST, then the adjust carries
+      // bill_added_gb=true so the backend marks the added GB billed in the
+      // same transaction as the size change. The old order (adjust, then a
+      // separate ledger charge) left the added GB showing as pending too, and
+      // the next settle billed it a second time (live: 300,000 T charged
+      // twice for one +60GB on account 39). If the adjust fails after the
+      // charge landed, the money is VISIBLE in the ledger (the safe
+      // direction) — the operator credits it back or retries the adjust.
+      const chargePosted = recordCharge && canBill && !!chargeAmount && Number(chargeAmount) > 0
+      if (chargePosted) {
         await ledgerApi.create({
           type: 'charge',
           amount: Number(chargeAmount),
@@ -367,6 +371,17 @@ function AdjustSection({ account, canBill }: { account: AccountRow; canBill: boo
           note: note || `+${extendGb}GB for ${account.marzban_username}`,
         })
       }
+      const updated = await accountsApi.adjust(account.id, {
+        extend_days: extendDays ? Number(extendDays) : undefined,
+        extend_gb: extendGb ? Number(extendGb) : undefined,
+        note: note || undefined,
+        bill_added_gb: chargePosted,
+      }).catch((err) => {
+        if (chargePosted) {
+          toast.error('The charge was recorded, but the adjust itself failed — credit it back by hand or retry the adjust.')
+        }
+        throw err
+      })
       return updated
     },
     onSuccess: () => {

@@ -705,6 +705,19 @@ async def adjust_account(account_id: int, body: AccountAdjustRequest, session: S
     account.data_limit = marzban_user.get("data_limit", account.data_limit)
     account.status = marzban_user.get("status", account.status)
     account.last_synced_at = utcnow()
+    # MONEY-ADJ-1: a caller that has ALREADY posted a charge for the GB it is
+    # adding (bill_added_gb=True) marks that GB billed here, in the same
+    # transaction as the adjust — otherwise it stays in `pending` (data_limit
+    # - billed_data_limit) and the next prepay settle charges it a SECOND time
+    # (live: account 39, 300,000 T billed twice for one +60GB). Clamped to the
+    # new data_limit so a billed figure can never outrun the package it
+    # belongs to. No flag → unchanged: the added GB stays pending, visible,
+    # and is billed exactly once by the next settle. set_data_limit_gb is
+    # deliberately excluded (an absolute resize is not a sale — the Addendum-6
+    # manual downsize relies on it never touching billed_data_limit).
+    if body.bill_added_gb and body.extend_gb is not None and body.extend_gb > 0:
+        new_billed = (account.billed_data_limit or 0) + bytes_from_gb(body.extend_gb)
+        account.billed_data_limit = max(0, min(new_billed, account.data_limit or 0))
     try:
         session.add(account)
 

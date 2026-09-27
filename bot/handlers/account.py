@@ -44,20 +44,23 @@ async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if gb is not None:
         body["extend_gb"] = gb
 
-    try:
-        updated = await backend.post(f"/api/accounts/{account['id']}/adjust", json=body)
-    except ValueError as exc:
-        await update.message.reply_text(f"Failed: {exc}")
-        return
-
     # This command used to apply the Marzban change and stop — no ledger
     # entry, ever, for any amount of data added. Mirrors the dashboard's own
     # Adjust section instead: GB added is billed at this account's effective
-    # rate by default (days-only extensions are never billed — price is per
-    # GB, not per day). account is the pre-adjust AccountRow from
-    # resolve_account, which already carries customer_id/group_id/
-    # effective_rate/rate_configured — none of that changes from an adjust.
+    # rate by default (days alone are never billed — price is per GB, not per
+    # day). account is the pre-adjust AccountRow from resolve_account, which
+    # already carries customer_id/group_id/effective_rate/rate_configured —
+    # none of that changes from an adjust.
+    #
+    # MONEY-ADJ-1 ordering: the charge goes FIRST, then the adjust carries
+    # bill_added_gb=True so the backend marks the added GB billed in the same
+    # transaction as the size change. The old order (adjust, then charge)
+    # left the added GB showing as pending too, so the next settle billed it
+    # a second time. If the adjust now fails after the charge landed, the
+    # money is VISIBLE in the ledger — the operator credits it back or
+    # retries the adjust (the safe direction; the reverse would hide it).
     charge_note = ""
+    bill_added_gb = False
     if gb is not None and gb > 0:
         if account.get("customer_id") is None and account.get("group_id") is None:
             charge_note = " (not billed — unassigned account)"
@@ -79,12 +82,30 @@ async def extend_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                         },
                     )
                     charge_note = f" — charged {format_toman(amount)}"
+                    bill_added_gb = True
                 except Exception as exc:  # noqa: BLE001
-                    # The panel change already happened and cannot be undone
-                    # here. Saying "charged" when nothing was recorded is how
-                    # traffic ends up given away and never invoiced.
-                    charge_note = (f" — ⚠️ panel updated but NOT billed ({exc}). "
-                                   f"Add {format_toman(amount)} by hand.")
+                    # The charge did NOT go through; do not pass
+                    # bill_added_gb (the added GB stays pending and stays
+                    # visible for the next settle instead of vanishing).
+                    charge_note = (f" — ⚠️ NOT billed ({exc}). "
+                                   f"Charge {format_toman(amount)} by hand or the next settle will.")
+
+    if bill_added_gb:
+        body["bill_added_gb"] = True
+
+    try:
+        updated = await backend.post(f"/api/accounts/{account['id']}/adjust", json=body)
+    except ValueError as exc:
+        if bill_added_gb:
+            # The GB charge landed but the panel change did not — the ledger
+            # row is visible; the operator must credit it back or retry.
+            await update.message.reply_text(
+                f"⚠️ The GB charge was recorded, but the adjust FAILED ({exc}). "
+                "Credit the charge back by hand, or retry /extend."
+            )
+            return
+        await update.message.reply_text(f"Failed: {exc}")
+        return
 
     await update.message.reply_text(
         f"Updated `{updated['marzban_username']}` — expires {format_expire(updated['expire'])}, "

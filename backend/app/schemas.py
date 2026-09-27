@@ -185,6 +185,18 @@ class AccountAdjustRequest(BaseModel):
     set_expire: Optional[int] = Field(default=None, ge=0, le=2147483647)
     set_data_limit_gb: Optional[float] = Field(default=None, ge=0, le=10240, allow_inf_nan=False)
     note: Optional[str] = Field(default=None, max_length=500)
+    # MONEY-ADJ-1 contract: set TRUE only by a caller that has ALREADY posted a
+    # ledger charge covering the GB it is about to add (the dashboard's Adjust
+    # section with "record a debt" checked; the bot's /extend with a gb
+    # argument). The endpoint then raises `billed_data_limit` by exactly that
+    # delta (clamped to the new data_limit), so the same GB cannot ALSO bill
+    # again at the next prepay settle — the double-charge that hit account 39
+    # for 300,000 T (adjust-charge 07-28 + identical settle-charge 08-10).
+    # Without the flag the added GB stays pending and is billed by the next
+    # settle (the "bill later"/comp path — visible either way). Ignored unless
+    # extend_gb > 0; never applies to set_data_limit_gb (an absolute resize is
+    # not a sale — see the Addendum-6 downsize invariant).
+    bill_added_gb: bool = False
 
 
 class AccountSettleRequest(BaseModel):

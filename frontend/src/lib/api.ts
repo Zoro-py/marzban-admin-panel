@@ -191,7 +191,7 @@ export const accountsApi = {
   ) => (await api.patch<Account>(`/api/accounts/${id}/billing`, body)).data,
   adjust: async (
     id: number,
-    body: { extend_days?: number; extend_gb?: number; set_expire?: number; set_data_limit_gb?: number; note?: string },
+    body: { extend_days?: number; extend_gb?: number; set_expire?: number; set_data_limit_gb?: number; note?: string; bill_added_gb?: boolean },
   ) => (await api.post<Account>(`/api/accounts/${id}/adjust`, body)).data,
   reset: async (id: number, body: { charge_amount?: number; note?: string }) =>
     (await api.post<Account>(`/api/accounts/${id}/reset`, body)).data,
