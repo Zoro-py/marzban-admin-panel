@@ -8,12 +8,60 @@ activation, payg_monthly_job's monthly settlement and cap-hit reset.
 import asyncio
 import json
 import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ── C12: the notification path's own heartbeat ─────────────────────────────
+# Every automatic job gates on or reports through THIS channel, so when
+# Telegram itself is down, nothing else can raise the alarm — the monthly
+# settlement blocks (safe, but silent), the nudges vanish, and the only trace
+# is an exception log nobody reads. The stamp gives the dashboard one honest
+# number: when the operator channel LAST actually delivered. A stale stamp on
+# /api/reports/summary is the "who watches the watchmen" answer. Best-effort
+# by design: a heartbeat write failure must never break a real notification.
+def _heartbeat_path() -> Path | None:
+    override = os.environ.get("NOTIFY_HEARTBEAT_FILE", "")
+    if override:
+        return Path(override)
+    # Default: next to the SQLite database (in the Docker volume in
+    # production, so the stamp survives rebuilds). Parsed from DATABASE_URL
+    # so there is no new required env var (AGENTS.md §4.4). Non-SQLite URLs
+    # (a future Postgres swap) simply disable the heartbeat rather than guess.
+    url = settings.database_url
+    if url.startswith("sqlite:///"):
+        db_path = url[len("sqlite:///"):]
+        if db_path:
+            return Path(db_path).parent / "notify_heartbeat.txt"
+    return None
+
+
+def stamp_notify_success() -> None:
+    try:
+        path = _heartbeat_path()
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+    except Exception:
+        logger.debug("Could not write the notify heartbeat", exc_info=True)
+
+
+def last_notify_success() -> datetime | None:
+    try:
+        path = _heartbeat_path()
+        if path is None or not path.exists():
+            return None
+        return datetime.fromisoformat(path.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
 
 
 async def notify_admin(text: str, reply_markup: dict | None = None) -> None:
@@ -41,6 +89,7 @@ async def notify_admin(text: str, reply_markup: dict | None = None) -> None:
         )
     if resp.status_code != 200:
         raise RuntimeError(f"Telegram rejected admin notification ({resp.status_code}): {resp.text}")
+    stamp_notify_success()
 
 
 # Telegram's documented cap for a photo caption. Exceeding it fails the whole
@@ -93,6 +142,7 @@ async def notify_admin_photo(photo: bytes, caption: str, *, filename: str = "qr.
                 files={"photo": (filename, photo, "image/png")},
             )
             if resp.status_code == 200:
+                stamp_notify_success()
                 return
             if resp.status_code == 429 and attempt < MAX_RATE_LIMIT_RETRIES:
                 # Telegram states the required wait itself; honour it rather
@@ -131,6 +181,7 @@ async def notify_admin_with_buttons(text: str, reply_markup: dict) -> None:
         )
     if resp.status_code != 200:
         raise RuntimeError(f"Telegram rejected admin notification ({resp.status_code}): {resp.text}")
+    stamp_notify_success()
 
 
 async def relay_shop_photo_to_admin(file_id: str, caption: str, reply_markup: dict | None = None) -> None:
@@ -205,6 +256,7 @@ async def forward_photo_to_admin(file_id: str, caption: str, reply_markup: dict 
         )
     if resp.status_code != 200:
         raise RuntimeError(f"Telegram rejected the receipt photo ({resp.status_code}): {resp.text}")
+    stamp_notify_success()
 
 
 async def send_to_shop_user(chat_id: int, text: str, reply_markup: dict | None = None) -> None:

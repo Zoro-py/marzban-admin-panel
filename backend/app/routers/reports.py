@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, BillingMode, Customer, Group, LedgerEntry, LedgerType, OnlineSnapshot, QueuedPlan, QueuedPlanStatus, utcnow
+from app.notify import last_notify_success
 from app.services import MoneyBook, effective_billing_mode, effective_rate, rate_is_configured
 
 router = APIRouter(prefix="/api/reports", tags=["reports"], dependencies=[Depends(require_auth)])
@@ -223,6 +224,18 @@ def summary(
     pending_settlement.sort(key=lambda x: -x["net_owed"])
     total_pending = round(sum(x["pending_amount"] for x in pending_settlement), 2)
 
+    # C12: when did the operator's Telegram notification channel LAST actually
+    # deliver? Every automatic job here gates on or reports through that one
+    # channel, so a stale heartbeat is the only visible symptom when Telegram
+    # itself breaks (settlements block silently, nudges vanish). None = no
+    # successful send ever recorded since the stamp file was introduced.
+    last_notify = last_notify_success()
+    notify_minutes_ago: float | None = None
+    if last_notify is not None:
+        if last_notify.tzinfo is None:
+            last_notify = last_notify.replace(tzinfo=utcnow().tzinfo)
+        notify_minutes_ago = round((utcnow() - last_notify).total_seconds() / 60, 1)
+
     return {
         "overdue_customers": overdue_customers,
         "exhausted_accounts": exhausted_accounts,
@@ -235,6 +248,8 @@ def summary(
         "total_pending": total_pending,
         "total_accounts": sum(1 for a in accounts if a.status != "deleted_from_marzban"),
         "total_customers": len(customers),
+        "last_notify_success_at": last_notify.isoformat() if last_notify else None,
+        "notify_heartbeat_minutes_ago": notify_minutes_ago,
     }
 
 
