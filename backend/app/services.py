@@ -530,6 +530,16 @@ def serialise_billing(fn):
     and post two charges. This makes that impossible while the backend is one
     process — which the deployment is, and which the docstring above
     with_for_update's remaining uses says out loud.
+
+    CONSTRAINT (found live by the 2026-09-27 delegate concurrency test): the
+    wrapper is defined HERE, so FastAPI resolves the decorated endpoint's
+    annotations against THIS module's globals. A router module using
+    `from __future__ import annotations` therefore breaks the moment it uses
+    this decorator — its string annotations (`body: SomeSchema`) resolve
+    against services.py's namespace, fail, and the request body silently
+    becomes a phantom 422 "query" parameter. Keep the routers that use this
+    decorator free of the postponed-annotations import (see
+    routers/delegate.py's module note).
     """
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):

@@ -20,7 +20,15 @@ delegate_service.py's module docstring for why an account_id alone is never
 trusted.
 """
 
-from __future__ import annotations
+"""NOTE: no `from __future__ import annotations` here, deliberately. The
+money endpoints below are wrapped in @serialise_billing, whose wrapper is
+defined in services.py — FastAPI resolves string annotations against the
+WRAPPER's globals, so postponed annotations would turn `body:` into an
+unresolvable name and the request body into a phantom 422 'query' parameter
+(found live by the 2026-09-27 concurrency test). Same style as
+routers/accounts.py, groups.py and payg_monthly.py, the other serialise_billing
+users. Do not re-add the future import to this module.
+"""
 
 import logging
 import secrets
@@ -41,6 +49,7 @@ from app.delegate_service import (
     renew_delegate_account,
     scope_name,
 )
+from app.services import serialise_billing
 from app.models import Customer, Delegate, Group
 from app.schemas import (
     DelegateAccountCreateRequest,
@@ -210,6 +219,7 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
 
 
 @bot_router.post("/accounts", response_model=DelegateAccountRow)
+@serialise_billing
 async def bot_create_account(body: DelegateAccountCreateRequest, session: Session = Depends(get_session)):
     delegate = _require_delegate(session, body.telegram_id)
     try:
@@ -220,6 +230,7 @@ async def bot_create_account(body: DelegateAccountCreateRequest, session: Sessio
 
 
 @bot_router.post("/accounts/{account_id}/renew", response_model=DelegateAccountRow)
+@serialise_billing
 async def bot_renew_account(account_id: int, body: DelegateAccountRenewRequest, session: Session = Depends(get_session)):
     delegate = _require_delegate(session, body.telegram_id)
     try:
@@ -230,6 +241,7 @@ async def bot_renew_account(account_id: int, body: DelegateAccountRenewRequest, 
 
 
 @bot_router.post("/accounts/{account_id}/delete")
+@serialise_billing
 async def bot_delete_account(account_id: int, body: DelegateAccountDeleteRequest, session: Session = Depends(get_session)):
     delegate = _require_delegate(session, body.telegram_id)
     try:
