@@ -93,6 +93,30 @@ jobs:
           SHOP_BOT_API_KEY: ci
         run: python -c "import bot"
 
+  delegate-bot:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: delegate_bot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install -r requirements.txt
+      - name: Import check
+        env:
+          DELEGATE_BOT_TOKEN: "123:ci"
+          API_BASE_URL: http://localhost:8000
+          DELEGATE_BOT_API_KEY: ci
+        run: python -c "import bot"
+      - name: Run delegate-bot guard tests (3369200/efe410c regression)
+        env:
+          DELEGATE_BOT_TOKEN: "123:ci"
+          DELEGATE_BOT_API_KEY: ci
+          API_BASE_URL: http://localhost:8000
+        run: python test_renew_guard.py
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
