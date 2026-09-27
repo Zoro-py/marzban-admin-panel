@@ -65,6 +65,7 @@ class FakeBackend:
 
     def __init__(self) -> None:
         self.posts: list[tuple] = []
+        self.fail_next_post = False
 
     async def get(self, url: str):
         if url.startswith("/api/notifications/debt-nudge"):
@@ -94,6 +95,9 @@ class FakeBackend:
         raise AssertionError(f"unexpected GET {url}")
 
     async def post(self, url: str, json=None):
+        if self.fail_next_post:
+            self.fail_next_post = False
+            raise RuntimeError("backend unreachable")
         self.posts.append((url, json))
         FakeBackend.remaining_customer = 0.0  # the payment posts
         return {}
@@ -214,6 +218,36 @@ async def main() -> None:
     await debt.debt_do_callback(upd, context)
     text, _ = q.edits[-1]
     check("stale old-format button is refused politely", "نسخه‌ی قبلی" in text)
+
+    # 10) BOT-DEBT-1: a double-tap on the same ✅ ثبت button must NOT post the
+    #     credit twice. PTB processes updates sequentially, so both taps reach
+    #     the handler one after the other with the same callback_data — the
+    #     ledger is append-only, so the second post would silently invent
+    #     money. The second tap must be refused and the console must land
+    #     back on the live list, not on a dead end.
+    FakeBackend.remaining_customer = 120000.0
+    fake.posts.clear()
+    q, upd = make_update("debtdo:post:120000:a:9:5", msg_id=600)
+    await debt.debt_do_callback(upd, context)
+    check("first tap posts once", len(fake.posts) == 1)
+    q2, upd2 = make_update("debtdo:post:120000:a:9:5", msg_id=600)
+    await debt.debt_do_callback(upd2, context)
+    check("double-tap does NOT post a second credit", len(fake.posts) == 1)
+    text, _ = q2.edits[-1]
+    check("double-tap says so and lands on the live list, not a dead end",
+          "تکراری" in text or "ثبت شد" in text)
+
+    # 11) a FAILED post unblocks the retry: the guard must not wedge the flow
+    #     after a transient backend failure.
+    FakeBackend.remaining_customer = 120000.0
+    fake.posts.clear()
+    fake.fail_next_post = True
+    q, upd = make_update("debtdo:post:120000:a:9:5", msg_id=700)
+    await debt.debt_do_callback(upd, context)
+    check("failed post shows the failure", any("شکست" in t for t, _ in q.edits))
+    fake.fail_next_post = False
+    await debt.debt_do_callback(upd, context)  # immediate retry, same button
+    check("retry after a failed post goes through", len(fake.posts) == 1)
 
 
 asyncio.run(main())

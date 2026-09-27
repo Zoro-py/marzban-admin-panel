@@ -22,6 +22,7 @@ same validation/attribution the web's Record payment uses."""
 from __future__ import annotations
 
 import logging
+import time
 from typing import Awaitable, Callable, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -39,6 +40,36 @@ logger = logging.getLogger(__name__)
 _awaiting: dict[int, dict] = {}
 
 _PERSIAN_DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+
+# BOT-DEBT-1: a double-tap on the same ✅ ثبت پرداخت button delivers TWO
+# callback updates. PTB processes updates sequentially, so both reach
+# debt_do_callback one after the other with the same callback_data, and the
+# backend's /api/ledger (no idempotency key from the bot — D12's known gap)
+# would append a SECOND credit: invented money in an append-only ledger, the
+# exact double-credit class mark_paid needed serialise_billing for. The
+# console message is edited after a successful post, but both taps can be in
+# the queue before that edit lands. Guard: within this window, the same
+# button (same message + same callback_data) is refused with an explicit
+# "already recorded" message that re-renders the live list — never a dead
+# end. A legitimate second identical payment means re-navigating the whole
+# console, which takes longer than this window; and a FAILED post clears its
+# own entry so an immediate retry always works.
+_POST_DEDUPE_SECONDS = 10.0
+_recent_posts: dict[tuple[int, int, str], float] = {}
+
+
+def _recent_post_blocked(chat_id: int, message_id: int, data: str) -> bool:
+    now = time.monotonic()
+    key = (chat_id, message_id, data)
+    last = _recent_posts.get(key)
+    if last is not None and (now - last) < _POST_DEDUPE_SECONDS:
+        return True
+    _recent_posts[key] = now
+    # Bounded housekeeping on a single-operator bot: drop stale entries.
+    for k, ts in list(_recent_posts.items()):
+        if (now - ts) >= _POST_DEDUPE_SECONDS:
+            del _recent_posts[k]
+    return False
 
 # Telegram caps an inline keyboard at 100 buttons; the hub shows at most 50
 # debtors (two per row) and the backend's nudge keyboard obeys the same cap.
@@ -335,7 +366,10 @@ async def _render_confirm(edit: Editor, amount: Optional[float], kind: str, buck
 
 
 async def _post_and_back_to_list(edit: Editor, amount: float, kind: str, bucket_id: int,
-                                 customer_id: int) -> None:
+                                 customer_id: int) -> bool:
+    """Posts the credit and lands on the refreshed list. Returns whether the
+    payment actually posted — the double-tap guard needs that to un-block an
+    immediate retry after a failure."""
     try:
         if kind == "a":
             account = await backend.get(f"/api/accounts/{bucket_id}")
@@ -358,7 +392,7 @@ async def _post_and_back_to_list(edit: Editor, amount: float, kind: str, bucket_
         await backend.post("/api/ledger", json=payload)
     except Exception as exc:  # noqa: BLE001
         await edit(f"❌ ثبت پرداخت شکست خورد: {exc}")
-        return
+        return False
 
     try:
         new_balance = (await backend.get(f"/api/ledger/balance?customer_id={customer_id}"))["balance"]
@@ -371,6 +405,7 @@ async def _post_and_back_to_list(edit: Editor, amount: float, kind: str, bucket_
     # Back to the main menu — the list, with the payment reflected in the
     # fresh balances the preview endpoint returns.
     await _render_list(edit, flash=flash)
+    return True
 
 
 @admin_only
@@ -492,7 +527,16 @@ async def debt_do_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         except ValueError:
             await query.edit_message_text("این دکمه خراب است — از پیام جدید یادآوری دوباره امتحان کنید.")
             return
-        await _post_and_back_to_list(_query_editor(query), amount, kind, bucket_id, customer_id)
+        msg_id = query.message.message_id if query.message is not None else 0
+        if _recent_post_blocked(chat_id, msg_id, query.data):
+            await _render_list(_query_editor(query),
+                               flash="✅ این پرداخت لحظاتی پیش ثبت شد — ردیف تکراری ثبت نشد. فهرست فعلی:")
+            return
+        ok = await _post_and_back_to_list(_query_editor(query), amount, kind, bucket_id, customer_id)
+        if not ok:
+            # Failed: clear the guard so an immediate retry of the same
+            # button is never wedged behind a transient error.
+            _recent_posts.pop((chat_id, msg_id, query.data), None)
         return
 
     # Old-format buttons from before the console existed (debtdo:full /
