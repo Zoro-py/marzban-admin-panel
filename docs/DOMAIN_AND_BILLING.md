@@ -93,6 +93,27 @@ debt + new charge, the common case). `"prior_only"` credits only the balance tha
 so today's payment doesn't get silently applied to a charge nobody's actually paid for. Shown
 in the dashboard only when there's an actual prior balance to separate out.
 
+### Adjusting a package — and the `bill_added_gb` contract (2026-09-27)
+
+`POST /api/accounts/{id}/adjust` grows (or shrinks) `data_limit`/`expire`. Whether the GB it
+adds is invoiced *now* or at the next settle is the CALLER's choice, expressed in two steps:
+
+1. **Bill now** (dashboard Adjust section with "record a debt" checked; bot `/extend <u> <days> <gb>`):
+   the caller posts the `/api/ledger` charge FIRST, then calls adjust with `bill_added_gb=true`;
+   the endpoint raises `billed_data_limit` by exactly that delta (clamped to the new
+   `data_limit`) in the same transaction, so the same GB can never ALSO bill again at the next
+   prepay settle. This contract exists because the old order double-billed: account 39 was
+   charged 300,000 T for a +60 GB adjust and then the identical 300,000 again by the next
+   settle (full write-up: `docs/proposals/2026-09-27_adjust_double_billing_remediation.md`).
+2. **Bill later / comp**: adjust without the flag — the added GB stays in `pending`
+   (visible, D7's two quantities) and is billed exactly once by the next settle.
+
+`set_data_limit_gb` (absolute resize) never touches `billed_data_limit` — an operator resizing
+a package is not selling GB, and the manual downsize procedure (Addendum 6's Benyamin-style
+mitigation) depends on that. If a caller posts a charge but the adjust then fails, the money is
+in the ledger (visible) and the operator credits it back — the safe direction; the reverse
+order would make the charge-or-the-GB invisible depending on which call failed.
+
 ## 4. What happens automatically (no button click)
 
 All four of these run out of the same 60-second sync cycle (`app/sync_job.py::_run_sync_impl`,
