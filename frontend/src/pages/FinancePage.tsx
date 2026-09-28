@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { BellRing } from 'lucide-react'
@@ -10,14 +11,57 @@ import { Badge } from '@/components/ui/badge'
 import { RevenueChart } from '@/components/finance/RevenueChart'
 import { BalanceLookup } from '@/components/finance/BalanceLookup'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
+import { RangePicker, isRangeValid, resolveRange } from '@/components/history/RangePicker'
+import type { RangeCode, RangeValue } from '@/components/history/RangePicker'
 import { cn, formatDate, formatToman } from '@/lib/utils'
+
+const FIN_RANGES: RangeCode[] = ['30d', '90d', '6m', 'jm', 'all', 'custom']
+// Finance is fully range-driven — the page's default IS the 30-day preset
+// (sent explicitly), not a separate unparameterized mode. Same URL language
+// as History (r/cs/cu) so the two pickers read identically.
+const FIN_DEFAULT: RangeValue = { code: '30d', customSince: '', customUntil: '' }
+const YMD = /^\d{4}-\d{2}-\d{2}$/
+
+function parseRange(params: URLSearchParams): RangeValue {
+  const code = params.get('r') as RangeCode | null
+  if (!code || !FIN_RANGES.includes(code)) return FIN_DEFAULT
+  return {
+    code,
+    customSince: code === 'custom' && YMD.test(params.get('cs') ?? '') ? params.get('cs')! : '',
+    customUntil: code === 'custom' && YMD.test(params.get('cu') ?? '') ? params.get('cu')! : '',
+  }
+}
+
+function buildParams(range: RangeValue): URLSearchParams {
+  const params = new URLSearchParams()
+  if (range.code !== FIN_DEFAULT.code || range.customSince || range.customUntil) params.set('r', range.code)
+  if (range.code === 'custom') {
+    if (range.customSince) params.set('cs', range.customSince)
+    if (range.customUntil) params.set('cu', range.customUntil)
+  }
+  return params
+}
 
 export function FinancePage() {
   React.useEffect(() => {
     document.title = 'Shiraze | Finance'
   }, [])
 
-  const { data, isLoading } = useQuery({ queryKey: ['reports', 'finance'], queryFn: reportsApi.finance })
+  const [searchParams, setSearchParams] = useSearchParams()
+  const range = parseRange(searchParams)
+  const rangeUsable = isRangeValid(range)
+  // Inverted/garbled custom picks degrade to the default window rather than
+  // throwing a 422 at the operator — same degrade-don't-crash rule as History.
+  const window = rangeUsable ? resolveRange(range) : resolveRange(FIN_DEFAULT)
+  const patchRange = (patch: Partial<RangeValue>) => {
+    const next = { ...range, ...patch }
+    setSearchParams(buildParams(next), { replace: true })
+  }
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['reports', 'finance', window.since, window.until],
+    queryFn: () => reportsApi.finance(window.since, window.until),
+  })
   const openAccount = useOpenAccountInspector()
 
   // The debt nudge normally fires every other day at the configured hour;
@@ -72,8 +116,16 @@ export function FinancePage() {
       </div>
 
       <div className="rounded-lg border border-border bg-card px-4 py-3">
-        <h2 className="mb-2 text-[13px] font-semibold">Money flow — last 30 days</h2>
-        <RevenueChart collected={data.revenue_by_day} charged={data.charged_by_day} />
+        <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 className="text-[13px] font-semibold">Money flow</h2>
+          <p className="text-[11px] text-muted-foreground" title={`${window.since} → ${window.until}`}>
+            {window.since} → {window.until}
+          </p>
+        </div>
+        <RangePicker value={range} onChange={patchRange} />
+        <div className="mt-3">
+          <RevenueChart collected={data.revenue_by_day} charged={data.charged_by_day} />
+        </div>
       </div>
 
       <BalanceLookup />
@@ -81,7 +133,7 @@ export function FinancePage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="overflow-hidden rounded-lg border border-border bg-card">
           <div className="border-b border-border px-4 py-2.5">
-            <h2 className="text-[13px] font-semibold">Recent transactions</h2>
+            <h2 className="text-[13px] font-semibold">Transactions in window</h2>
           </div>
           <Table>
             <TableHeader>
@@ -96,7 +148,7 @@ export function FinancePage() {
               {data.recent_transactions.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
-                    No transactions yet.
+                    No transactions in this window.
                   </TableCell>
                 </TableRow>
               )}

@@ -234,7 +234,13 @@ export const ledgerApi = {
 // ---- reports / sync ----
 export const reportsApi = {
   summary: async () => (await api.get<ReportSummary>('/api/reports/summary')).data,
-  finance: async () => (await api.get<FinanceSummary>('/api/reports/finance')).data,
+  // Date-only face-value window (same contract as the charges history API):
+  // a date-only `until` covers its whole day. Omitting both keeps the
+  // endpoint's default shape (last 30 days of buckets, last 30 transactions).
+  finance: async (since?: string, until?: string) =>
+    (await api.get<FinanceSummary>('/api/reports/finance', {
+      params: since && until ? { since, until } : undefined,
+    })).data,
   onlineHistory: async (range: OnlineHistoryRange) =>
     (await api.get<OnlineHistory>('/api/reports/online-history', { params: { range } })).data,
   systemStatus: async () => (await api.get<SystemStatus>('/api/reports/system-status')).data,

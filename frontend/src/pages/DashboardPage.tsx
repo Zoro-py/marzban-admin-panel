@@ -32,7 +32,7 @@ export function DashboardPage() {
   }, [])
 
   const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['reports', 'summary'], queryFn: reportsApi.summary })
-  const financeQuery = useQuery({ queryKey: ['reports', 'finance'], queryFn: reportsApi.finance })
+  const financeQuery = useQuery({ queryKey: ['reports', 'finance'], queryFn: () => reportsApi.finance() })
   const openAccount = useOpenAccountInspector()
 
   if (isLoading) {
