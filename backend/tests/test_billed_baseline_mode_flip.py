@@ -319,6 +319,53 @@ check("5a. ledger rows exist ONLY from the deliberate 4a/4b/4c settles",
 check("5b. the mode-flip neutralization itself created ZERO ledger rows",
       len(flipped_ledger) == 0)
 
+# ── 6) Third path: PATCH /accounts/{id}/billing on a STANDALONE account ────
+# The other two guards (relationship, group) don't cover an account that was
+# never grouped at all — its own billing_mode field is what
+# effective_billing_mode reads directly, so flipping THAT field here is the
+# same danger, just without a group in the middle.
+with Session(engine) as session:
+    standalone = Account(marzban_username="standalone-flip", billing_mode=BillingMode.payg,
+                          data_limit=CAP_300, billed_data_limit=PAYG_LEFTOVER, used_traffic=2 * GB, usage_baseline=0)
+    session.add(standalone)
+    session.commit()
+    session.refresh(standalone)
+    ids["standalone"] = standalone.id
+
+r = client.patch(f"/api/accounts/{ids['standalone']}/billing", json={"billing_mode": "prepay"})
+check("6a. billing PATCH to prepay succeeds", r.status_code == 200)
+with Session(engine) as session:
+    a = session.get(Account, ids["standalone"])
+    mode = effective_billing_mode(session, a)
+    check("6b. effective mode is now prepay", mode == BillingMode.prepay)
+    check("6c. billed_data_limit was neutralized to data_limit (300GB), not left at the 15GB leftover",
+          a.billed_data_limit == CAP_300)
+    check("6d. prepay billable is ~0 — NOT the phantom 285GB",
+          billable_bytes(a, BillingMode.prepay) == 0)
+check("6e. exactly one billed_baseline_neutralized audit event", len(neutralize_events(ids["standalone"])) == 1)
+
+# Reverse direction (prepay -> payg) and a same-mode no-op PATCH must not fire it again.
+r = client.patch(f"/api/accounts/{ids['standalone']}/billing", json={"billing_mode": "payg"})
+check("6f. billing PATCH back to payg succeeds", r.status_code == 200)
+check("6g. reverse flip wrote no additional neutralize event", len(neutralize_events(ids["standalone"])) == 1)
+r = client.patch(f"/api/accounts/{ids['standalone']}/billing", json={"rate_per_gb": 4000})
+check("6h. an unrelated field-only PATCH succeeds", r.status_code == 200)
+check("6i. a PATCH that doesn't touch billing_mode wrote no neutralize event", len(neutralize_events(ids["standalone"])) == 1)
+
+# A GROUPED account's own billing_mode field flipping here must NOT fire —
+# its effective mode is the group's regardless (update_group already owns that path).
+with Session(engine) as session:
+    grouped_flip = Account(marzban_username="grouped-flip-noop", billing_mode=BillingMode.payg, group_id=ids["prepay_grp"],
+                            data_limit=CAP_300, billed_data_limit=PAYG_LEFTOVER, used_traffic=1 * GB, usage_baseline=0)
+    session.add(grouped_flip)
+    session.commit()
+    session.refresh(grouped_flip)
+    ids["grouped_flip"] = grouped_flip.id
+r = client.patch(f"/api/accounts/{ids['grouped_flip']}/billing", json={"billing_mode": "prepay"})
+check("6j. billing PATCH on a grouped account succeeds", r.status_code == 200)
+check("6k. a grouped account's own field flip is a no-op (update_group owns that path)",
+      len(neutralize_events(ids["grouped_flip"])) == 0)
+
 print()
 if failures:
     print(f"{len(failures)} FAILURES: {failures}")

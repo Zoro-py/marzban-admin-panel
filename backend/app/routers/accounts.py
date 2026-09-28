@@ -601,6 +601,30 @@ async def update_billing(account_id: int, body: AccountBillingUpdate, session: S
     if body.billing_mode is not None:
         account.billing_mode = body.billing_mode
 
+    # Mode-flip guard, third path (see docs/DECISIONS.md D21 — the other two
+    # are update_relationship and update_group): a STANDALONE account's own
+    # billing_mode field is what effective_billing_mode reads directly (no
+    # group to defer to), so flipping it here payg->prepay is exactly as
+    # dangerous as the group-mediated flips — a payg-shaped account (300GB
+    # cap from the standard-shape sweep, or from the payg-shape branch just
+    # below) can carry a stale billed_data_limit leftover, which prepay's
+    # billable_bytes would then read as a hundreds-of-GB phantom package.
+    # Grouped accounts are excluded: their effective mode is the group's
+    # regardless of this field (effective_billing_mode), so update_group
+    # already owns that flip; this account's own field only matters once
+    # it's standalone, same condition the payg-shape branch below uses.
+    if (
+        old_billing_mode == BillingMode.payg
+        and account.billing_mode == BillingMode.prepay
+        and not account.group_id
+    ):
+        neutralize_billed_baseline(
+            session,
+            account,
+            reason="effective billing mode flipped payg->prepay on a direct billing-mode change",
+            created_by=operator,
+        )
+
     if body.auto_renew_enabled is not None:
         account.auto_renew_enabled = body.auto_renew_enabled
 
