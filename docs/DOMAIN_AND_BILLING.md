@@ -54,6 +54,26 @@ keeps whatever default field it was created with, but bills as payg). Use
 decision depends on "is this actually payg." Same idea for rate: `effective_rate()` resolves
 account's own rate → group's rate → dashboard-wide default, in that order.
 
+**The billed-baseline mode-flip guard (2026-09-28, D21).** Because payg never reads
+`billed_data_limit`, the field silently goes stale on payg-phase accounts (the payg
+standard-shape sweep to the 300GB Marzban cap left old prepay leftovers sitting there). The
+moment an account's *effective* mode flips payg→prepay — joining a prepay group, or its
+group flipping — prepay's formula (`data_limit - billed_data_limit`) reads that leftover as
+a phantom sold-but-uninvoiced package, hundreds of GB of fake debt (live case: Mahan, one
+group assignment, owes-now ~154k → ~1,425k). So the exact one line every prepay settle
+writes (`billed_data_limit = data_limit or 0`) is extracted into
+`services.neutralize_billed_baseline()` — plus an AccountEvent only when the value actually
+changed — and two guards call it: `update_relationship` when a group (re)assignment flips
+the effective mode payg→prepay, and `update_group` when a group's own `billing_mode`
+flips payg→prepay (every live member). The reverse direction needs no guard: payg never
+reads the field, so a stale value is inert again the instant the mode flips back. This
+writes no ledger row — real package sales still bill via adjust+`bill_added_gb` or the next
+settle. One-shot remediation of the affected live class:
+`scripts/neutralize_stale_billed_baselines.py` (dry-run by default; calls the real helper,
+never a parallel SQL UPDATE). Known residual edge, deliberately out of the original scope:
+`PATCH /accounts/{id}/billing` flipping a *standalone* account's own field payg→prepay has
+no guard yet.
+
 ## 3. Settle vs Reset — two related but distinct actions
 
 | | **Settle** (`POST .../settle`) | **Reset** (`POST /accounts/{id}/reset`) |
