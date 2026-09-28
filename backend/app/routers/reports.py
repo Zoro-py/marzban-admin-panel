@@ -1,10 +1,12 @@
 import os
+import re
 import time
 from collections import defaultdict
-from datetime import timedelta
+from datetime import datetime, timedelta
+from typing import Optional
 
 import psutil
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from app.auth import require_auth
@@ -253,12 +255,46 @@ def summary(
     }
 
 
+_YMD = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _parse_window(since: Optional[str], until: Optional[str]):
+    """Finance's optional since/until — both together or neither, YYYY-MM-DD
+    only (the frontend's RangePicker sends date-only local strings). Returns
+    (None, None) for the default window, else naive-UTC datetimes where a
+    date-only `until` covers its whole day — the same face-value contract as
+    /api/history/charges."""
+    if since is None and until is None:
+        return None, None
+    if since is None or until is None:
+        raise HTTPException(status_code=422, detail="since and until must be given together")
+    if not _YMD.match(since) or not _YMD.match(until):
+        raise HTTPException(status_code=422, detail="since/until must be YYYY-MM-DD")
+    since_dt = datetime.strptime(since, "%Y-%m-%d")
+    until_dt = datetime.strptime(until, "%Y-%m-%d") + timedelta(days=1) - timedelta(microseconds=1)
+    if since_dt > until_dt:
+        raise HTTPException(status_code=422, detail="since must not be after until")
+    return since_dt, until_dt
+
+
 @router.get("/finance")
-def finance(session: Session = Depends(get_session)):
+def finance(
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    session: Session = Depends(get_session),
+):
     """The financial overview the dashboard was missing entirely: total money
     outstanding/owed-back across everyone, this month's revenue vs. billed,
     a day-by-day revenue trend for the last 30 days, recent transactions, and
-    every configured rate in one place."""
+    every configured rate in one place.
+
+    Optional `since`/`until` (YYYY-MM-DD, always together) scope the DAY
+    BUCKETS and the transactions list to that window — face-value dates with
+    the same contract as /api/history/charges: a date-only `until` covers its
+    whole day. The balance/this-month cards are point-in-time facts and
+    deliberately ignore the window. Unparameterized calls keep the exact old
+    shape (last 30 days of buckets, last 30 transactions)."""
+    window = _parse_window(since, until)
     book = MoneyBook(session)
     customers = session.exec(select(Customer)).all()
     # Summed over CUSTOMERS specifically — that level's roll-up already
@@ -285,16 +321,24 @@ def finance(session: Session = Depends(get_session)):
     revenue_this_month = sum(e.amount for e in all_entries if e.type == LedgerType.credit and e.date >= month_start)
     charged_this_month = sum(e.amount for e in all_entries if e.type == LedgerType.charge and e.date >= month_start)
 
-    since = now - timedelta(days=30)
+    # Exactly 30 calendar buckets, every call: anchor at midnight 29 days ago.
+    # The old `now - timedelta(days=30)` carried the time-of-day with it, so
+    # midnight-adjacent calls silently produced a 31st bucket.
+    chart_since = (
+        window[0]
+        if window[0] is not None
+        else (now - timedelta(days=29)).replace(hour=0, minute=0, second=0, microsecond=0)
+    )
+    chart_end_date = window[1].date() if window[1] is not None else now.date()
     by_day: dict[str, float] = defaultdict(float)
     charged_by_day_map: dict[str, float] = defaultdict(float)
-    day = since.date()
-    while day <= now.date():
+    day = chart_since.date()
+    while day <= chart_end_date:
         by_day[day.isoformat()] = 0.0
         charged_by_day_map[day.isoformat()] = 0.0
         day += timedelta(days=1)
     for e in all_entries:
-        if e.date >= since:
+        if e.date >= chart_since and (window[1] is None or e.date <= window[1]):
             if e.type == LedgerType.credit:
                 by_day[e.date.date().isoformat()] += e.amount
             else:
@@ -309,7 +353,20 @@ def finance(session: Session = Depends(get_session)):
     groups = {g.id: g for g in session.exec(select(Group)).all()}
     group_names = {g.id: g.name for g in groups.values()}
 
-    recent = session.exec(select(LedgerEntry).order_by(LedgerEntry.date.desc()).limit(30)).all()
+    if window[0] is not None:
+        # A picked window replaces the "recent" cap with "everything in the
+        # window", still bounded — 500 rows is far past any honest browsing
+        # need and keeps a pathological full-history request off the wire.
+        recent = (
+            session.exec(
+                select(LedgerEntry)
+                .where(LedgerEntry.date >= window[0], LedgerEntry.date <= window[1])
+                .order_by(LedgerEntry.date.desc())
+                .limit(500)
+            ).all()
+        )
+    else:
+        recent = session.exec(select(LedgerEntry).order_by(LedgerEntry.date.desc()).limit(30)).all()
     recent_transactions = [
         {
             "id": e.id,
