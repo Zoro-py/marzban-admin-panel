@@ -17,6 +17,7 @@ from app.services import (
     effective_rate,
     enrich_accounts,
     group_only_posted_balance,
+    neutralize_billed_baseline,
     roll_payg_baseline_after_reset,
     serialise_billing,
     sync_marzban_fields,
@@ -162,11 +163,13 @@ def update_group(group_id: int, body: GroupUpdate, session: Session = Depends(ge
     if not group:
         raise HTTPException(404, "Group not found")
     old_rate = group.rate_per_gb
-    for field, value in body.model_dump(exclude_unset=True).items():
+    old_mode = group.billing_mode
+    changes = body.model_dump(exclude_unset=True)
+    for field, value in changes.items():
         setattr(group, field, value)
     try:
         session.add(group)
-        if "rate_per_gb" in body.model_dump(exclude_unset=True) and old_rate != group.rate_per_gb:
+        if "rate_per_gb" in changes and old_rate != group.rate_per_gb:
             # Structured audit trail for the rate (see models.RateChange) —
             # a group rate change affects every member's next invoice, so
             # "what was it before?" has to be answerable.
@@ -177,6 +180,29 @@ def update_group(group_id: int, body: GroupUpdate, session: Session = Depends(ge
                 new_rate=group.rate_per_gb,
                 created_by=operator,
             ))
+        # Mode-flip guard (see docs/DECISIONS.md D21): every member's
+        # effective billing mode IS the group's (services.effective_billing_mode
+        # — the group always wins), so a group flipping payg→prepay flips all
+        # of them at once, and prepay's billable_bytes
+        # (data_limit - billed_data_limit) suddenly reads a billed_data_limit
+        # that payg never kept current — on payg-standard-shaped members that
+        # is a stale prepay leftover under a 300GB Marzban cap, i.e. hundreds
+        # of GB of phantom "sold but uninvoiced" package debt per member.
+        # Only the payg→prepay direction is guarded: prepay→payg changes
+        # nothing (payg never reads billed_data_limit, so a stale value there
+        # is inert again). Soft-deleted members are excluded, same as
+        # settle_group / get_group_accounts.
+        if "billing_mode" in changes and old_mode == BillingMode.payg and group.billing_mode == BillingMode.prepay:
+            members = session.exec(
+                select(Account).where(Account.group_id == group.id, Account.deleted_at.is_(None))
+            ).all()
+            for member in members:
+                neutralize_billed_baseline(
+                    session,
+                    member,
+                    reason=f"group {group.id} ({group.name}) billing_mode flipped payg->prepay",
+                    created_by=operator,
+                )
         session.commit()
         session.refresh(group)
     except Exception:

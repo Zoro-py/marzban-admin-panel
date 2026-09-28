@@ -6,7 +6,7 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from app.models import Account, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, QueuedPlan, QueuedPlanStatus, utcnow
+from app.models import Account, AccountEvent, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, QueuedPlan, QueuedPlanStatus, utcnow
 
 # ══════════════════════════════════════════════════════════════ the money model
 #
@@ -501,6 +501,53 @@ def roll_payg_baseline_after_reset(account: Account, now: datetime) -> None:
     used_traffic)."""
     account.usage_baseline = account.used_traffic
     account.usage_baseline_at = now
+
+
+def neutralize_billed_baseline(session: Session, account: Account, reason: str, created_by: Optional[str] = None) -> bool:
+    """Point billed_data_limit at the CURRENT data_limit — the exact one line
+    every prepay settle has always written (`billed_data_limit = data_limit
+    or 0`; settle_account, reset_account, settle_group and settle_group_member
+    all carry it) — extracted so the effective-mode-flip guards
+    (update_relationship into a prepay group, update_group flipping
+    payg→prepay) reuse the real pattern instead of growing a divergent copy.
+
+    Why this has to exist: while an account bills as payg, prepay's formula
+    (data_limit - billed_data_limit) is never evaluated, so billed_data_limit
+    silently goes stale there (the payg standard-shape sweep to the 300GB
+    Marzban cap left old prepay leftovers sitting on swept accounts). The
+    moment such an account's EFFECTIVE mode flips payg→prepay — joining a
+    prepay group, or its group flipping — that stale leftover is suddenly
+    read as hundreds of GB of a "sold but uninvoiced package", i.e. phantom
+    debt the customer never bought (live case: Mahan, 2026-09-28, owes-now
+    jumped ~154k → ~1,425k in one group assignment). Neutralizing at the flip
+    keeps the baseline honest: a REAL package sale still bills normally via
+    adjust+bill_added_gb or the next settle.
+
+    The dangerous direction is ONLY payg→prepay. prepay→payg changes nothing:
+    payg's billable_bytes never reads billed_data_limit, so a stale value
+    there is inert again the moment the mode flips back.
+
+    NOT money: writes no LedgerEntry and touches nothing else — just this
+    one internal baseline field that only the prepay branch reads, plus an
+    AccountEvent audit row WHEN (and only when) the value actually changed.
+    Returns True when it wrote something, False when there was nothing to
+    neutralize (callers must not treat False as an error — it's the common
+    case for accounts whose baseline was already current)."""
+    target = account.data_limit or 0
+    if account.billed_data_limit == target:
+        return False
+    old_value = account.billed_data_limit
+    account.billed_data_limit = target
+    session.add(AccountEvent(
+        account_id=account.id,
+        action="billed_baseline_neutralized",
+        detail=(
+            f"billed_data_limit {old_value} -> {target} bytes "
+            f"({old_value / GB:.3f} -> {target / GB:.3f} GB): {reason}"
+        ),
+        created_by=created_by,
+    ))
+    return True
 
 
 def get_settings(session: Session) -> AppSettings:

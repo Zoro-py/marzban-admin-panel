@@ -49,6 +49,7 @@ from app.services import (
     effective_billing_mode,
     effective_rate,
     enrich_accounts,
+    neutralize_billed_baseline,
     roll_payg_baseline_after_reset,
     serialise_billing,
     sync_marzban_fields,
@@ -539,9 +540,33 @@ def update_relationship(account_id: int, body: AccountRelationshipUpdate, sessio
         if not session.get(Group, changes["group_id"]):
             raise HTTPException(404, "group_id not found")
 
+    # Mode-flip guard (see docs/DECISIONS.md D21): a grouped account's
+    # effective billing mode is ALWAYS the group's, so re-pointing group_id
+    # (joining one, switching groups, or leaving one back to standalone) can
+    # flip that mode without anyone touching this account's own billing_mode
+    # field. If it flips payg→prepay, prepay's billable_bytes
+    # (data_limit - billed_data_limit) suddenly reads a billed_data_limit
+    # that payg never kept current — on a payg-standard-shaped account that's
+    # a stale prepay leftover under a 300GB cap, i.e. hundreds of GB of
+    # phantom "sold but uninvoiced" debt (live: Mahan, 2026-09-28). The
+    # reverse flip needs no guard: payg never reads billed_data_limit, so a
+    # stale value is inert again the moment the mode flips back.
+    old_group_id = account.group_id
+    mode_before = effective_billing_mode(session, account)
+
     try:
         for field, value in changes.items():
             setattr(account, field, value)
+
+        mode_after = effective_billing_mode(session, account)
+        if mode_before == BillingMode.payg and mode_after == BillingMode.prepay:
+            neutralize_billed_baseline(
+                session,
+                account,
+                reason=f"effective billing mode flipped payg->prepay on relationship change (group_id {old_group_id} -> {account.group_id})",
+                created_by=operator,
+            )
+
         session.add(account)
 
         session.add(
