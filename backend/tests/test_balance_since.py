@@ -283,6 +283,31 @@ check("grouped account: pending_gb is the 10 GB package ONCE at every level",
 check("grouped account: net_owed agrees at every level (17,000 posted + 50,000 pending)",
       ra["net_owed"] == rg["net_owed"] == rc2["net_owed"] == 67_000.0)
 
+# ---- the «Mahan» case (2026-09-28): a payment inside the window settles a charge from OUTSIDE it ----
+# The window then nets negative (looks like a refund owed) while the real, all-time balance is
+# unchanged/positive. all_time_balance and carried_over_balance exist so the widget never has to
+# present the window figure as "the balance".
+with Session(engine) as session:
+    mc = Customer(name="Mahan-like")
+    session.add(mc)
+    session.commit()
+    session.refresh(mc)
+    mc_id = mc.id
+    old_charge_date = now - timedelta(days=40)
+    payment_date = now - timedelta(days=5)  # inside the window, but pays off the OLD charge above
+    session.add(LedgerEntry(type=LedgerType.charge, amount=500_000, customer_id=mc_id, date=old_charge_date))
+    session.add(LedgerEntry(type=LedgerType.credit, amount=500_000, customer_id=mc_id, date=payment_date))
+    session.commit()
+
+since_window_start = (now - timedelta(days=10)).replace(tzinfo=timezone.utc).isoformat()
+r = client.get("/api/ledger/balance", params={"customer_id": mc_id, "since": since_window_start}).json()
+check("window-only balance looks negative (only the payment falls inside the window)", r["balance"] == -500_000.0)
+check("all_time_balance shows the real, fully-settled balance (0), not the misleading window view", r["all_time_balance"] == 0.0)
+check("carried_over_balance surfaces exactly the old charge the window-side payment was for", r["carried_over_balance"] == 500_000.0)
+
+no_since = client.get("/api/ledger/balance", params={"customer_id": mc_id}).json()
+check("without since: all_time_balance equals balance and carried_over_balance is 0", no_since["all_time_balance"] == no_since["balance"] == 0.0 and no_since["carried_over_balance"] == 0.0)
+
 print()
 if failures:
     print(f"{len(failures)} FAILURES: {failures}")

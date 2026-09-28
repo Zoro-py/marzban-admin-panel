@@ -125,11 +125,17 @@ def get_balance(
     # Roll-ups, not a raw scan of rows carrying this id — see
     # services.MoneyBook for why those two are not the same thing.
     book = MoneyBook(session, since=since)
+    # A second, unfiltered book for the real all-time posted balance — only
+    # built when `since` narrows the window at all (`since is None` means
+    # `book` already IS the all-time view, so reuse it instead of a second
+    # identical query). See BalanceRead.all_time_balance for why this exists.
+    all_time_book = book if since is None else MoneyBook(session)
     if customer_id is not None:
         customer = session.get(Customer, customer_id)
         if not customer:
             raise HTTPException(404, "customer_id not found")
         balance = book.customer_posted(customer)
+        all_time_balance = all_time_book.customer_posted(customer)
         gb_charged, gb_consumed, charged_amount, consumed_amount = book.customer_gb(customer)
         credited_amount = book.customer_credits(customer)
         gb_pending = book.customer_gb_pending(customer)
@@ -142,6 +148,7 @@ def get_balance(
         if not group:
             raise HTTPException(404, "group_id not found")
         balance = book.group_posted(group)
+        all_time_balance = all_time_book.group_posted(group)
         gb_charged, gb_consumed, charged_amount, consumed_amount = book.group_gb(group)
         credited_amount = book.group_credits(group)
         gb_pending = book.group_gb_pending(group)
@@ -154,6 +161,7 @@ def get_balance(
         if not account:
             raise HTTPException(404, "account_id not found")
         balance = book.account_posted(account)
+        all_time_balance = all_time_book.account_posted(account)
         gb_charged, gb_consumed, charged_amount, consumed_amount = book.account_gb(account)
         credited_amount = book.account_credits(account)
         gb_pending = book.account_gb_pending(account)
@@ -191,4 +199,6 @@ def get_balance(
         charge_count=meta[0],
         charge_count_with_gb=meta[1],
         charged_amount_gb_known=round(meta[2], 2),
+        all_time_balance=round(all_time_balance, 2),
+        carried_over_balance=round(all_time_balance - balance, 2),
     )

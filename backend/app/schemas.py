@@ -423,6 +423,21 @@ class BalanceRead(BaseModel):
     charge_count: Optional[int] = None
     charge_count_with_gb: Optional[int] = None
     charged_amount_gb_known: Optional[float] = None
+    # The scope's REAL posted balance right now, window-blind (identical to
+    # calling this endpoint with no `since` at all). Exists so a `since`
+    # window can never be misread as "the balance": a payment that happens
+    # to land inside the window but actually settles charges from BEFORE it
+    # makes `balance`/`net_owed` swing negative (looks like a refund owed)
+    # even though, all-time, the scope still owes money. Equal to `balance`
+    # when `since` was not provided.
+    all_time_balance: float = 0.0
+    # all_time_balance - balance: what was already posted (owed or in
+    # credit) before `since`, i.e. this window's opening line. Zero when
+    # `since` was not provided; nonzero is the signal that a credit or
+    # charge inside the window is actually settling something from outside
+    # it (the exact shape that made a real customer's window read as a
+    # 381,472T refund owed to them when their real balance was +140,335T).
+    carried_over_balance: float = 0.0
 
 
 # ---- Bulk ("family") account creation ----------------------------------
