@@ -64,6 +64,10 @@ type BalanceData = {
   charge_count_with_gb?: number | null
   consumed_amount: number | null
   credited_amount: number | null
+  // Window-blind real balance + what was already posted before `since` — see
+  // OpeningBalanceNote below for why the window figure alone can mislead.
+  all_time_balance?: number | null
+  carried_over_balance?: number | null
 }
 
 /** What the headline is made of, so it can be checked against «Owes now»:
@@ -79,6 +83,30 @@ function OwedBreakdown({ balance }: { balance: BalanceData }) {
       {' + '}
       <span className="text-foreground">{formatToman(pending)}</span> not invoiced yet
       {balance.pending_gb != null && balance.pending_gb > 0.001 && <> ({fmtGb(balance.pending_gb)} GB)</>}
+    </span>
+  )
+}
+
+/** A credit landing INSIDE the picked window can actually be paying off a
+ * charge from BEFORE it (the payment and the charge it settles rarely land
+ * on the same date) — the window then nets negative and reads like a refund
+ * owed, even though the scope's real, all-time balance is still positive.
+ * Surfaces that gap explicitly instead of letting the window figure alone
+ * be mistaken for "the balance": a real case read "-381,472 T" (looks like
+ * we owe the customer) here while their actual total owed was +154,047 T —
+ * a single payment inside the window had settled three older charges from
+ * outside it. Only rendered when since is set and the carried-over amount
+ * is non-trivial (a few Toman of rounding noise is not worth a note). */
+function OpeningBalanceNote({ balance }: { balance: BalanceData | undefined }) {
+  if (!balance) return null
+  const carried = balance.carried_over_balance ?? 0
+  const allTime = balance.all_time_balance ?? null
+  if (Math.abs(carried) < 1 || allTime == null) return null
+  const carriedWord = carried > 0 ? 'already owed' : 'already in credit'
+  return (
+    <span className="flex w-full items-baseline gap-1 whitespace-nowrap text-[11px] text-muted-foreground">
+      includes <span className="text-foreground">{formatToman(Math.abs(carried))}</span> {carriedWord} from before this date —
+      real total owed right now: <Money amount={allTime + (balance.pending_amount ?? 0)} zero="settled" className="text-xs" />
     </span>
   )
 }
@@ -218,6 +246,7 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
               />
               {query.data && <OwedBreakdown balance={query.data} />}
               <GbSummary balance={query.data} />
+              <OpeningBalanceNote balance={query.data} />
             </>
           )}
           <button

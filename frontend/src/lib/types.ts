@@ -257,6 +257,15 @@ export interface Balance {
   charge_count?: number | null
   charge_count_with_gb?: number | null
   charged_amount_gb_known?: number | null
+  // The scope's real posted balance right now, window-blind (same as this
+  // endpoint with no `since`). Equal to `balance` when `since` was not
+  // provided. See `carried_over_balance` for why this exists.
+  all_time_balance?: number | null
+  // all_time_balance - balance: what was already posted before `since` —
+  // nonzero means a charge or credit inside the window is actually settling
+  // something from outside it, which can make `balance`/`net_owed` swing
+  // the "wrong" way for a window that starts mid-cycle.
+  carried_over_balance?: number | null
 }
 
 export interface InvoiceLine {
