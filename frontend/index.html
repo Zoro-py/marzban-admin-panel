@@ -20,5 +20,37 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Boot guard: if this page itself is stale (an old cached index.html
+      // whose entry chunk no longer exists) or the browser cannot run the
+      // module app at all, React never mounts and the operator gets a silent
+      // white screen — on a phone that reads as "the panel doesn't open".
+      // The app sets window.__VPN_PANEL_MOUNTED__ in main.tsx; if that hasn't
+      // happened shortly after load, show a static reload banner (plain DOM,
+      // no app code needed). main.tsx removes the banner once it mounts, so a
+      // slow-but-successful load only ever flashes it briefly — and never
+      // leaves it up over a working app.
+      ;(function () {
+        window.__VPN_PANEL_MOUNTED__ = false
+        setTimeout(function () {
+          if (window.__VPN_PANEL_MOUNTED__) return
+          var b = document.createElement('div')
+          b.id = 'vpn-boot-guard'
+          b.setAttribute('dir', 'rtl')
+          b.style.cssText =
+            'position:fixed;bottom:0;left:0;right:0;z-index:9999;' +
+            'background:#111827;color:#f9fafb;padding:12px 16px;text-align:center;' +
+            'font-family:system-ui,sans-serif;font-size:14px;line-height:1.8'
+          b.innerHTML =
+            'پنل کامل بارگذاری نشد — احتمالاً نسخهٔ تازه‌ای منتشر شده است. ' +
+            '<button onclick="location.reload()" style="background:#2563eb;color:#fff;' +
+            'border:0;border-radius:8px;padding:8px 18px;margin-inline-start:8px;' +
+            'font-size:14px;cursor:pointer">بارگذاری مجدد</button>' +
+            '<span style="display:block;opacity:.7;font-size:12px" dir="ltr">' +
+            'The panel did not fully load. Tap to reload.</span>'
+          document.body.appendChild(b)
+        }, 4000)
+      })()
+    </script>
   </body>
 </html>
