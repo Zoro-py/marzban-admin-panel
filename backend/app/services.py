@@ -825,7 +825,8 @@ def monthly_avg_usage(account: Account, now: datetime) -> tuple[Optional[float],
     return monthly_avg_usage_gb, usage_confidence, observed_days
 
 
-def enrich_accounts(session: Session, accounts: list[Account], book: Optional[MoneyBook] = None) -> list:
+def enrich_accounts(session: Session, accounts: list[Account], book: Optional[MoneyBook] = None,
+                    since_book: Optional[MoneyBook] = None) -> list:
     """Builds the AccountRow shape (balance, effective rate, monthly-average
     usage, etc.) shared by every endpoint that lists accounts — accounts.py's
     own list/detail routes, and customers.py/groups.py's account sub-lists —
@@ -834,7 +835,12 @@ def enrich_accounts(session: Session, accounts: list[Account], book: Optional[Mo
 
     Pass an existing `book` when the caller already built one (a group page
     also needs the group's own totals), so the rows and the header total come
-    from the same snapshot."""
+    from the same snapshot.
+
+    `since_book` (a MoneyBook built with since=…) fills the row's window
+    fields (`payer_balance_since`/`net_owed_since`) for the list pages'
+    date-picker; omitted (the default) leaves them None — the exact previous
+    shape for every existing caller."""
     from app.schemas import AccountRead, AccountRow  # local import: schemas imports nothing from here, avoids a cycle
 
     book = book or MoneyBook(session)
@@ -891,6 +897,8 @@ def enrich_accounts(session: Session, accounts: list[Account], book: Optional[Mo
                 usage_confidence=usage_confidence,
                 usage_sample_days=round(observed_days, 1),
                 has_next_plan=a.id in accounts_with_next_plan,
+                payer_balance_since=round(since_book.account_posted(a), 2) if since_book else None,
+                net_owed_since=(round(since_book.account_posted(a) + pending, 2) if since_book else None),
             )
         )
     return rows

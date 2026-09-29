@@ -122,7 +122,7 @@ export async function login(username: string, password: string, rememberMe: bool
 
 // ---- customers ----
 export const customersApi = {
-  list: async () => (await api.get<CustomerWithBalance[]>('/api/customers')).data,
+  list: async (params?: { since?: string }) => (await api.get<CustomerWithBalance[]>('/api/customers', { params })).data,
   get: async (id: number) => (await api.get<CustomerWithBalance>(`/api/customers/${id}`)).data,
   create: async (body: { name: string; contact?: string; is_group_rep?: boolean; kind?: 'individual' | 'family' }) =>
     (await api.post<Customer>('/api/customers', body)).data,
@@ -133,7 +133,7 @@ export const customersApi = {
 
 // ---- groups ----
 export const groupsApi = {
-  list: async () => (await api.get<GroupWithBalance[]>('/api/groups')).data,
+  list: async (params?: { since?: string }) => (await api.get<GroupWithBalance[]>('/api/groups', { params })).data,
   get: async (id: number) => (await api.get<GroupWithBalance>(`/api/groups/${id}`)).data,
   create: async (body: {
     name: string
@@ -159,7 +159,7 @@ export const groupsApi = {
 
 // ---- accounts ----
 export const accountsApi = {
-  list: async (params?: { unassigned_only?: boolean; customer_id?: number; group_id?: number }) =>
+  list: async (params?: { unassigned_only?: boolean; customer_id?: number; group_id?: number; since?: string }) =>
     (await api.get<AccountRow[]>('/api/accounts', { params })).data,
   get: async (id: number) => (await api.get<AccountRow>(`/api/accounts/${id}`)).data,
   create: async (body: {

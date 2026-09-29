@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -52,7 +52,8 @@ def _invoice_lines(session: Session, accounts: list[Account], group: Group) -> l
     return lines
 
 
-def _with_balance(session: Session, g: Group, book: Optional[MoneyBook] = None) -> GroupWithBalance:
+def _with_balance(session: Session, g: Group, book: Optional[MoneyBook] = None,
+                  since_book: Optional[MoneyBook] = None) -> GroupWithBalance:
     book = book or MoneyBook(session)
     accounts = book.group_members(g)
     lines = _invoice_lines(session, accounts, g)
@@ -91,6 +92,9 @@ def _with_balance(session: Session, g: Group, book: Optional[MoneyBook] = None) 
         # uses, kept in sync here so this field can't read "due" for a
         # billing mode that doesn't have a due date at all.
         is_due=g.billing_mode == BillingMode.payg and next_due_at <= now,
+        # Window fields for the list pages' date-picker; None = no window.
+        balance_since=since_book.group_posted(g) if since_book else None,
+        net_owed_since=since_book.group_net(g) if since_book else None,
     )
 
 
@@ -98,14 +102,22 @@ def _with_balance(session: Session, g: Group, book: Optional[MoneyBook] = None) 
 def list_groups(
     offset: int = 0,
     limit: Optional[int] = None,
+    # Optional window for the list pages' date-picker — fills each row's
+    # balance_since/net_owed_since (same normalization as ledger.get_balance).
+    since: Optional[datetime] = None,
     session: Session = Depends(get_session)
 ):
     book = MoneyBook(session)
+    since_book = None
+    if since is not None:
+        if since.tzinfo is not None:
+            since = since.astimezone(timezone.utc).replace(tzinfo=None)
+        since_book = MoneyBook(session, since=since)
     stmt = select(Group).offset(offset)
     if limit is not None:
         stmt = stmt.limit(limit)
     groups = session.exec(stmt).all()
-    return [_with_balance(session, g, book) for g in groups]
+    return [_with_balance(session, g, book, since_book=since_book) for g in groups]
 
 
 @router.post("", response_model=GroupRead)

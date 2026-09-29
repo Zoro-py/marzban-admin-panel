@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { SortableHeader, nextSort, type SortState } from '@/components/ui/sortable-header'
+import { SincePicker } from '@/components/history/SincePicker'
 import { BulkAccountDialog } from '@/components/accounts/BulkAccountDialog'
 import { BulkSettleBar } from '@/components/accounts/BulkSettleBar'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
@@ -130,8 +131,22 @@ export function AccountsPage() {
     }
   }, [searchParams, setSearchParams])
 
-  const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: () => accountsApi.list() })
-  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: groupsApi.list })
+  // The list-wide ?since= window (SincePicker below): when set, every row's
+  // owed figure becomes "owed since that date" (server-computed in one pass)
+  // instead of all-time. Lives in the URL so a filtered view stays shareable.
+  const since = searchParams.get('since') ?? ''
+  function setSince(v: string) {
+    const next = new URLSearchParams(searchParams)
+    if (v) next.set('since', v)
+    else next.delete('since')
+    setSearchParams(next, { replace: true })
+  }
+
+  const accountsQuery = useQuery({
+    queryKey: ['accounts', since],
+    queryFn: () => accountsApi.list(since ? { since } : undefined),
+  })
+  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: () => groupsApi.list() })
   const groupById = React.useMemo(() => new Map(groupsQuery.data?.map((g) => [g.id, g])), [groupsQuery.data])
 
   const filtered = React.useMemo(() => {
@@ -240,6 +255,7 @@ export function AccountsPage() {
         </div>
 
         <TabsContent value="table" className="mt-3 flex flex-col gap-3">
+          <SincePicker value={since} onChange={setSince} />
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative flex-1 sm:max-w-xs">
               <Search className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-muted-foreground" />
@@ -330,7 +346,7 @@ export function AccountsPage() {
                   <TableHead className="hidden xl:table-cell">Avg/mo</TableHead>
                   <SortableHeader label="Expires" sortKey="expires" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} className="hidden sm:table-cell" />
                   <SortableHeader label="Rate" sortKey="rate" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} className="hidden text-right lg:table-cell" align="right" />
-                  <SortableHeader label="Owes now" sortKey="balance" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} className="text-right" align="right" />
+                  <SortableHeader label={since ? 'Owed since' : 'Owes now'} sortKey="balance" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} className="text-right" align="right" />
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -360,6 +376,7 @@ export function AccountsPage() {
                     key={a.id}
                     account={a}
                     groupName={a.group_id ? groupById.get(a.group_id)?.name ?? a.group_name : null}
+                    since={since}
                     selected={String(a.id) === selectedId}
                     onOpen={() => openAccount(a.id)}
                     checked={selectedIds.has(a.id)}
@@ -382,6 +399,7 @@ export function AccountsPage() {
 function AccountTableRow({
   account: a,
   groupName,
+  since,
   selected,
   onOpen,
   checked,
@@ -389,11 +407,17 @@ function AccountTableRow({
 }: {
   account: AccountRow
   groupName: string | null
+  since: string
   selected: boolean
   onOpen: () => void
   checked: boolean
   onToggleCheck: (checked: boolean) => void
 }) {
+  // Window mode: the server filled the since-variants; fall back to the
+  // all-time figures only if a row somehow predates the field (defensive —
+  // the API always fills them when ?since= was sent).
+  const owed = (since ? a.net_owed_since : null) ?? a.net_owed
+  const postedShown = (since ? a.payer_balance_since : null) ?? a.payer_balance
   const days = daysUntil(a.expire)
   return (
     <TableRow
@@ -519,18 +543,18 @@ function AccountTableRow({
           <Tooltip>
             <TooltipTrigger asChild>
               <span className="cursor-help">
-                <Money amount={a.net_owed} zero="settled" className="text-xs" />
+                <Money amount={owed} zero="settled" className="text-xs" />
               </span>
             </TooltipTrigger>
             <TooltipContent>
               <span className="flex flex-col gap-0.5 text-xs tabular-nums">
                 <span>{formatToman(a.pending_amount)} usage not invoiced yet</span>
                 <span>
-                  {a.payer_balance >= 0 ? '+ ' : '− '}
-                  {formatToman(Math.abs(a.payer_balance))} {a.payer_balance >= 0 ? 'invoiced, unpaid' : 'already paid'}
+                  {postedShown >= 0 ? '+ ' : '− '}
+                  {formatToman(Math.abs(postedShown))} {postedShown >= 0 ? (since ? `invoiced since ${since}` : 'invoiced, unpaid') : 'already paid'}
                 </span>
                 <span className="border-t border-border/50 pt-0.5 font-medium">
-                  = {formatToman(a.net_owed)} owed
+                  = {formatToman(owed)} owed{since ? ` since ${since}` : ''}
                 </span>
               </span>
             </TooltipContent>

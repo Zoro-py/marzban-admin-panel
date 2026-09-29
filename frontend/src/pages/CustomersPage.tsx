@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { customersApi } from '@/lib/api'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -11,13 +11,28 @@ import { EmptyState } from '@/components/EmptyState'
 import { Money } from '@/components/Money'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Search } from 'lucide-react'
+import { SincePicker } from '@/components/history/SincePicker'
 
 export function CustomersPage() {
   React.useEffect(() => {
     document.title = 'Shiraze | Customers'
   }, [])
 
-  const { data, isLoading } = useQuery({ queryKey: ['customers'], queryFn: customersApi.list })
+  // List-wide ?since= window (SincePicker): every row's owed figure becomes
+  // "owed since that date", server-computed in one pass. Lives in the URL.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const since = searchParams.get('since') ?? ''
+  function setSince(v: string) {
+    const next = new URLSearchParams(searchParams)
+    if (v) next.set('since', v)
+    else next.delete('since')
+    setSearchParams(next, { replace: true })
+  }
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['customers', since],
+    queryFn: () => customersApi.list(since ? { since } : undefined),
+  })
   const [search, setSearch] = React.useState('')
   const [familiesOnly, setFamiliesOnly] = React.useState(false)
   const navigate = useNavigate()
@@ -41,6 +56,8 @@ export function CustomersPage() {
         </div>
         <NewCustomerDialog />
       </div>
+
+      <SincePicker value={since} onChange={setSince} />
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="relative w-full max-w-xs">
@@ -66,7 +83,7 @@ export function CustomersPage() {
               <TableHead className="hidden md:table-cell">Contact</TableHead>
               <TableHead className="hidden lg:table-cell">Represents</TableHead>
               <TableHead className="hidden text-right sm:table-cell">Accounts</TableHead>
-              <TableHead className="text-right">Owes now</TableHead>
+              <TableHead className="text-right">{since ? 'Owed since' : 'Owes now'}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -110,7 +127,12 @@ export function CustomersPage() {
                 </TableCell>
                 <TableCell className="hidden text-right tabular-nums sm:table-cell">{c.account_count}</TableCell>
                 <TableCell className="text-right">
-                  <Money amount={c.net_owed} zero="settled" className="text-xs" />
+                  <Money
+                    amount={(since ? c.net_owed_since : null) ?? c.net_owed}
+                    zero="settled"
+                    className="text-xs"
+                    title={since ? `Posted since ${since} + current unbilled usage` : undefined}
+                  />
                 </TableCell>
               </TableRow>
             ))}

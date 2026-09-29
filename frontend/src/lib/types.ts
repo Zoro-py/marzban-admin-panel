@@ -23,6 +23,11 @@ export interface CustomerWithBalance extends Customer {
   // Groups this customer is the billing representative for (computed
   // server-side from Group rows, not the manual is_group_rep flag).
   represented_group_names: string[]
+  // Present only when the list was fetched with ?since= (the list pages'
+  // date-picker): posted-in-window, and net = posted-since + current pending
+  // (pending is window-blind by nature — same semantics as Balance-since).
+  balance_since?: number | null
+  net_owed_since?: number | null
 }
 
 export interface Group {
@@ -54,6 +59,9 @@ export interface GroupWithBalance extends Group {
   pending_amount: number
   next_due_at: string
   is_due: boolean
+  // Window variants — see CustomerWithBalance above.
+  balance_since?: number | null
+  net_owed_since?: number | null
 }
 
 export interface Account {
@@ -157,6 +165,9 @@ export interface AccountRow extends Account {
   payer_balance: number
   // Unbilled amount since the last settle (not yet a real ledger charge).
   pending_amount: number
+  // Window variants for the list pages' date-picker — see CustomerWithBalance.
+  payer_balance_since?: number | null
+  net_owed_since?: number | null
   // THE figure to show as "what do they owe": payer_balance + pending_amount.
   // Posted debt and not-yet-invoiced usage are the same debt at two stages,
   // so showing them as two competing numbers made someone who had just paid

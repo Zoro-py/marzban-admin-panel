@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -33,7 +34,8 @@ def _account_count(book: MoneyBook, customer: Customer, represented_groups: list
     return direct + sum(len(book.group_members(g)) for g in represented_groups)
 
 
-def _with_balance(book: MoneyBook, c: Customer, groups_for_c: list[Group]) -> CustomerWithBalance:
+def _with_balance(book: MoneyBook, c: Customer, groups_for_c: list[Group],
+                  since_book: Optional[MoneyBook] = None) -> CustomerWithBalance:
     return CustomerWithBalance(
         **c.model_dump(),
         # Roll-up of the accounts they own plus the groups they represent —
@@ -44,6 +46,9 @@ def _with_balance(book: MoneyBook, c: Customer, groups_for_c: list[Group]) -> Cu
         net_owed=book.customer_net(c),
         account_count=_account_count(book, c, groups_for_c),
         represented_group_names=[g.name for g in groups_for_c],
+        # Window fields for the list pages' date-picker; None = no window.
+        balance_since=since_book.customer_posted(c) if since_book else None,
+        net_owed_since=since_book.customer_net(c) if since_book else None,
     )
 
 
@@ -52,9 +57,17 @@ def list_customers(
     offset: int = 0,
     limit: Optional[int] = None,
     kind: Optional[str] = None,
+    # Optional window for the list pages' date-picker — fills each row's
+    # balance_since/net_owed_since (same normalization as ledger.get_balance).
+    since: Optional[datetime] = None,
     session: Session = Depends(get_session)
 ):
     book = MoneyBook(session)
+    since_book = None
+    if since is not None:
+        if since.tzinfo is not None:
+            since = since.astimezone(timezone.utc).replace(tzinfo=None)
+        since_book = MoneyBook(session, since=since)
     stmt = select(Customer)
     if kind is not None:
         if kind not in ("individual", "family"):
@@ -65,7 +78,7 @@ def list_customers(
         stmt = stmt.limit(limit)
     customers = session.exec(stmt).all()
     rep_groups = _represented_groups(session)
-    return [_with_balance(book, c, rep_groups.get(c.id, [])) for c in customers]
+    return [_with_balance(book, c, rep_groups.get(c.id, []), since_book=since_book) for c in customers]
 
 
 @router.post("", response_model=CustomerRead)

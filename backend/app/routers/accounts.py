@@ -1,5 +1,6 @@
 import logging
 import time
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -40,6 +41,7 @@ from app.schemas import (
 from app.services import (
     GB,
     PAYG_DEFAULT_DATA_LIMIT_GB,
+    MoneyBook,
     account_posted_balance,
     attributable_consumed_gb,
     billable_bytes,
@@ -68,6 +70,13 @@ def list_accounts(
     group_id: Optional[int] = None,
     offset: int = 0,
     limit: Optional[int] = None,
+    # Optional window for the list pages' date-picker: fills each row's
+    # `payer_balance_since`/`net_owed_since` (same MoneyBook(since) math as
+    # GET /api/ledger/balance, one pass for the whole list — no per-row
+    # queries). Date-only strings parse to that day's midnight, the natural
+    # "since the 1st" reading; a tz-aware value is normalised to naive UTC
+    # exactly like ledger.get_balance does, for the same driver reason.
+    since: Optional[datetime] = None,
     session: Session = Depends(get_session),
 ):
     """
@@ -81,6 +90,7 @@ def list_accounts(
         limit (Optional[int]): Maximum number of records to return. Unbounded by
             default — the frontend doesn't paginate this list, so a default cap
             here would silently hide accounts past it on every screen.
+        since (Optional[datetime]): Window start for the per-row since-balances.
         session (Session): Database session.
 
     Returns:
@@ -102,7 +112,12 @@ def list_accounts(
     if limit is not None:
         stmt = stmt.limit(limit)
     accounts = session.exec(stmt).all()
-    return enrich_accounts(session, accounts)
+    since_book = None
+    if since is not None:
+        if since.tzinfo is not None:
+            since = since.astimezone(timezone.utc).replace(tzinfo=None)
+        since_book = MoneyBook(session, since=since)
+    return enrich_accounts(session, accounts, since_book=since_book)
 
 
 @router.get("/{account_id}", response_model=AccountRow)

@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Clock } from 'lucide-react'
 import { groupsApi } from '@/lib/api'
@@ -10,13 +10,28 @@ import { NewGroupDialog } from '@/components/groups/NewGroupDialog'
 import { Money } from '@/components/Money'
 import { Skeleton } from '@/components/ui/skeleton'
 import { formatBytes, formatToman } from '@/lib/utils'
+import { SincePicker } from '@/components/history/SincePicker'
 
 export function GroupsPage() {
   React.useEffect(() => {
     document.title = 'Shiraze | Groups'
   }, [])
 
-  const { data, isLoading } = useQuery({ queryKey: ['groups'], queryFn: groupsApi.list })
+  // List-wide ?since= window (SincePicker): every row's owed figure becomes
+  // "owed since that date", server-computed in one pass. Lives in the URL.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const since = searchParams.get('since') ?? ''
+  function setSince(v: string) {
+    const next = new URLSearchParams(searchParams)
+    if (v) next.set('since', v)
+    else next.delete('since')
+    setSearchParams(next, { replace: true })
+  }
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['groups', since],
+    queryFn: () => groupsApi.list(since ? { since } : undefined),
+  })
   const navigate = useNavigate()
 
   return (
@@ -31,6 +46,8 @@ export function GroupsPage() {
         <NewGroupDialog />
       </div>
 
+      <SincePicker value={since} onChange={setSince} />
+
       <div className="overflow-hidden rounded-lg border border-border bg-card">
         <Table>
           <TableHeader>
@@ -44,7 +61,7 @@ export function GroupsPage() {
               <TableHead className="hidden md:table-cell">Usage this cycle</TableHead>
               <TableHead className="hidden text-right xl:table-cell">Rate</TableHead>
               <TableHead className="hidden text-right lg:table-cell">Not invoiced</TableHead>
-              <TableHead className="text-right">Owes now</TableHead>
+              <TableHead className="text-right">{since ? 'Owed since' : 'Owes now'}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -108,7 +125,12 @@ export function GroupsPage() {
                   <Money amount={g.pending_amount} kind="pending" className="text-xs" />
                 </TableCell>
                 <TableCell className="text-right">
-                  <Money amount={g.net_owed} zero="settled" className="text-xs" />
+                  <Money
+                    amount={(since ? g.net_owed_since : null) ?? g.net_owed}
+                    zero="settled"
+                    className="text-xs"
+                    title={since ? `Posted since ${since} + current unbilled usage` : undefined}
+                  />
                 </TableCell>
               </TableRow>
             ))}

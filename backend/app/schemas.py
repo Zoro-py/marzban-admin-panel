@@ -53,6 +53,15 @@ class CustomerWithBalance(CustomerRead):
     # can drift), so the customer list can show real representation without a
     # client-side join against the full group list.
     represented_group_names: list[str] = []
+    # Present ONLY when the list endpoint was called with ?since= (the list
+    # pages' date-picker): the POSTED balance restricted to the window — the
+    # same MoneyBook(since=…) math as GET /api/ledger/balance — and net_owed
+    # over the window, which is posted_since + CURRENT pending (pending is a
+    # live figure and window-blind by nature, same as the Balance-since
+    # widget; D13-BS). None = no window requested; every existing caller is
+    # unaffected.
+    balance_since: Optional[float] = None
+    net_owed_since: Optional[float] = None
 
 
 # ---- Group ---------------------------------------------------------------
@@ -133,6 +142,10 @@ class GroupWithBalance(GroupRead):
     pending_amount: float
     next_due_at: datetime
     is_due: bool
+    # Window variants for the list pages' date-picker — same contract as
+    # CustomerWithBalance.balance_since above. None = no ?since= requested.
+    balance_since: Optional[float] = None
+    net_owed_since: Optional[float] = None
 
 
 # ---- Account ---------------------------------------------------------------
@@ -303,6 +316,11 @@ class AccountRow(AccountRead):
     # shown as a small badge in the accounts table so the operator can see at
     # a glance which accounts are covered.
     has_next_plan: bool = False
+    # Window variants for the list pages' date-picker — same contract as
+    # CustomerWithBalance.balance_since above (posted-in-window + current
+    # pending for the net). None = no ?since= requested.
+    payer_balance_since: Optional[float] = None
+    net_owed_since: Optional[float] = None
 
 
 # ---- Next Plan (Queued Plan) -----------------------------------------------
