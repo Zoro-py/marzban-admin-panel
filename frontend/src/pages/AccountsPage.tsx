@@ -340,7 +340,11 @@ export function AccountsPage() {
                       seven-column table to be side-scrolled on a phone. The
                       hidden owner reappears under the username below. */}
                   <SortableHeader label="Account" sortKey="username" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} />
-                  <TableHead className="w-14 text-center">Auto-renew</TableHead>
+                  {/* Below sm the switch yields: the pre-existing mobile table
+                      guarantees account/usage/owes at 390px, the off-state badge
+                      still marks state, and batch off/on lives in the selection
+                      bar — the switch itself returns at ≥640px. */}
+                  <TableHead className="hidden w-14 text-center sm:table-cell">Auto-renew</TableHead>
                   <SortableHeader label="Billed to" sortKey="owner" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} className="hidden md:table-cell" />
                   <SortableHeader label="Usage" sortKey="usage_pct" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} />
                   <TableHead className="hidden xl:table-cell">Avg/mo</TableHead>
@@ -459,7 +463,7 @@ function AccountTableRow({
           </span>
         </span>
       </TableCell>
-      <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+      <TableCell className="hidden text-center sm:table-cell" onClick={(e) => e.stopPropagation()}>
         <AutoRenewSwitch accountId={a.id} username={a.marzban_username} enabled={a.auto_renew_enabled} className="mx-auto" />
       </TableCell>
       <TableCell className="hidden md:table-cell">
