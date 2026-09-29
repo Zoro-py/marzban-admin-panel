@@ -527,6 +527,32 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
         old_rate = effective_rate(session, account)
         old_amount = round((old_billable / GB) * old_rate, 2)
 
+        # 2026-09-29 checklist (the «ardani» class): a 35GB prepay package
+        # once activated with NO charge — the event read "old plan billed
+        # 0.0" — and by the time anyone asked why, the server log that
+        # carried billable_bytes's "requires manual invoicing" warning had
+        # aged out. billable_bytes returns 0 for a prepay package in exactly
+        # three situations and none of them may pass silently again; classify
+        # the reason NOW (the fields are overwritten below) and attach it as
+        # a dedicated AccountEvent in step 3. No money moves either way —
+        # this is the visibility the old path lacked.
+        zero_charge_reason: Optional[str] = None
+        if old_amount <= 0 and old_mode == BillingMode.prepay:
+            if not account.data_limit:
+                zero_charge_reason = (
+                    "package was UNLIMITED (data_limit 0/None) when the plan ended — "
+                    "its cost was never invoiced; invoice it manually"
+                )
+            elif (account.billed_data_limit or 0) > account.data_limit:
+                zero_charge_reason = (
+                    f"ANOMALY: billed_data_limit ({account.billed_data_limit}) exceeds "
+                    f"data_limit ({account.data_limit}) — over-billed baseline, review this account"
+                )
+            elif (account.billed_data_limit or 0) == account.data_limit:
+                zero_charge_reason = "package already fully billed (billed == data_limit) — no double charge, as designed"
+            else:
+                zero_charge_reason = f"rate resolved to 0 (rate={old_rate}) — nothing to charge"
+
         # Step 2: Call Marzban API — new limits + reactivate + reset usage
         new_data_limit = round(plan.data_limit_gb * GB)
         new_expire = int(time.time()) + plan.duration_days * 86400
@@ -614,6 +640,19 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
             date=now,
             source=LedgerSource.sync,
         ))
+
+        if zero_charge_reason is not None:
+            # Only the UNLIMITED and ANOMALY reasons are losses a human must
+            # see; "already fully billed" is the correct no-double-charge
+            # path and "rate 0" is a comp — recorded for the trail, worded
+            # so an operator skimming events can tell them apart.
+            session.add(AccountEvent(
+                account_id=account.id,
+                action="next_plan_zero_charge",
+                detail=f"Old plan charged 0 because: {zero_charge_reason}",
+                date=now,
+                source=LedgerSource.sync,
+            ))
 
         # Step 4: pair the local record durably with the irreversible Marzban call.
         session.commit()
