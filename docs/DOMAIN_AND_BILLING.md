@@ -106,6 +106,12 @@ call):
   warning. This mirrors `reset_group_cycle`'s pre-existing, deliberately-documented reasoning
   in the same file.
 
+**`POST /api/groups/{id}/reset-cycle` is PAYG-ONLY (guarded since 2026-09-29)**: on a
+prepay group the same gesture would mark every member's package fully billed with no charge
+posted AND zero their live meters — silently forgiving real money. The endpoint now refuses
+non-payg groups with 400 and names the money-safe prepay paths (settle; adjust +
+`bill_added_gb` for a cash-paid package). `tests/test_group_prepay_reset_refusal.py`.
+
 **`pay_scope`** (`AccountSettleRequest`/`GroupSettleRequest`, default `"full"`): when
 `mark_paid=True`, `"full"` credits whatever's owed *after* this cycle's charge lands (old
 debt + new charge, the common case). `"prior_only"` credits only the balance that existed
@@ -138,7 +144,13 @@ order would make the charge-or-the-GB invisible depending on which call failed.
 
 All four of these run out of the same 60-second sync cycle (`app/sync_job.py::_run_sync_impl`,
 guarded by an `asyncio.Lock` so a manually-triggered `/api/sync/run` can never overlap the
-scheduled one) except §4.4, which is a separate daily cron check.
+scheduled one) except §4.4, which is a separate daily cron check. Since 2026-09-29 the two
+sync-side MONEY sites inside a run (§4.2's activation and §4.3's cap-hit settle) also take
+`services.billing_lock` — the same lock every API money endpoint holds — spanning read →
+compute → Marzban reset → write → commit, so an API settle for the same account can no longer
+interleave between a sync read and its commit (the D8 window, closed with a red test in
+`tests/test_sync_settle_lock.py`). Lock order is always `_sync_lock` → `billing_lock`; no
+path takes them reversed.
 
 ### 4.1 The "notify-first" safety pattern
 
@@ -203,6 +215,12 @@ data_limit/expire/reset applied via Marzban, and:
   cycle (or can be fixed by hand). This failure-visibility was itself a fix — previously a
   failed activation was only logged server-side, invisible to the operator, which is why an
   overdue-looking account could sit unrenewed with zero explanation.
+- **Zero-charge activations are classified in the audit trail (2026-09-29, the «ardani»
+  guard)**: when a prepay old plan resolves to 0 — unlimited (data_limit 0/None), billed ≥
+  data_limit (already fully billed = correct; billed > data_limit = ANOMALY to review), or an
+  effective rate of 0 — the activation attaches a `next_plan_zero_charge` AccountEvent naming
+  the reason, so the loss (if it is one) can never again vanish with an aged-out server log.
+  No money moves either way (`tests/test_next_plan_zero_charge_guard.py`).
 
 ### 4.3 Payg cap-hit reactive settlement
 
