@@ -16,7 +16,7 @@
 |---|---|---|---|
 | ۲.۱ | سه بات | ✅ تمام — صفر یافتهٔ جدید؛ DEL-1 از قبل روی main رفع بوده؛ تست IDOR دائمی جدید | `docs/audits/2026-09-29_round_01_bots.md` |
 | ۲.۲ | UI/UX پنل | ⏳ | `2026-09-29_round_02_frontend.md` |
-| ۲.۳ | محاسبات مالی | ⏳ | `2026-09-29_round_03_money.md` |
+| ۲.۳ | محاسبات مالی | ✅ تمام — D8 اجرا شد (تست قرمز → رفع → سبز)؛ اسکن D21 صفر | `2026-09-29_round_03_money.md` |
 | ۲.۴ | میانگین مصرف | ⏳ | `2026-09-29_round_04_usage.md` |
 | ۲.۵ | نمودارها | ⏳ | `2026-09-29_round_05_charts.md` |
 | ۲.۶ | گروه‌ها | ⏳ | `2026-09-29_round_06_groups.md` |
@@ -25,4 +25,8 @@
 
 ## کامیت‌های این دور
 
-- (در انتها همین‌جا فهرست می‌شود.)
+- `f4225cb` test(delegate): IDOR hostile suite (حوزهٔ ۲.۱)
+- `0e850aa` feat(scripts): panel UI harness (حوزهٔ ۲.۲)
+- `dda90d5` feat(panel): list-wide ?since= window (DATE-PICKER، حوزهٔ ۲.۲)
+- `5b17be1` feat(panel): minimal FA/EN layer (حوزهٔ ۲.۲)
+- D8 fix billing lock (حوزهٔ ۲.۳) — همین کامیت
