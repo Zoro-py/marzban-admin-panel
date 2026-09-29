@@ -70,9 +70,13 @@ reads the field, so a stale value is inert again the instant the mode flips back
 writes no ledger row — real package sales still bill via adjust+`bill_added_gb` or the next
 settle. One-shot remediation of the affected live class:
 `scripts/neutralize_stale_billed_baselines.py` (dry-run by default; calls the real helper,
-never a parallel SQL UPDATE). Known residual edge, deliberately out of the original scope:
-`PATCH /accounts/{id}/billing` flipping a *standalone* account's own field payg→prepay has
-no guard yet.
+never a parallel SQL UPDATE). Third guard (2026-09-28, `8aa39fa`): `PATCH
+/accounts/{id}/billing` flipping a *standalone* account's own field payg→prepay runs the same
+neutralization — grouped accounts are excluded there because their effective mode is the
+group's, a flip update_group already owns. With that, every path that can flip an effective
+mode payg→prepay (relationship change, group mode change, direct billing PATCH) is guarded;
+`tests/test_billed_baseline_mode_flip.py` sections 4/5/6 + `test_group_mode_flip_stress.py`
+lock all three.
 
 ## 3. Settle vs Reset — two related but distinct actions
 
