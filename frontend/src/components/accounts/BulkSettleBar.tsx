@@ -31,6 +31,38 @@ export function BulkSettleBar({
   const settleable = selected.filter((a) => a.pending_amount > 0)
   const total = settleable.reduce((sum, a) => sum + a.pending_amount, 0)
 
+  // Batch auto-renew (2026-09-29 «ساده‌سازی»): same sequential client-side
+  // loop over the per-account PATCH the row switch uses — no new backend
+  // endpoint to earn money-path trust from zero. Turning OFF confirms first:
+  // it silently stops those customers' automatic renewals.
+  const autoRenewMutation = useMutation({
+    mutationFn: async (next: boolean) => {
+      const failed: { username: string; error: string }[] = []
+      let changed = 0
+      for (const a of selected) {
+        try {
+          await accountsApi.updateBilling(a.id, { auto_renew_enabled: next })
+          changed += 1
+        } catch (err) {
+          failed.push({ username: a.marzban_username, error: apiErrorMessage(err) })
+        }
+      }
+      return { changed, failed, next }
+    },
+    onSuccess: ({ changed, failed, next }) => {
+      if (failed.length === 0) {
+        toast.success(`Auto-renew ${next ? 'on' : 'off'} for ${changed} account${changed === 1 ? '' : 's'}`)
+      } else {
+        toast.warning(
+          `Auto-renew ${next ? 'on' : 'off'} for ${changed} of ${changed + failed.length} — failed: ${failed.map((f) => f.username).join(', ')}`,
+        )
+      }
+      queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      onClear()
+    },
+    onError: (err) => toast.error(apiErrorMessage(err)),
+  })
+
   const mutation = useMutation({
     mutationFn: async () => {
       const failed: { username: string; error: string }[] = []
@@ -102,7 +134,38 @@ export function BulkSettleBar({
         {mutation.isPending ? 'Settling…' : `Settle ${settleable.length}`}
       </Button>
 
-      <Button size="sm" variant="ghost" className="gap-1.5 text-muted-foreground" onClick={onClear} disabled={mutation.isPending}>
+      <span className="mx-1 h-4 w-px bg-border" aria-hidden />
+
+      <Button
+        size="sm"
+        variant="outline"
+        className="gap-1.5"
+        disabled={autoRenewMutation.isPending}
+        onClick={() => {
+          const shown = selected.slice(0, 8).map((a) => a.marzban_username).join(', ')
+          const more = selected.length > 8 ? ` … +${selected.length - 8} more` : ''
+          if (window.confirm(`Turn auto-renew OFF for ${selected.length} selected accounts?
+${shown}${more}
+
+They will no longer be queued for automatic renewal.`)) {
+            autoRenewMutation.mutate(false)
+          }
+        }}
+      >
+        {autoRenewMutation.isPending ? 'Working…' : 'Auto-renew off'}
+      </Button>
+
+      <Button
+        size="sm"
+        variant="ghost"
+        className="gap-1.5"
+        disabled={autoRenewMutation.isPending}
+        onClick={() => autoRenewMutation.mutate(true)}
+      >
+        Auto-renew on
+      </Button>
+
+      <Button size="sm" variant="ghost" className="gap-1.5 text-muted-foreground" onClick={onClear} disabled={mutation.isPending || autoRenewMutation.isPending}>
         <X className="h-3.5 w-3.5" />
         Clear
       </Button>

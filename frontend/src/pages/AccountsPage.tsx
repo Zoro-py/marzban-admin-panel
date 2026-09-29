@@ -16,6 +16,7 @@ import { BulkSettleBar } from '@/components/accounts/BulkSettleBar'
 import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
 import { AccountsBoard } from '@/components/accounts/AccountsBoard'
+import { AutoRenewSwitch } from '@/components/accounts/AutoRenewSwitch'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
 import { EmptyState } from '@/components/EmptyState'
 import { UsageBar } from '@/components/UsageBar'
@@ -176,12 +177,12 @@ export function AccountsPage() {
     return rows
   }, [accountsQuery.data, search, view, statusFilter, modeFilter, autoRenewFilter, sort])
 
-  // Only rows with something owed are selectable at all — selection exists
-  // purely to drive bulk settle, so an account with nothing to charge has no
-  // meaningful role in it.
-  const settleableInView = React.useMemo(() => filtered.filter((a) => a.pending_amount > 0), [filtered])
+  // Selection is general (any row in the current view): it drives bulk
+  // settle for rows that have something owed AND the batch auto-renew
+  // actions (2026-09-29 «ساده‌سازی») for any of them. BulkSettleBar labels
+  // the settleable subset itself.
   const selectedRows = React.useMemo(() => filtered.filter((a) => selectedIds.has(a.id)), [filtered, selectedIds])
-  const allSelectableSelected = settleableInView.length > 0 && settleableInView.every((a) => selectedIds.has(a.id))
+  const allSelectableSelected = filtered.length > 0 && filtered.every((a) => selectedIds.has(a.id))
 
   function toggleOne(id: number, checked: boolean) {
     setSelectedIds((prev) => {
@@ -195,7 +196,7 @@ export function AccountsPage() {
   function toggleAllInView(checked: boolean) {
     setSelectedIds((prev) => {
       const next = new Set(prev)
-      for (const a of settleableInView) {
+      for (const a of filtered) {
         if (checked) next.add(a.id)
         else next.delete(a.id)
       }
@@ -328,19 +329,18 @@ export function AccountsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-8">
-                    {settleableInView.length > 0 && (
-                      <Checkbox
-                        checked={allSelectableSelected}
-                        onCheckedChange={(v) => toggleAllInView(v === true)}
-                        aria-label="Select all with something owed"
-                      />
-                    )}
+                    <Checkbox
+                      checked={allSelectableSelected}
+                      onCheckedChange={(v) => toggleAllInView(v === true)}
+                      aria-label="Select all rows in this view"
+                    />
                   </TableHead>
                   {/* Account, usage and what they owe survive at every width —
                       the rest drop out progressively rather than forcing a
                       seven-column table to be side-scrolled on a phone. The
                       hidden owner reappears under the username below. */}
                   <SortableHeader label="Account" sortKey="username" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} />
+                  <TableHead className="w-14 text-center">Auto-renew</TableHead>
                   <SortableHeader label="Billed to" sortKey="owner" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} className="hidden md:table-cell" />
                   <SortableHeader label="Usage" sortKey="usage_pct" sort={sort} onSort={(k) => setSort((c) => nextSort(c, k))} />
                   <TableHead className="hidden xl:table-cell">Avg/mo</TableHead>
@@ -356,6 +356,7 @@ export function AccountsPage() {
                       <TableCell><Skeleton className="h-4 w-4" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-24" /></TableCell>
                       <TableCell className="hidden md:table-cell"><Skeleton className="h-4 w-20" /></TableCell>
+                      <TableCell className="text-center"><Skeleton className="mx-auto h-4 w-8" /></TableCell>
                       <TableCell><Skeleton className="h-4 w-full" /></TableCell>
                       <TableCell className="hidden xl:table-cell"><Skeleton className="h-4 w-12" /></TableCell>
                       <TableCell className="hidden sm:table-cell"><Skeleton className="h-4 w-16" /></TableCell>
@@ -366,7 +367,7 @@ export function AccountsPage() {
                 )}
                 {!accountsQuery.isLoading && filtered.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-8">
+                    <TableCell colSpan={9} className="py-8">
                       <EmptyState title="No accounts match this view." />
                     </TableCell>
                   </TableRow>
@@ -426,9 +427,7 @@ function AccountTableRow({
       className="cursor-pointer"
     >
       <TableCell onClick={(e) => e.stopPropagation()}>
-        {a.pending_amount > 0 && (
-          <Checkbox checked={checked} onCheckedChange={(v) => onToggleCheck(v === true)} aria-label={`Select ${a.marzban_username}`} />
-        )}
+        <Checkbox checked={checked} onCheckedChange={(v) => onToggleCheck(v === true)} aria-label={`Select ${a.marzban_username}`} />
       </TableCell>
       <TableCell>
         <span className="flex items-center gap-2">
@@ -459,6 +458,9 @@ function AccountTableRow({
             </span>
           </span>
         </span>
+      </TableCell>
+      <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+        <AutoRenewSwitch accountId={a.id} username={a.marzban_username} enabled={a.auto_renew_enabled} className="mx-auto" />
       </TableCell>
       <TableCell className="hidden md:table-cell">
         {a.customer_id || a.group_id ? (
