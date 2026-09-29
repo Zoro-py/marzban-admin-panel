@@ -40,3 +40,6 @@ frontend/dist/
 *.log
 *.pid
 predeploy-backups/
+
+# sweep/scratch output (screenshots, harness logs)
+temp/
