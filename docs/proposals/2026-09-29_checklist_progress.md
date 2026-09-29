@@ -19,9 +19,9 @@
 | ۲.۳ | محاسبات مالی | ✅ تمام — D8 اجرا شد (تست قرمز → رفع → سبز)؛ اسکن D21 صفر | `2026-09-29_round_03_money.md` |
 | ۲.۴ | میانگین مصرف | ✅ تمام — فلیت تمیز، هر دو follow-up در داده موجود نیست | `2026-09-29_round_04_usage.md` |
 | ۲.۵ | نمودارها | ✅ بک‌اند/داده تمام؛ رندر مرورگری → فاز ۳ | `2026-09-29_round_05_charts.md` |
-| ۲.۶ | گروه‌ها | ⏳ | `2026-09-29_round_06_groups.md` |
-| ۲.۷ | auto-renew | ⏳ | `2026-09-29_round_07_autorenew.md` |
-| ۲.۸ | بقیه | ⏳ | `2026-09-29_round_08_misc.md` |
+| ۲.۶ | گروه‌ها | ✅ تمام — reset-cycle P1 رفع شد؛ D21 استرس سبز | `2026-09-29_round_06_groups.md` |
+| ۲.۷ | auto-renew | ✅ تمام — سوییچ ردیفی + batch + confirm | `2026-09-29_round_07_autorenew.md` |
+| ۲.۸ | بقیه | ✅ تمام — گارد ardani + fail2ban/S1/CI/restore-test | `2026-09-29_round_08_misc.md` |
 
 ## کامیت‌های این دور
 
@@ -29,4 +29,13 @@
 - `0e850aa` feat(scripts): panel UI harness (حوزهٔ ۲.۲)
 - `dda90d5` feat(panel): list-wide ?since= window (DATE-PICKER، حوزهٔ ۲.۲)
 - `5b17be1` feat(panel): minimal FA/EN layer (حوزهٔ ۲.۲)
-- D8 fix billing lock (حوزهٔ ۲.۳) — همین کامیت
+- `87a0e92` fix(billing): D8 sync↔settle billing lock (حوزهٔ ۲.۳)
+- `b6e2a8b` docs(audit): round 03
+- round 04/05 audits
+- `12c1443` fix(billing): reset-cycle refuses non-payg (حوزهٔ ۲.۶)
+- `4b4c8f1` test: D21 toggle stress
+- `3b7a69b` docs(audit): round 06
+- `9d434e7` feat(frontend): auto-renew simplification (حوزهٔ ۲.۷)
+- `0f53102` docs(audit): round 07
+- ardani zero-charge guard fix+test (حوزهٔ ۲.۸)
+- `docs(audit)` round 08
