@@ -8,6 +8,7 @@ import gregorian_en from 'react-date-object/locales/gregorian_en'
 import { CalendarRange } from 'lucide-react'
 import { cn, formatDate } from '@/lib/utils'
 import { formatJalali, jalaliMonthStartLocal, toLocalYmd } from '@/lib/jalali'
+import { tr, useLang } from '@/lib/i18n'
 
 // Same CJS-interop unwrap as BalanceSinceControl: Rolldown's production
 // bundling wraps the whole react-multi-date-picker module as `.default`, so
@@ -27,13 +28,13 @@ export interface RangeValue {
 
 export const DEFAULT_RANGE: RangeValue = { code: '6m', customSince: '', customUntil: '' }
 
-const PRESETS: { code: RangeCode; label: string }[] = [
-  { code: '30d', label: '30 days' },
-  { code: '90d', label: '90 days' },
-  { code: '6m', label: '6 months' },
-  { code: 'jm', label: 'Jalali month' },
-  { code: 'all', label: 'All' },
-  { code: 'custom', label: 'Custom' },
+const PRESETS: { code: RangeCode; fa: string; en: string }[] = [
+  { code: '30d', fa: '۳۰ روز', en: '30 days' },
+  { code: '90d', fa: '۹۰ روز', en: '90 days' },
+  { code: '6m', fa: '۶ ماه', en: '6 months' },
+  { code: 'jm', fa: 'ماه شمسی', en: 'Jalali month' },
+  { code: 'all', fa: 'همه', en: 'All' },
+  { code: 'custom', fa: 'سفارشی', en: 'Custom' },
 ]
 
 type CalendarKind = 'jalali' | 'gregorian'
@@ -100,6 +101,7 @@ interface RangePickerProps {
 }
 
 export function RangePicker({ value, onChange }: RangePickerProps) {
+  const [lang] = useLang()
   const [calendarKind, setCalendarKind] = React.useState<CalendarKind>('jalali')
   const { calendar, locale } = CALENDARS[calendarKind]
   const resolved = resolveRange(value)
@@ -111,7 +113,7 @@ export function RangePicker({ value, onChange }: RangePickerProps) {
   // receipts against whichever one the receipt is written in.
   const caption =
     value.code === 'custom' && !isRangeValid(value)
-      ? 'Pick both dates.'
+      ? tr(lang, 'هر دو تاریخ را بردارید.', 'Pick both dates.')
       : `${resolved.since} → ${resolved.until} · ${formatJalali(new Date(`${resolved.since}T00:00:00`))} → ${formatJalali(
           new Date(`${resolved.until}T00:00:00`),
         )}`
@@ -133,7 +135,7 @@ export function RangePicker({ value, onChange }: RangePickerProps) {
                 : 'border-border text-muted-foreground hover:border-input hover:text-foreground',
             )}
           >
-            {p.label}
+            {tr(lang, p.fa, p.en)}
           </button>
         ))}
       </div>

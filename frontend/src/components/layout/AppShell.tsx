@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useAuth } from '@/lib/auth'
 import { useTheme } from '@/lib/theme'
+import { useLang } from '@/lib/i18n'
 import { syncApi, apiErrorMessage } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -33,6 +34,7 @@ function openCommandPalette() {
 export function AppShell() {
   const { logout } = useAuth()
   const { resolved, setTheme } = useTheme()
+  const [lang, setLang] = useLang()
   const queryClient = useQueryClient()
   const location = useLocation()
   // Below md the sidebar is an off-canvas drawer: at 52 fixed units it used to
@@ -165,6 +167,15 @@ export function AppShell() {
               </TooltipTrigger>
               <TooltipContent>Switch to {resolved === 'dark' ? 'light' : 'dark'} theme</TooltipContent>
             </Tooltip>
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              onClick={() => setLang(lang === 'fa' ? 'en' : 'fa')}
+              aria-label="Toggle language"
+              className="text-xs font-medium"
+            >
+              {lang === 'fa' ? 'EN' : 'فا'}
+            </Button>
             <Button size="sm" variant="ghost" className="gap-1.5 text-xs" onClick={logout}>
               <LogOut className="h-3.5 w-3.5" />
               Log out

@@ -11,6 +11,7 @@ import { ledgerApi } from '@/lib/api'
 import { Label } from '@/components/ui/label'
 import { Money } from '@/components/Money'
 import { cn, formatToman } from '@/lib/utils'
+import { tr, useLang } from '@/lib/i18n'
 
 // react-multi-date-picker ships CJS with BOTH `exports.__esModule = true`
 // and its own `exports.default`. Vite 8's Rolldown bundler compiles a
@@ -47,8 +48,9 @@ function fmtGb(gb: number): string {
 // which legitimately includes ledger rows the raw DB shows as "2026-08-16".
 // Always show the actual UTC boundary next to the picked date so the window
 // is never silently surprising when cross-checked against the ledger.
-function utcBoundary(since: string): string {
-  return `from ${since.replace('T', ' ').slice(0, 16)} UTC`
+function utcBoundary(since: string, lang: 'fa' | 'en'): string {
+  const stamp = since.replace('T', ' ').slice(0, 16)
+  return lang === 'fa' ? `از ${stamp} UTC` : `from ${stamp} UTC`
 }
 
 type BalanceData = {
@@ -75,13 +77,14 @@ type BalanceData = {
  * second exists — a headline that silently omitted the unbilled package read
  * 200,000 next to «Owes now 400,000» for the same account. */
 function OwedBreakdown({ balance }: { balance: BalanceData }) {
+  const [lang] = useLang()
   const pending = balance.pending_amount ?? 0
   if (pending <= 0) return null
   return (
     <span className="whitespace-nowrap text-[11px] text-muted-foreground">
-      = <span className="text-foreground">{formatToman(balance.balance)}</span> invoiced
+      = <span className="text-foreground">{formatToman(balance.balance)}</span> {tr(lang, 'صورت‌حساب‌شده', 'invoiced')}
       {' + '}
-      <span className="text-foreground">{formatToman(pending)}</span> not invoiced yet
+      <span className="text-foreground">{formatToman(pending)}</span> {tr(lang, 'هنوز صورت‌حساب‌نشده', 'not invoiced yet')}
       {balance.pending_gb != null && balance.pending_gb > 0.001 && <> ({fmtGb(balance.pending_gb)} GB)</>}
     </span>
   )
@@ -98,20 +101,22 @@ function OwedBreakdown({ balance }: { balance: BalanceData }) {
  * outside it. Only rendered when since is set and the carried-over amount
  * is non-trivial (a few Toman of rounding noise is not worth a note). */
 function OpeningBalanceNote({ balance }: { balance: BalanceData | undefined }) {
+  const [lang] = useLang()
   if (!balance) return null
   const carried = balance.carried_over_balance ?? 0
   const allTime = balance.all_time_balance ?? null
   if (Math.abs(carried) < 1 || allTime == null) return null
-  const carriedWord = carried > 0 ? 'already owed' : 'already in credit'
+  const carriedWord = carried > 0 ? tr(lang, 'پیش‌تر بدهکار بود', 'already owed') : tr(lang, 'پیش‌تر طلبکار بود', 'already in credit')
   return (
     <span className="flex w-full items-baseline gap-1 whitespace-nowrap text-[11px] text-muted-foreground">
-      includes <span className="text-foreground">{formatToman(Math.abs(carried))}</span> {carriedWord} from before this date —
-      real total owed right now: <Money amount={allTime + (balance.pending_amount ?? 0)} zero="settled" className="text-xs" />
+      {tr(lang, 'شامل', 'includes')} <span className="text-foreground">{formatToman(Math.abs(carried))}</span> {carriedWord} {tr(lang, 'مربوط به قبل از این تاریخ است — بدهی واقعی همین لحظه:', 'from before this date — real total owed right now:')}
+      <Money amount={allTime + (balance.pending_amount ?? 0)} zero="settled" className="text-xs" />
     </span>
   )
 }
 
 function GbSummary({ balance }: { balance: BalanceData | undefined }) {
+  const [lang] = useLang()
   if (!balance) return null
   const { gb_charged, gb_consumed, charged_amount, charged_amount_gb_known, charge_count, charge_count_with_gb, consumed_amount, credited_amount } = balance
   if (!charge_count && gb_charged == null && gb_consumed == null && credited_amount == null) return null
@@ -121,31 +126,35 @@ function GbSummary({ balance }: { balance: BalanceData | undefined }) {
   const partial = charge_count != null && charge_count_with_gb != null && charge_count_with_gb < charge_count
   return (
     <span
-      title="GB is only recorded on some charges (older ones carry none — shown as '—', never as 0). Billed usage covers what was actually BILLED inside this window; the live Marzban counter keeps its own continuous total."
+      title={tr(
+        lang,
+        "GB فقط روی برخی شارژها ثبت می‌شود (قدیمی‌ها هیچ — با «—» نشان داده می‌شوند، هرگز صفر). مصرف صورت‌حساب‌شده فقط آن چیزی است که داخل همین بازه واقعاً صورتحساب شده؛ شمارندهٔ زندهٔ Marzban مجموعهٔ پیوستهٔ خودش را نگه می‌دارد.",
+        "GB is only recorded on some charges (older ones carry none — shown as '—', never as 0). Billed usage covers what was actually BILLED inside this window; the live Marzban counter keeps its own continuous total.",
+      )}
       className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
       {!!charge_count && (
         <span className="whitespace-nowrap">
-          <span className="text-foreground">{charge_count}</span> charge{charge_count === 1 ? '' : 's'}
+          <span className="text-foreground">{charge_count}</span> {tr(lang, 'شارژ', 'charge')}{lang === 'en' && charge_count !== 1 ? 's' : ''}
           {charged_amount != null && <> · {formatToman(charged_amount)}</>}
           {gb_charged != null && (
             <>
-              {' '}— <span className="text-foreground">{fmtGb(gb_charged)} GB</span> recorded
-              {partial && <> on {charge_count_with_gb} of {charge_count}</>}
+              {' '}— <span className="text-foreground">{fmtGb(gb_charged)} GB</span> {tr(lang, 'ثبت‌شده', 'recorded')}
+              {partial && <> {tr(lang, 'روی', 'on')} {charge_count_with_gb} {tr(lang, 'از', 'of')} {charge_count}</>}
               {charged_amount_gb_known != null && partial && <> ({formatToman(charged_amount_gb_known)})</>}
             </>
           )}
-          {gb_charged == null && <> — GB not recorded</>}
+          {gb_charged == null && <> — {tr(lang, 'GB ثبت نشده', 'GB not recorded')}</>}
         </span>
       )}
       {gb_consumed != null && (
         <span className="whitespace-nowrap">
-          <span className="text-foreground">{fmtGb(gb_consumed)} GB</span> billed usage
+          <span className="text-foreground">{fmtGb(gb_consumed)} GB</span> {tr(lang, 'مصرف صورت‌حساب‌شده', 'billed usage')}
           {consumed_amount != null && <> ({formatToman(consumed_amount)})</>}
         </span>
       )}
       {credited_amount != null && (
         <span className="whitespace-nowrap">
-          <span className="text-foreground">{formatToman(credited_amount)}</span> credited
+          <span className="text-foreground">{formatToman(credited_amount)}</span> {tr(lang, 'پرداخت‌شده', 'credited')}
         </span>
       )}
     </span>
@@ -182,6 +191,7 @@ const CALENDARS: Record<CalendarKind, { calendar: typeof persian; locale: typeof
  * which the widget then shows verbatim as its UTC equivalent.
  */
 export function BalanceSinceControl({ scope }: { scope: Scope }) {
+  const [lang] = useLang()
   const [since, setSince] = React.useState('')
   const [calendarKind, setCalendarKind] = React.useState<CalendarKind>('jalali')
 
@@ -196,7 +206,7 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-4 py-2.5 text-xs">
       <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-      <Label className="whitespace-nowrap text-muted-foreground">Balance since</Label>
+      <Label className="whitespace-nowrap text-muted-foreground">{tr(lang, 'مانده از تاریخ', 'Balance since')}</Label>
 
       <div className="inline-flex rounded-md border border-border p-0.5">
         {(Object.keys(CALENDARS) as CalendarKind[]).map((kind) => (
@@ -234,9 +244,9 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
       />
       {since !== '' && (
         <>
-          <span className="whitespace-nowrap text-[11px] text-muted-foreground">{utcBoundary(since)}</span>
+          <span className="whitespace-nowrap text-[11px] text-muted-foreground">{utcBoundary(since, lang)}</span>
           {query.isFetching ? (
-            <span className="text-muted-foreground">Loading…</span>
+            <span className="text-muted-foreground">{tr(lang, 'در حال بارگذاری…', 'Loading…')}</span>
           ) : (
             <>
               <Money
@@ -254,13 +264,17 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
             onClick={() => setSince('')}
             className="text-muted-foreground hover:text-foreground hover:underline"
           >
-            clear
+            {tr(lang, 'پاک‌کردن', 'clear')}
           </button>
         </>
       )}
       {since === '' && (
         <span className="text-muted-foreground">
-          Pick a date — e.g. the last payment — to see what's accrued since then, instead of the all-time total.
+          {tr(
+            lang,
+            'یک تاریخ بردارید — مثلاً آخرین پرداخت — تا آنچه از آن موقع جمع شده را ببینید، نه مجموع کل از همیشه.',
+            "Pick a date — e.g. the last payment — to see what's accrued since then, instead of the all-time total.",
+          )}
         </span>
       )}
     </div>

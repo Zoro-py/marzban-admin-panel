@@ -17,8 +17,8 @@ export function BalanceLookup() {
   const [kind, setKind] = React.useState<EntityKind>('customer')
   const [selectedId, setSelectedId] = React.useState('')
 
-  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: customersApi.list, enabled: kind === 'customer' })
-  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: groupsApi.list, enabled: kind === 'group' })
+  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: () => customersApi.list(), enabled: kind === 'customer' })
+  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: () => groupsApi.list(), enabled: kind === 'group' })
   const accountsQuery = useQuery({ queryKey: ['accounts'], queryFn: () => accountsApi.list(), enabled: kind === 'account' })
 
   const isLoadingOptions =

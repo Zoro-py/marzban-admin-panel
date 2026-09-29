@@ -13,6 +13,7 @@ import { CumulativeChart } from '@/components/history/CumulativeChart'
 import { SummaryTiles } from '@/components/history/SummaryTiles'
 import { DEFAULT_RANGE, RangePicker, isRangeValid, resolveRange } from '@/components/history/RangePicker'
 import type { RangeCode, RangeValue } from '@/components/history/RangePicker'
+import { tr, useLang } from '@/lib/i18n'
 
 const LS_KEY = 'vpn_history_last'
 const RANGE_CODES: RangeCode[] = ['30d', '90d', '6m', 'jm', 'all', 'custom']
@@ -76,6 +77,7 @@ function saveLast(params: URLSearchParams) {
 }
 
 export function ChargeHistoryPage() {
+  const [lang] = useLang()
   React.useEffect(() => {
     document.title = 'Shiraze | History'
   }, [])
@@ -125,14 +127,12 @@ export function ChargeHistoryPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-lg font-semibold tracking-tight">History</h1>
+        <h1 className="text-lg font-semibold tracking-tight">{tr(lang, 'تاریخچه', 'History')}</h1>
         <p className="text-xs text-muted-foreground">
-          Read-only charge history per account — ledger entries, packages and payments over any window.
+          {tr(lang, 'تاریخچهٔ فقط‌خواندنی شارژ هر اکانت — ردیف‌های لجر، بسته‌ها و پرداخت‌ها در هر بازه‌ای.', 'Read-only charge history per account — ledger entries, packages and payments over any window.')}
         </p>
         <p className="text-xs text-muted-foreground">
-          Totals below are charges already posted to the ledger — they do NOT include this cycle&apos;s
-          not-yet-invoiced package/usage, and are not netted against payments. For an account, group or
-          customer&apos;s full current debt, see its own Balance page.
+          {tr(lang, 'جمع‌های پایین فقط شارژهای ثبت‌شده در لجرند — بسته/مصرفِ هنوز صورت‌حساب‌نشدهٔ این سیکل را شامل نمی‌شوند و با پرداخت‌ها خالص نمی‌شوند. بدهی کاملِ فعلی هر اکانت/گروه/مشتری را صفحهٔ Balance خودش نشان می‌دهد.', "Totals below are charges already posted to the ledger — they do NOT include this cycle's not-yet-invoiced package/usage, and are not netted against payments. For an account, group or customer's full current debt, see its own Balance page.")}
         </p>
       </div>
 
@@ -143,30 +143,33 @@ export function ChargeHistoryPage() {
           <RangePicker value={state.range} onChange={patchRange} />
         </div>
         <label className="flex cursor-pointer select-none items-center gap-2 pt-0.5 text-xs">
-          <Checkbox checked={state.credits} onCheckedChange={(v) => setCredits(v === true)} aria-label="Show payments" />
-          Show payments
+          <Checkbox checked={state.credits} onCheckedChange={(v) => setCredits(v === true)} aria-label={tr(lang, 'نمایش پرداخت‌ها', 'Show payments')} />
+          {tr(lang, 'نمایش پرداخت‌ها', 'Show payments')}
         </label>
       </div>
 
       {accountsQuery.isError && (
         <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          Couldn't load accounts — {apiErrorMessage(accountsQuery.error)}
+          {tr(lang, 'بارگذاری اکانت‌ها نشد — ', "Couldn't load accounts — ")}{apiErrorMessage(accountsQuery.error)}
         </p>
       )}
 
       {chargesQuery.isError && (
         <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-          Couldn't load charges — {apiErrorMessage(chargesQuery.error)}
+          {tr(lang, 'بارگذاری شارژها نشد — ', "Couldn't load charges — ")}{apiErrorMessage(chargesQuery.error)}
         </p>
       )}
 
       {state.ids.length === 0 ? (
         <EmptyState
-          title="No accounts selected."
-          description="Pick one or more accounts above — deleted accounts keep their history here."
+          title={tr(lang, 'هیچ اکانتی انتخاب نشده است.', 'No accounts selected.')}
+          description={tr(lang, 'یک یا چند اکانت از بالا بردارید — اکانت‌های حذف‌شده هم تاریخچه‌شان همین‌جا می‌ماند.', 'Pick one or more accounts above — deleted accounts keep their history here.')}
         />
       ) : !rangeUsable ? (
-        <EmptyState title="Waiting on a custom range." description="Set both From and To dates above to load this window." />
+        <EmptyState
+          title={tr(lang, 'در انتظار بازهٔ سفارشی.', 'Waiting on a custom range.')}
+          description={tr(lang, 'هر دو تاریخ From و To را در بالا تنظیم کنید تا این بازه بارگذاری شود.', 'Set both From and To dates above to load this window.')}
+        />
       ) : chargesQuery.isLoading ? (
         <div className="flex flex-col gap-4">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -190,7 +193,7 @@ export function ChargeHistoryPage() {
           <SummaryTiles data={chargesQuery.data} />
           <Card>
             <CardHeader className="pb-1">
-              <CardTitle>Charge timeline</CardTitle>
+              <CardTitle>{tr(lang, 'خط زمان شارژ', 'Charge timeline')}</CardTitle>
             </CardHeader>
             <CardContent>
               <ChargeTimeline data={chargesQuery.data} sinceMs={sinceMs} untilMs={untilMs} />
@@ -198,7 +201,7 @@ export function ChargeHistoryPage() {
           </Card>
           <Card>
             <CardHeader className="pb-1">
-              <CardTitle>Cumulative charges</CardTitle>
+              <CardTitle>{tr(lang, 'شارژ تجمعی', 'Cumulative charges')}</CardTitle>
             </CardHeader>
             <CardContent>
               <CumulativeChart data={chargesQuery.data} sinceMs={sinceMs} untilMs={untilMs} />

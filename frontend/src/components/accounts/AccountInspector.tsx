@@ -783,8 +783,8 @@ function OwnershipSection({ account }: { account: AccountRow }) {
   const [role, setRole] = React.useState<AccountRole>(account.role)
   const invalidate = useInvalidateAccount(account.id)
 
-  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: customersApi.list })
-  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: groupsApi.list })
+  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: () => customersApi.list() })
+  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: () => groupsApi.list() })
 
   const mutation = useMutation({
     mutationFn: () =>

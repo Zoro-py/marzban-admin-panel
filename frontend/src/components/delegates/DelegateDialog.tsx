@@ -49,8 +49,8 @@ function DelegateFields(props: {
   onDurationDays: (v: string) => void
 }) {
   const p = props
-  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: customersApi.list, enabled: p.scopeKind === 'customer' })
-  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: groupsApi.list, enabled: p.scopeKind === 'group' })
+  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: () => customersApi.list(), enabled: p.scopeKind === 'customer' })
+  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: () => groupsApi.list(), enabled: p.scopeKind === 'group' })
 
   return (
     <div className="flex flex-col gap-3">

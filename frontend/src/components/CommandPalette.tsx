@@ -80,8 +80,8 @@ export function CommandPalette() {
   }, [open])
 
   const accountsQuery = useQuery({ queryKey: ['accounts', 'palette'], queryFn: () => accountsApi.list(), enabled: open })
-  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: customersApi.list, enabled: open })
-  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: groupsApi.list, enabled: open })
+  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: () => customersApi.list(), enabled: open })
+  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: () => groupsApi.list(), enabled: open })
 
   const syncMutation = useMutation({
     mutationFn: syncApi.run,

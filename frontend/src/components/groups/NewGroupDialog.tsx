@@ -29,7 +29,7 @@ export function NewGroupDialog() {
   const [billingMode, setBillingMode] = React.useState<BillingMode>('payg')
   const queryClient = useQueryClient()
 
-  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: customersApi.list, enabled: open })
+  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: () => customersApi.list(), enabled: open })
 
   const mutation = useMutation({
     mutationFn: () =>

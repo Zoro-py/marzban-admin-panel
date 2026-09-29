@@ -73,8 +73,8 @@ export function BulkAccountDialog({ defaultCustomerId, defaultGroupId, trigger }
   const [result, setResult] = React.useState<BulkAccountResult | null>(null)
   const queryClient = useQueryClient()
 
-  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: customersApi.list, enabled: open })
-  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: groupsApi.list, enabled: open })
+  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: () => customersApi.list(), enabled: open })
+  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: () => groupsApi.list(), enabled: open })
 
   const trimmedBase = baseName.trim()
   const parsedCount = Number(count)

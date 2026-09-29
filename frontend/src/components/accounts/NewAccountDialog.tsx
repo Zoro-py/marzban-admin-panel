@@ -35,8 +35,8 @@ export function NewAccountDialog({ defaultCustomerId, defaultGroupId, trigger }:
   const [ratePerGb, setRatePerGb] = React.useState('')
   const queryClient = useQueryClient()
 
-  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: customersApi.list, enabled: open })
-  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: groupsApi.list, enabled: open })
+  const customersQuery = useQuery({ queryKey: ['customers'], queryFn: () => customersApi.list(), enabled: open })
+  const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: () => groupsApi.list(), enabled: open })
 
   const mutation = useMutation({
     mutationFn: () =>
