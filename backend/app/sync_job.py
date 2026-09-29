@@ -11,7 +11,7 @@ from app.db import engine
 from app.marzban_client import marzban_client
 from app.models import Account, AccountEvent, BillingMode, Customer, LedgerEntry, LedgerSource, LedgerType, OnlineSnapshot, QueuedPlan, QueuedPlanStatus, utcnow
 from app.notify import notify_admin as _notify_admin
-from app.services import GB, attributable_consumed_gb, billable_bytes, effective_billing_mode, effective_rate, monthly_avg_usage
+from app.services import GB, attributable_consumed_gb, billable_bytes, billing_lock, effective_billing_mode, effective_rate, monthly_avg_usage
 
 PAGE_SIZE = 200
 
@@ -360,69 +360,80 @@ async def _maybe_settle_payg_cap_hit(session: Session, account: Account, now: da
     if remaining_gb > PAYG_CAP_HIT_REMAINING_GB:
         return
 
-    billable_gb = billable_bytes(account, BillingMode.payg) / GB
-    rate = effective_rate(session, account)
-    amount = round(billable_gb * rate, 2)
+    # D8 (2026-09-29, design in docs/proposals/2026-09-28_sync_settle_lock_design.md):
+    # this site reads the meter, posts a charge and resets it — exactly the
+    # window an API settle for the SAME account could interleave into (the
+    # endpoint holds billing_lock; this site held only _sync_lock, a different
+    # lock), double-charging one consumption. The lock spans
+    # read → compute → Marzban reset → write → commit, mirroring what
+    # @serialise_billing endpoints already do (their Marzban calls are inside
+    # the lock too). Lock order is always _sync_lock → billing_lock — no path
+    # takes them the other way around, so no cycle. tests/test_sync_settle_lock.py
+    # reproduces the interleaving deterministically and pins the fix.
+    async with billing_lock:
+        billable_gb = billable_bytes(account, BillingMode.payg) / GB
+        rate = effective_rate(session, account)
+        amount = round(billable_gb * rate, 2)
 
-    charge_note = f"، {amount:g} تومان بابت مصرف این دوره شارژ شد" if amount > 0 else "، چیزی برای شارژ جدید نبود (احتمالاً قبلاً تسویه شده)"
+        charge_note = f"، {amount:g} تومان بابت مصرف این دوره شارژ شد" if amount > 0 else "، چیزی برای شارژ جدید نبود (احتمالاً قبلاً تسویه شده)"
 
-    # The reset comes FIRST. Announcing it beforehand meant that a panel
-    # failure here left the operator with a message saying the account was
-    # unblocked and reset when it was neither.
-    marzban_user = await marzban_client.reset_user(account.marzban_username)
+        # The reset comes FIRST. Announcing it beforehand meant that a panel
+        # failure here left the operator with a message saying the account was
+        # unblocked and reset when it was neither.
+        marzban_user = await marzban_client.reset_user(account.marzban_username)
 
-    # Marzban leaves a capped user 'limited' after a reset: the meter reads 0
-    # but the customer is still cut off, which is the opposite of what both
-    # the message below and the charge above promise. Only if it needs it.
-    if marzban_user.get("status") != "active":
-        try:
-            marzban_user = await marzban_client.modify_user(
-                account.marzban_username, {"status": "active"}
-            ) or marzban_user
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "Reset %s after its cap but could not re-activate it", account.marzban_username)
+        # Marzban leaves a capped user 'limited' after a reset: the meter reads 0
+        # but the customer is still cut off, which is the opposite of what both
+        # the message below and the charge above promise. Only if it needs it.
+        if marzban_user.get("status") != "active":
+            try:
+                marzban_user = await marzban_client.modify_user(
+                    account.marzban_username, {"status": "active"}
+                ) or marzban_user
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Reset %s after its cap but could not re-activate it", account.marzban_username)
 
-    await _notify_admin(
-        f"🚫 اکانت «{account.marzban_username}» به سقف حجمش ({account.data_limit / GB:g} گیگ) رسید و بلاک شده بود"
-        f"{charge_note} — مصرفش تو Marzban صفر شد تا دوباره وصل بشه."
-    )
+        await _notify_admin(
+            f"🚫 اکانت «{account.marzban_username}» به سقف حجمش ({account.data_limit / GB:g} گیگ) رسید و بلاک شده بود"
+            f"{charge_note} — مصرفش تو Marzban صفر شد تا دوباره وصل بشه."
+        )
 
-    if amount > 0:
-        session.add(LedgerEntry(
-            type=LedgerType.charge,
-            amount=amount,
-            customer_id=account.customer_id,
-            group_id=account.group_id,
+        if amount > 0:
+            session.add(LedgerEntry(
+                type=LedgerType.charge,
+                amount=amount,
+                customer_id=account.customer_id,
+                group_id=account.group_id,
+                account_id=account.id,
+                note=f"Payg cap hit — usage reset ({now.date().isoformat()})",
+                source=LedgerSource.sync,
+                date=now,
+                # Payg bills exactly what was consumed — the two GB figures are
+                # the same by definition here.
+                gb_amount=round(billable_gb, 3),
+                consumed_gb=round(billable_gb, 3),
+                consumed_amount=amount,
+            ))
+
+        account.used_traffic = marzban_user.get("used_traffic", 0)
+        account.lifetime_used_traffic = marzban_user.get("lifetime_used_traffic", account.lifetime_used_traffic)
+        account.expire = marzban_user.get("expire", account.expire)
+        account.data_limit = marzban_user.get("data_limit", account.data_limit)
+        account.status = marzban_user.get("status", account.status)
+        account.usage_baseline = account.used_traffic
+        account.usage_baseline_at = now
+        account.last_synced_at = now
+        session.add(account)
+
+        session.add(AccountEvent(
             account_id=account.id,
-            note=f"Payg cap hit — usage reset ({now.date().isoformat()})",
-            source=LedgerSource.sync,
+            action="payg_cap_hit_reset",
+            detail=f"Hit data cap, auto-reset. Charged {amount:g}." if amount > 0 else "Hit data cap, auto-reset. Nothing new to charge.",
             date=now,
-            # Payg bills exactly what was consumed — the two GB figures are
-            # the same by definition here.
-            gb_amount=round(billable_gb, 3),
-            consumed_gb=round(billable_gb, 3),
-            consumed_amount=amount,
+            source=LedgerSource.sync,
         ))
-
-    account.used_traffic = marzban_user.get("used_traffic", 0)
-    account.lifetime_used_traffic = marzban_user.get("lifetime_used_traffic", account.lifetime_used_traffic)
-    account.expire = marzban_user.get("expire", account.expire)
-    account.data_limit = marzban_user.get("data_limit", account.data_limit)
-    account.status = marzban_user.get("status", account.status)
-    account.usage_baseline = account.used_traffic
-    account.usage_baseline_at = now
-    account.last_synced_at = now
-    session.add(account)
-
-    session.add(AccountEvent(
-        account_id=account.id,
-        action="payg_cap_hit_reset",
-        detail=f"Hit data cap, auto-reset. Charged {amount:g}." if amount > 0 else "Hit data cap, auto-reset. Nothing new to charge.",
-        date=now,
-        source=LedgerSource.sync,
-    ))
-    session.commit()
+        session.commit()
 
 
 # An account counts as "currently online" if Marzban reported a connection
@@ -501,102 +512,111 @@ async def _activate_next_plan(session: Session, account: Account, plan: QueuedPl
     """
     log = logging.getLogger(__name__)
 
-    # Step 1: what the old plan still owes, from the CURRENT (pre-reset) state.
-    old_mode = effective_billing_mode(session, account)
-    old_billable = billable_bytes(account, old_mode)
-    old_rate = effective_rate(session, account)
-    old_amount = round((old_billable / GB) * old_rate, 2)
+    # D8 (2026-09-29): same lock discipline as _maybe_settle_payg_cap_hit —
+    # the read of the old plan's meter through the commit that pairs the
+    # charge with the reset is one critical section. Without the lock an API
+    # settle for this account could interleave at the Marzban await below and
+    # invoice the SAME ended package this function is about to auto-settle
+    # (tests/test_sync_settle_lock.py scenario 2). _sync_lock is already held
+    # by the sync run; the order _sync_lock → billing_lock is the only order
+    # any code path ever takes these two locks.
+    async with billing_lock:
+        # Step 1: what the old plan still owes, from the CURRENT (pre-reset) state.
+        old_mode = effective_billing_mode(session, account)
+        old_billable = billable_bytes(account, old_mode)
+        old_rate = effective_rate(session, account)
+        old_amount = round((old_billable / GB) * old_rate, 2)
 
-    # Step 2: Call Marzban API — new limits + reactivate + reset usage
-    new_data_limit = round(plan.data_limit_gb * GB)
-    new_expire = int(time.time()) + plan.duration_days * 86400
+        # Step 2: Call Marzban API — new limits + reactivate + reset usage
+        new_data_limit = round(plan.data_limit_gb * GB)
+        new_expire = int(time.time()) + plan.duration_days * 86400
 
-    await marzban_client.modify_user(account.marzban_username, {
-        "data_limit": new_data_limit,
-        "expire": new_expire,
-        "status": "active",
-    })
-    # The reset is the SECOND call, and failing it used to abort the whole
-    # activation: Marzban was already carrying the new plan and reporting the
-    # account active, so the next sync's expired/limited guard never fired
-    # again — the plan stayed pending forever and the ended one was never
-    # billed. A failure here is therefore recorded, not raised: the only
-    # thing missing is the zeroed meter, and the baseline below accounts for
-    # exactly that.
-    reset_failed = False
-    try:
-        await marzban_client.reset_user(account.marzban_username)
-    except Exception:
-        reset_failed = True
-        log.exception("Activated the next plan for %s but could not zero its usage",
-                      account.marzban_username)
+        await marzban_client.modify_user(account.marzban_username, {
+            "data_limit": new_data_limit,
+            "expire": new_expire,
+            "status": "active",
+        })
+        # The reset is the SECOND call, and failing it used to abort the whole
+        # activation: Marzban was already carrying the new plan and reporting the
+        # account active, so the next sync's expired/limited guard never fired
+        # again — the plan stayed pending forever and the ended one was never
+        # billed. A failure here is therefore recorded, not raised: the only
+        # thing missing is the zeroed meter, and the baseline below accounts for
+        # exactly that.
+        reset_failed = False
+        try:
+            await marzban_client.reset_user(account.marzban_username)
+        except Exception:
+            reset_failed = True
+            log.exception("Activated the next plan for %s but could not zero its usage",
+                          account.marzban_username)
 
-    # Step 3: Marzban accepted the new plan — record it locally.
-    # Charged on account_id alone, with no `customer_id is not None` guard:
-    # MoneyBook attributes an entry with account_id set to that account
-    # regardless of customer_id (see its "ONE OWNER PER ENTRY" header), so
-    # skipping the charge for an unassigned account would reset its usage to
-    # zero while silently billing nobody for the plan that just ended.
-    if old_amount > 0:
-        # Captured BEFORE the reset below zeroes the meter —
-        # account.used_traffic is still the pre-reset reading here.
-        old_consumed_gb = attributable_consumed_gb(session, account)
-        session.add(LedgerEntry(
-            type=LedgerType.charge,
-            amount=old_amount,
-            customer_id=account.customer_id,
-            group_id=account.group_id,
+        # Step 3: Marzban accepted the new plan — record it locally.
+        # Charged on account_id alone, with no `customer_id is not None` guard:
+        # MoneyBook attributes an entry with account_id set to that account
+        # regardless of customer_id (see its "ONE OWNER PER ENTRY" header), so
+        # skipping the charge for an unassigned account would reset its usage to
+        # zero while silently billing nobody for the plan that just ended.
+        if old_amount > 0:
+            # Captured BEFORE the reset below zeroes the meter —
+            # account.used_traffic is still the pre-reset reading here.
+            old_consumed_gb = attributable_consumed_gb(session, account)
+            session.add(LedgerEntry(
+                type=LedgerType.charge,
+                amount=old_amount,
+                customer_id=account.customer_id,
+                group_id=account.group_id,
+                account_id=account.id,
+                note=f"Auto-settled: plan ended ({now.date().isoformat()}), next plan activating",
+                source=LedgerSource.sync,
+                date=now,
+                gb_amount=round(old_billable / GB, 3),
+                # Attribute the ended plan's consumption — usage accrued since
+                # the meter's current epoch started, minus what mid-plan
+                # settles already attributed.
+                consumed_gb=old_consumed_gb,
+                consumed_amount=round(old_consumed_gb * old_rate, 2),
+            ))
+            log.info("Auto-settled %s: charged %.2f for ended plan", account.marzban_username, old_amount)
+
+        account.data_limit = new_data_limit
+        account.expire = new_expire
+        # When the meter was NOT zeroed, the counter keeps running from where the
+        # old plan left it. Pretending otherwise would bill the new plan for the
+        # old plan's traffic, which was just settled above.
+        if not reset_failed:
+            account.used_traffic = 0
+        account.status = "active"
+        # None means keep whatever billing_mode the account has right now — not
+        # whatever it was when the plan was queued, since an operator could have
+        # changed it via BillingSection in the meantime.
+        if plan.billing_mode is not None:
+            account.billing_mode = plan.billing_mode
+        # Measured from wherever the meter actually stands: 0 after a real reset,
+        # the surviving counter when the reset failed.
+        account.usage_baseline = 0 if not reset_failed else account.used_traffic
+        account.usage_baseline_at = now
+        account.billed_data_limit = 0
+        account.last_synced_at = now
+        session.add(account)
+
+        plan.status = QueuedPlanStatus.activated
+        plan.activated_at = now
+        session.add(plan)
+
+        mode_note = f" | switched to {plan.billing_mode.value}" if plan.billing_mode else ""
+        session.add(AccountEvent(
             account_id=account.id,
-            note=f"Auto-settled: plan ended ({now.date().isoformat()}), next plan activating",
-            source=LedgerSource.sync,
+            action="next_plan_activated",
+            detail=f"Auto-activated: {plan.data_limit_gb} GB / {plan.duration_days} days"
+            f" (old plan billed {old_amount}){mode_note}"
+            + (" | usage was NOT reset in Marzban" if reset_failed else ""),
             date=now,
-            gb_amount=round(old_billable / GB, 3),
-            # Attribute the ended plan's consumption — usage accrued since
-            # the meter's current epoch started, minus what mid-plan
-            # settles already attributed.
-            consumed_gb=old_consumed_gb,
-            consumed_amount=round(old_consumed_gb * old_rate, 2),
+            source=LedgerSource.sync,
         ))
-        log.info("Auto-settled %s: charged %.2f for ended plan", account.marzban_username, old_amount)
 
-    account.data_limit = new_data_limit
-    account.expire = new_expire
-    # When the meter was NOT zeroed, the counter keeps running from where the
-    # old plan left it. Pretending otherwise would bill the new plan for the
-    # old plan's traffic, which was just settled above.
-    if not reset_failed:
-        account.used_traffic = 0
-    account.status = "active"
-    # None means keep whatever billing_mode the account has right now — not
-    # whatever it was when the plan was queued, since an operator could have
-    # changed it via BillingSection in the meantime.
-    if plan.billing_mode is not None:
-        account.billing_mode = plan.billing_mode
-    # Measured from wherever the meter actually stands: 0 after a real reset,
-    # the surviving counter when the reset failed.
-    account.usage_baseline = 0 if not reset_failed else account.used_traffic
-    account.usage_baseline_at = now
-    account.billed_data_limit = 0
-    account.last_synced_at = now
-    session.add(account)
-
-    plan.status = QueuedPlanStatus.activated
-    plan.activated_at = now
-    session.add(plan)
-
-    mode_note = f" | switched to {plan.billing_mode.value}" if plan.billing_mode else ""
-    session.add(AccountEvent(
-        account_id=account.id,
-        action="next_plan_activated",
-        detail=f"Auto-activated: {plan.data_limit_gb} GB / {plan.duration_days} days"
-        f" (old plan billed {old_amount}){mode_note}"
-        + (" | usage was NOT reset in Marzban" if reset_failed else ""),
-        date=now,
-        source=LedgerSource.sync,
-    ))
-
-    # Step 4: pair the local record durably with the irreversible Marzban call.
-    session.commit()
+        # Step 4: pair the local record durably with the irreversible Marzban call.
+        session.commit()
 
     log.info("Activated next plan for %s: %.1f GB / %d days", account.marzban_username, plan.data_limit_gb, plan.duration_days)
 
