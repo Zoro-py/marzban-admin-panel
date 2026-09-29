@@ -629,6 +629,10 @@ async def reset_group_cycle(group_id: int, session: Session = Depends(get_sessio
     cycle was to charge the computed pending amount, which double-bills a
     group whose members already paid outside the ledger.
 
+    PAYG GROUPS ONLY (guarded since 2026-09-29): on a prepay group the same
+    gesture would mark packages billed with no charge and zero meters — see
+    the guard below for the money-safe prepay paths instead.
+
     Also resets each member's live usage counter in Marzban: once a cycle is
     paid for, there's no reason its usage should keep counting against the
     next one. This is attempted per member and never allowed to block the
@@ -644,6 +648,25 @@ async def reset_group_cycle(group_id: int, session: Session = Depends(get_sessio
     group = session.get(Group, group_id)
     if not group:
         raise HTTPException(404, "Group not found")
+
+    # 2026-09-29 checklist (area 2.6): on a PREPAY group this endpoint used
+    # to run its generic "close the cycle, collect nothing" path — which
+    # marked every member's package fully billed with NO charge posted AND
+    # zeroed their live meters (DOMAIN §3's forbidden direction twice over:
+    # unsold inventory marked invoiced, plus a free second allowance).
+    # Red-tested damage before this guard: pending 100,000 -> 0, zero ledger
+    # rows, meters at 0. Prepay packages have dedicated money-safe paths:
+    # settle (charges the package), adjust + bill_added_gb (records a
+    # package sold outside the ledger), or the per-account reset for one
+    # account. The monthly job only ever calls this shape for payg groups,
+    # so the refusal cannot break automation.
+    if group.billing_mode != BillingMode.payg:
+        raise HTTPException(
+            400,
+            "reset-cycle only applies to pay-as-you-go groups. For a prepay group, "
+            "settle it (that charges the package), or use the account's adjust with "
+            "'record a debt' for a package already paid outside the ledger.",
+        )
 
     accounts = session.exec(select(Account).where(Account.group_id == group_id, Account.deleted_at.is_(None))).all()
     lines = _invoice_lines(session, accounts, group)
