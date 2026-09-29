@@ -66,23 +66,54 @@ type BalanceData = {
   charge_count_with_gb?: number | null
   consumed_amount: number | null
   credited_amount: number | null
-  // Window-blind real balance + what was already posted before `since` — see
-  // OpeningBalanceNote below for why the window figure alone can mislead.
+  // Window-blind real balance + what was already posted before `since`.
+  // The headline renders all_time_balance + pending — the same figure the
+  // page's «Owes now» card carries — never the window's net_owed; see
+  // realOwedNow below.
   all_time_balance?: number | null
   carried_over_balance?: number | null
 }
 
-/** What the headline is made of, so it can be checked against «Owes now»:
- * invoiced-in-window + not-invoiced-yet. Both parts always shown when the
- * second exists — a headline that silently omitted the unbilled package read
- * 200,000 next to «Owes now 400,000» for the same account. */
-function OwedBreakdown({ balance }: { balance: BalanceData }) {
+/** The big colored headline's amount: what the scope owes RIGHT NOW —
+ * all-time posted balance + pending — by construction the exact number
+ * «Owes now» shows on this page. Computing the headline from the window
+ * (net_owed) instead could point the OPPOSITE way: Mokaramat_YAZDi_new
+ * (2026-09-29) read "149,919 T cr" in big violet while the same page's
+ * card said "Owes now 163,013 T" — a payment inside the window had
+ * settled charges from before it, flipping the window negative while the
+ * real all-time debt sat unchanged above it. Falls back to the window
+ * figure only when an older backend omits all_time_balance (net_owed
+ * already includes pending — do not add it twice). */
+function realOwedNow(data: BalanceData): number {
+  const pending = data.pending_amount ?? 0
+  const owed = data.all_time_balance != null
+    ? data.all_time_balance + pending
+    : (data.net_owed ?? data.balance + pending)
+  return Math.round(owed * 100) / 100
+}
+
+/** What the WINDOW's net change is made of: invoiced-in-window + not
+ * invoiced yet. When nothing is carried over from before the window it
+ * sums exactly to the headline and the leading "=" reads it as the
+ * headline's composition (the majority case — carried_over is then
+ * rounding noise at most). When a pre-window balance IS carried in, the
+ * window figure no longer sums to anything visible, so it is labeled as
+ * the window's net change instead of wearing "=", and it must never take
+ * headline color/weight: it once read "149,919 T cr" while the account's
+ * real owed figure was 163,013 T (Mokaramat_YAZDi_new, 2026-09-29). Both
+ * parts always shown when the second exists — a breakdown that silently
+ * omitted the unbilled package read 200,000 next to «Owes now 400,000»
+ * for the same account. */
+function OwedBreakdown({ balance, sumsToHeadline }: { balance: BalanceData; sumsToHeadline: boolean }) {
   const [lang] = useLang()
   const pending = balance.pending_amount ?? 0
   if (pending <= 0) return null
   return (
     <span className="whitespace-nowrap text-[11px] text-muted-foreground">
-      = <span className="text-foreground">{formatToman(balance.balance)}</span> {tr(lang, 'صورت‌حساب‌شده', 'invoiced')}
+      {sumsToHeadline
+        ? '= '
+        : <>{tr(lang, 'تغییر این بازه:', 'window net change:')} </>}
+      <span className="text-foreground">{formatToman(balance.balance)}</span> {tr(lang, 'صورت‌حساب‌شده', 'invoiced')}
       {' + '}
       <span className="text-foreground">{formatToman(pending)}</span> {tr(lang, 'هنوز صورت‌حساب‌نشده', 'not invoiced yet')}
       {balance.pending_gb != null && balance.pending_gb > 0.001 && <> ({fmtGb(balance.pending_gb)} GB)</>}
@@ -94,11 +125,10 @@ function OwedBreakdown({ balance }: { balance: BalanceData }) {
  * charge from BEFORE it (the payment and the charge it settles rarely land
  * on the same date) — the window then nets negative and reads like a refund
  * owed, even though the scope's real, all-time balance is still positive.
- * Surfaces that gap explicitly instead of letting the window figure alone
- * be mistaken for "the balance": a real case read "-381,472 T" (looks like
- * we owe the customer) here while their actual total owed was +154,047 T —
- * a single payment inside the window had settled three older charges from
- * outside it. Only rendered when since is set and the carried-over amount
+ * The headline already shows that real, all-time figure (identical to
+ * «Owes now»), so this note's only remaining job is explaining WHY the
+ * window's net change below differs from it: the carried-over opening
+ * balance. Only rendered when since is set and the carried-over amount
  * is non-trivial (a few Toman of rounding noise is not worth a note). */
 function OpeningBalanceNote({ balance }: { balance: BalanceData | undefined }) {
   const [lang] = useLang()
@@ -109,8 +139,7 @@ function OpeningBalanceNote({ balance }: { balance: BalanceData | undefined }) {
   const carriedWord = carried > 0 ? tr(lang, 'پیش‌تر بدهکار بود', 'already owed') : tr(lang, 'پیش‌تر طلبکار بود', 'already in credit')
   return (
     <span className="flex w-full items-baseline gap-1 whitespace-nowrap text-[11px] text-muted-foreground">
-      {tr(lang, 'شامل', 'includes')} <span className="text-foreground">{formatToman(Math.abs(carried))}</span> {carriedWord} {tr(lang, 'مربوط به قبل از این تاریخ است — بدهی واقعی همین لحظه:', 'from before this date — real total owed right now:')}
-      <Money amount={allTime + (balance.pending_amount ?? 0)} zero="settled" className="text-xs" />
+      {tr(lang, 'شامل', 'includes')} <span className="text-foreground">{formatToman(Math.abs(carried))}</span> {carriedWord} {tr(lang, 'مربوط به قبل از این تاریخ است', 'from before this date')}
     </span>
   )
 }
@@ -189,6 +218,15 @@ const CALENDARS: Record<CalendarKind, { calendar: typeof persian; locale: typeof
  * first 4 hours of the very day the operator asked for. Zeroing the time
  * makes the boundary deterministic: local midnight of the picked day,
  * which the widget then shows verbatim as its UTC equivalent.
+ *
+ * The big colored figure shown once a date is picked is the scope's REAL
+ * owed-now amount (all_time_balance + pending — the same number the
+ * page's «Owes now» card carries, see realOwedNow), never the window's
+ * net change. The window figure stays below as a labeled gray line: a
+ * payment inside the window that settles a pre-window charge flips the
+ * window negative, and a headline allowed to point the opposite way from
+ * «Owes now» on the same page would misread a debtor as a creditor
+ * (owner report 2026-09-29, Mokaramat_YAZDi_new).
  */
 export function BalanceSinceControl({ scope }: { scope: Scope }) {
   const [lang] = useLang()
@@ -250,11 +288,16 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
           ) : (
             <>
               <Money
-                amount={query.data ? (query.data.net_owed ?? query.data.balance + (query.data.pending_amount ?? 0)) : 0}
+                amount={query.data ? realOwedNow(query.data) : 0}
                 zero="settled"
                 className="text-sm"
               />
-              {query.data && <OwedBreakdown balance={query.data} />}
+              {query.data && (
+                <OwedBreakdown
+                  balance={query.data}
+                  sumsToHeadline={Math.abs(query.data.carried_over_balance ?? 0) < 1}
+                />
+              )}
               <GbSummary balance={query.data} />
               <OpeningBalanceNote balance={query.data} />
             </>
