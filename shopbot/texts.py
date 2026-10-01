@@ -326,12 +326,32 @@ WALLET_EMPTY = (
 NO_ACCOUNTS = f"هنوز سرویسی نگرفته‌اید. از «{MENU_BUY}» شروع کنید."
 
 
+def usage_bar(used_gb: float, total_gb: float, width: int = 10) -> str:
+    """A ten-segment filled/empty bar. The customer's eye reads shape before
+    it reads numbers — "how full is this thing" must be answerable at a
+    glance, not by subtracting two decimals."""
+    if total_gb <= 0:
+        filled = width
+    else:
+        filled = round(min(1.0, used_gb / total_gb) * width)
+    return "▰" * filled + "▱" * (width - filled)
+
+
 def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional[int]) -> str:
     """One subscription, named by what it IS rather than by its panel username.
 
     The previous version printed the raw Marzban username — a Latin identifier
     the customer cannot use, cannot read, and which leaked the panel
     software's name into a consumer screen.
+
+    Three renderings by state, because one shape cannot fit all:
+      capped + volume left  → bar, remaining gigabytes FIRST (that is the
+                              number they act on), then the percentage
+      capped + volume gone  → plainly finished, no bar to squint at
+      unlimited             → no bar and no percentage at ALL — dividing by
+                              a fabricated cap is how a name-unlimited
+                              service got shown as "94% used" (live
+                              2026-10-01). Usage is a plain "so far" figure.
     """
     if days_left is None:
         life = "بدون انقضا"
@@ -339,10 +359,14 @@ def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional
         life = "تمام شده"
     else:
         life = f"{fa(days_left)} روز مانده"
-    used = fa(round(used_gb, 2))
     if volume_gb is None:
-        return f"🔑 سرویس نامحدود\nمصرف: {used} گیگ · {life}"
-    return f"🔑 سرویس {gb(volume_gb)}\nمصرف: {used} از {fa(volume_gb)} گیگ · {life}"
+        return f"🔑 سرویس نامحدود\nمصرف تا امروز: {fa(round(used_gb, 2))} گیگ\n{life}"
+    remaining = max(0.0, volume_gb - used_gb)
+    if remaining <= 0:
+        return f"🔑 سرویس {gb(volume_gb)}\n🔴 حجم سرویس تمام شد\n{life}"
+    pct = int(used_gb * 100 / volume_gb) if volume_gb else 0
+    bar = f"{usage_bar(used_gb, volume_gb)} {fa(round(remaining, 2))} گیگ باقی مانده ({fa(pct)}٪ مصرف شده)"
+    return f"🔑 سرویس {gb(volume_gb)}\n{bar}\n{life}"
 
 
 # ── outcomes & errors ─────────────────────────────────────────────────────
@@ -443,3 +467,14 @@ def link_welcome(customer_name: str, accounts_linked: int) -> str:
         f"برای تمدید هم کافی است از «{MENU_BUY}» خرید کنید — حجم تازه به همان سرویس فعلی‌تان "
         "اضافه می‌شود و لینکی که در برنامه دارید بدون تغییر کار می‌کند."
     )
+
+
+# The unlimited-service refusal (backend 409 "SERVICE_IS_UNLIMITED"). Leads
+# with the fact, then the two things an anxious customer needs: no money
+# moved, and there IS a path for the rare case they actually want a second
+# service.
+SERVICE_UNLIMITED = (
+    "سرویس فعلی شما نامحدود است و حجم اضافه نمی‌خواهد — برای همین خریدی ثبت نشد "
+    "و پولی از کیف پولتان کم نشد.\n"
+    "اگر برای دستگاه دیگری سرویس جداگانه می‌خواهید، به پشتیبانی پیام بدهید تا برایتان بسازیم."
+)

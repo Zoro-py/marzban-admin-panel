@@ -437,7 +437,14 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
             "telegram_id": update.effective_user.id,
             "data_limit_gb": volume,
         })
-    except ShopApiError:
+    except ShopApiError as exc:
+        if getattr(exc, "status", 0) == 409 and "SERVICE_IS_UNLIMITED" in str(exc):
+            # Their current service has no cap — a volume purchase has nothing
+            # to add to it, and the backend refused before any money moved.
+            # This is a "you don't need this", not an error.
+            context.user_data.clear()
+            await _reply(update, texts.SERVICE_UNLIMITED, session)
+            return
         logger.exception("Could not create an order for %s", update.effective_user.id)
         context.user_data.clear()
         await _reply(update, texts.generic_error(_handle(session)), session)
@@ -767,12 +774,18 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # came out as 0 and was shown to its owner as finished.
             days_left = -(-int(seconds) // 86400) if seconds > 0 else 0
         lines = [texts.account_line(limit_gb, used_gb, days_left)]
+        keyboard = None
         if row["subscription_url"]:
-            # On its own line: a Latin URL inline with Persian text gets
-            # reordered by bidirectional rendering and can be copied wrong.
-            lines.append("")
-            lines.append(row["subscription_url"])
-        await update.effective_message.reply_text("\n".join(lines))
+            # An inline URL BUTTON, not the raw link: subscription URLs churn
+            # on every panel-side modify (live 2026-10-01 — three different
+            # tokens in one hour), and a Latin URL printed inside Persian
+            # text gets bidi-reordered and copied wrong. A button always
+            # opens the CURRENT url without pasting anything into the chat.
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🔗 لینک اشتراک", url=row["subscription_url"])]]
+            )
+        await update.effective_message.reply_text("\n".join(lines), reply_markup=keyboard)
 
     await _reply(update, texts.wallet_summary(session["balance"]), session)
 
