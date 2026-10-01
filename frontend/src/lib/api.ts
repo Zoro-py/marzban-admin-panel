@@ -31,6 +31,8 @@ import type {
   ReportSummary,
   ShopOrder,
   ShopSettings,
+  ShopLinkInvite,
+  ShopLinkState,
   ShopTopup,
   ShopTopupStatus,
   ShopUser,
@@ -336,6 +338,23 @@ export const shopApi = {
   rejectTopup: async (id: number, reason?: string) =>
     (await api.post<ShopTopup>(`/api/shop/topups/${id}/reject`, reason ? { reason } : {})).data,
   orders: async () => (await api.get<ShopOrder[]>('/api/shop/orders')).data,
+  // ---- linking an EXISTING customer to the shop bot ----
+  // All four are operator-only (JWT) and move no money: they bind/unbind the
+  // Customer row to a shop identity. 409s carry the refusing rule as their
+  // detail (payg billing, group representative, already linked, pending
+  // invite exists) — shown to the operator verbatim via apiErrorMessage.
+  linkState: async (customerId: number) =>
+    (await api.get<ShopLinkState>(`/api/shop/link/${customerId}`)).data,
+  inviteLink: async (customerId: number) =>
+    (await api.post<ShopLinkInvite>('/api/shop/link-invite', { customer_id: customerId })).data,
+  // Discards a still-PENDING invite (the deep link dies). A claimed link
+  // must go through unlinkLink instead (backend 409s here).
+  discardLinkInvite: async (customerId: number) =>
+    (await api.delete<{ ok: boolean }>(`/api/shop/link-invite/${customerId}`)).data,
+  // The off-switch: clears the customer-side link, leaving the ShopUser, its
+  // wallet and every account row untouched.
+  unlinkLink: async (customerId: number) =>
+    (await api.delete<{ ok: boolean }>(`/api/shop/link/${customerId}`)).data,
 }
 
 // ---- server monitoring (dashboard view of scripts/monitor agents) ----

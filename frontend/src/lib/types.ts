@@ -540,6 +540,38 @@ export interface ShopOrder {
   display_name: string | null
 }
 
+// ---- shop-bot link for an existing customer (GET /api/shop/link/{id}) ----
+// Mirrors schemas.ShopLinkState exactly. The customer-side of binding a
+// hand-created customer to the shop bot (models.Customer.shop_user_id):
+// 'not_linked' → nothing on the row; 'pending' → a one-time invite exists
+// (invite_url/claim_expires_at populated); 'linked' → claimed, the customer's
+// accounts show in the bot's «سرویس‌های من» and purchases renew in place.
+export type ShopLinkStatus = 'not_linked' | 'pending' | 'linked'
+
+export interface ShopLinkState {
+  customer_id: number
+  customer_name: string
+  status: ShopLinkStatus
+  // Only on a pending invite — a claimed link is a dead link (the token is
+  // cleared on claim), same rule as DelegateRead.invite_url.
+  invite_url: string | null
+  claim_expires_at: string | null
+  linked_telegram_id: number | null
+  linked_at: string | null
+  // How many of the customer's accounts the bot now shows (live accounts —
+  // deleted-from-Marzban ones are excluded server-side).
+  accounts_linked: number
+}
+
+// Response of POST /api/shop/link-invite (mirrors schemas.ShopLinkInviteRead —
+// the minted deep link plus whose row it binds).
+export interface ShopLinkInvite {
+  customer_id: number
+  customer_name: string
+  invite_url: string
+  claim_expires_at: string
+}
+
 // ---- delegates (operator-granted self-service via delegate_bot) ----
 // Mirrors schemas.DelegateRead: exactly one of customer_id/group_id is set —
 // the delegate's scope. See backend models.Delegate for the trust-boundary

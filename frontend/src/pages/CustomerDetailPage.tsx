@@ -9,6 +9,7 @@ import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
 import { BalanceSinceControl } from '@/components/BalanceSinceControl'
 import { ChargeHistoryPreview } from '@/components/history/ChargeHistoryPreview'
+import { ShopLinkCard } from '@/components/shop/ShopLinkCard'
 import { UsageBar } from '@/components/UsageBar'
 import { Money } from '@/components/Money'
 import { StatusDot } from '@/components/StatusDot'
@@ -60,6 +61,11 @@ export function CustomerDetailPage() {
       </div>
 
       <BalanceSinceControl scope={{ customer_id: customerId }} />
+
+      {/* Shop-bot link (models.Customer.shop_user_id): invite / pending /
+          connected — the operator's way to hand this customer's EXISTING
+          accounts to the shop bot without typing a telegram id. */}
+      <ShopLinkCard customerId={customerId} />
 
       {/* Charges across everything this customer owns, directly — zero
           accounts renders nothing (see ChargeHistoryPreview). */}
