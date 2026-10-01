@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ShieldCheck, UserCog } from 'lucide-react'
+import { Clock, Link2, ShieldCheck, UserCog } from 'lucide-react'
 import { delegatesApi, apiErrorMessage } from '@/lib/api'
 import type { Delegate } from '@/lib/types'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -10,7 +10,17 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { DelegateDialog } from '@/components/delegates/DelegateDialog'
-import { formatToman } from '@/lib/utils'
+import { InviteDelegateDialog } from '@/components/delegates/InviteDelegateDialog'
+import { formatDate, formatToman } from '@/lib/utils'
+
+// Same copy flow as BulkAccountDialog's onCopy — no shared clipboard helper
+// exists in the app, each surface wires navigator.clipboard inline.
+function copyInviteLink(text: string) {
+  navigator.clipboard?.writeText(text).then(
+    () => toast.success('Invite link copied'),
+    () => toast.error('Could not copy the invite link'),
+  )
+}
 
 function ScopeCell({ delegate }: { delegate: Delegate }) {
   return (
@@ -41,13 +51,30 @@ export function DelegatesPage() {
   })
 
   const reactivateMutation = useMutation({
-    mutationFn: (d: Delegate) =>
+    mutationFn: (d: Delegate) => {
       // Re-granting is the same partial upsert the bot's /delegate_add uses:
       // posting just the telegram_id re-activates the row and touches nothing
-      // else — the operator's configured limits all survive.
-      delegatesApi.upsert({ telegram_id: d.telegram_id }),
+      // else — the operator's configured limits all survive. Unreachable for a
+      // PENDING invite row (the Re-grant button only renders for claimed
+      // rows) — the guard keeps the nullable telegram_id honest at runtime.
+      if (d.telegram_id == null) {
+        return Promise.reject(new Error('This invite has not been claimed yet'))
+      }
+      return delegatesApi.upsert({ telegram_id: d.telegram_id })
+    },
     onSuccess: (d) => {
+      // The upsert response always carries a non-null telegram_id (the
+      // backend requires it), so the interpolation below can't render "null".
       toast.success(`Delegate access re-granted to ${d.scope_name} (Telegram id ${d.telegram_id}).`)
+      queryClient.invalidateQueries({ queryKey: ['delegates'] })
+    },
+    onError: (err) => toast.error(apiErrorMessage(err)),
+  })
+
+  const discardMutation = useMutation({
+    mutationFn: (d: Delegate) => delegatesApi.revokeInvite(d.id),
+    onSuccess: (_res, d) => {
+      toast.success(`Pending invite for ${d.scope_name} discarded — the link no longer works.`)
       queryClient.invalidateQueries({ queryKey: ['delegates'] })
     },
     onError: (err) => toast.error(apiErrorMessage(err)),
@@ -63,13 +90,22 @@ export function DelegatesPage() {
             never any visibility into money or other customers.
           </p>
         </div>
-        <DelegateDialog
-          trigger={
-            <Button size="sm" className="gap-1.5">
-              <UserCog className="h-4 w-4" /> New delegate
-            </Button>
-          }
-        />
+        <div className="flex items-center gap-2">
+          <InviteDelegateDialog
+            trigger={
+              <Button size="sm" variant="outline" className="gap-1.5">
+                <Link2 className="h-4 w-4" /> Invite
+              </Button>
+            }
+          />
+          <DelegateDialog
+            trigger={
+              <Button size="sm" className="gap-1.5">
+                <UserCog className="h-4 w-4" /> New delegate
+              </Button>
+            }
+          />
+        </div>
       </div>
 
       <div className="overflow-hidden rounded-lg border border-border bg-card">
@@ -124,7 +160,9 @@ export function DelegatesPage() {
                     {d.label && <span className="text-[11px] text-muted-foreground">{d.label}</span>}
                   </span>
                 </TableCell>
-                <TableCell className="hidden font-mono text-xs tabular-nums sm:table-cell">{d.telegram_id}</TableCell>
+                <TableCell className="hidden font-mono text-xs tabular-nums sm:table-cell">
+                  {d.telegram_id === null ? <span className="text-muted-foreground">pending</span> : d.telegram_id}
+                </TableCell>
                 <TableCell className="hidden md:table-cell">
                   {d.credit_limit != null ? (
                     <span className="tabular-nums">{formatToman(d.credit_limit)}</span>
@@ -143,50 +181,94 @@ export function DelegatesPage() {
                 </TableCell>
                 <TableCell className="text-right">
                   <span className="flex items-center justify-end gap-1.5">
-                    {d.is_active ? (
-                      <Badge>
-                        <ShieldCheck className="h-3 w-3" /> active
-                      </Badge>
-                    ) : (
-                      <Badge variant="warning">revoked</Badge>
-                    )}
-                    <DelegateDialog
-                      delegate={d}
-                      trigger={
-                        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs">
-                          Edit
+                    {d.telegram_id === null ? (
+                      // PENDING invite row — waiting for the customer to open
+                      // the link: copy/discard only, nothing else applies.
+                      <>
+                        <Badge variant="secondary">
+                          <Clock className="h-3 w-3" /> pending invite
+                        </Badge>
+                        <span className="hidden text-xs text-muted-foreground md:inline">
+                          expires {formatDate(d.claim_expires_at)}
+                        </span>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-xs"
+                          disabled={d.invite_url == null}
+                          onClick={() => {
+                            if (d.invite_url) copyInviteLink(d.invite_url)
+                          }}
+                        >
+                          Copy link
                         </Button>
-                      }
-                    />
-                    {d.is_active ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 px-2 text-xs text-destructive hover:text-destructive"
-                        disabled={deactivateMutation.isPending}
-                        onClick={() => {
-                          if (
-                            window.confirm(
-                              `Revoke delegate access for ${d.scope_name} (Telegram id ${d.telegram_id})?\n\n` +
-                                'Their bot session stops working immediately — accounts they already created are NOT touched.',
-                            )
-                        ) {
-                          deactivateMutation.mutate(d)
-                        }
-                      }}
-                    >
-                        Revoke
-                      </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                          disabled={discardMutation.isPending}
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                `Discard the pending invite for ${d.scope_name}?\n\n` +
+                                  'The link stops working immediately — nobody has claimed it yet, so nothing else changes.',
+                              )
+                            ) {
+                              discardMutation.mutate(d)
+                            }
+                          }}
+                        >
+                          Discard
+                        </Button>
+                      </>
                     ) : (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-7 px-2 text-xs"
-                        disabled={reactivateMutation.isPending}
-                        onClick={() => reactivateMutation.mutate(d)}
-                      >
-                        Re-grant
-                      </Button>
+                      <>
+                        {d.is_active ? (
+                          <Badge>
+                            <ShieldCheck className="h-3 w-3" /> active
+                          </Badge>
+                        ) : (
+                          <Badge variant="warning">revoked</Badge>
+                        )}
+                        <DelegateDialog
+                          delegate={d}
+                          trigger={
+                            <Button size="sm" variant="ghost" className="h-7 px-2 text-xs">
+                              Edit
+                            </Button>
+                          }
+                        />
+                        {d.is_active ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs text-destructive hover:text-destructive"
+                            disabled={deactivateMutation.isPending}
+                            onClick={() => {
+                              if (
+                                window.confirm(
+                                  `Revoke delegate access for ${d.scope_name} (Telegram id ${d.telegram_id})?\n\n` +
+                                    'Their bot session stops working immediately — accounts they already created are NOT touched.',
+                                )
+                              ) {
+                                deactivateMutation.mutate(d)
+                              }
+                            }}
+                          >
+                            Revoke
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 px-2 text-xs"
+                            disabled={reactivateMutation.isPending}
+                            onClick={() => reactivateMutation.mutate(d)}
+                          >
+                            Re-grant
+                          </Button>
+                        )}
+                      </>
                     )}
                   </span>
                 </TableCell>

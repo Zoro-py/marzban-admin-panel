@@ -13,6 +13,7 @@ import type {
   Customer,
   CustomerWithBalance,
   Delegate,
+  DelegateInvite,
   DelegateUpsert,
   FinanceSummary,
   Group,
@@ -289,6 +290,17 @@ export const delegatesApi = {
   // provided fields, and an omitted field keeps its old value.
   upsert: async (body: DelegateUpsert) => (await api.post<Delegate>('/api/delegate', body)).data,
   deactivate: async (id: number) => (await api.post<Delegate>(`/api/delegate/${id}/deactivate`)).data,
+  // POST /api/delegate/invite mints a one-time t.me deep link instead of
+  // asking for the customer's numeric Telegram id: the row is created as a
+  // PENDING invite (telegram_id null) and becomes a normal grant only when
+  // the customer opens the link in delegate_bot. Exactly one of
+  // customer_id/group_id; 409 if a pending invite already exists for that
+  // scope (revoke it first), 503 if DELEGATE_BOT_USERNAME is unset.
+  invite: async (body: { customer_id?: number; group_id?: number }) =>
+    (await api.post<DelegateInvite>('/api/delegate/invite', body)).data,
+  // DELETE /api/delegate/{id} deletes a PENDING invite row only — a claimed
+  // row carries history and goes through deactivate() instead (backend 409s).
+  revokeInvite: async (id: number) => (await api.delete<{ ok: boolean }>(`/api/delegate/${id}`)).data,
 }
 
 // ---- database backup (same pipeline as the nightly schedule) ----

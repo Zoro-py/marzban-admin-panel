@@ -178,7 +178,9 @@ export function DelegateDialog({ delegate, trigger }: { delegate?: Delegate; tri
   React.useEffect(() => {
     if (!open) return
     if (delegate) {
-      setTelegramId(String(delegate.telegram_id))
+      // Edit is only reachable for a CLAIMED row (pending invites render no
+      // Edit button) — the ?? keeps the nullable telegram_id type honest.
+      setTelegramId(String(delegate.telegram_id ?? ''))
       setScopeKind(delegate.customer_id != null ? 'customer' : 'group')
       setScopeId(String(delegate.customer_id ?? delegate.group_id ?? ''))
       setLabel(delegate.label ?? '')
@@ -222,6 +224,12 @@ export function DelegateDialog({ delegate, trigger }: { delegate?: Delegate; tri
         // the backend writes exactly the provided fields and leaves the rest
         // of the stored grant untouched. Re-sending everything would look
         // harmless but resets any field the operator left alone.
+        // Unreachable for a PENDING invite row (the Edit button only renders
+        // for claimed rows) — the guard keeps the upsert body's non-null
+        // telegram_id honest at runtime.
+        if (delegate.telegram_id == null) {
+          return Promise.reject(new Error('This invite has not been claimed yet'))
+        }
         const body: DelegateUpsert = { telegram_id: delegate.telegram_id }
         if (label.trim() !== (delegate.label ?? '')) body.label = label.trim() || null
         if (credit !== delegate.credit_limit) body.credit_limit = credit

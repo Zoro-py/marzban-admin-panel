@@ -544,12 +544,16 @@ export interface ShopOrder {
 // Mirrors schemas.DelegateRead: exactly one of customer_id/group_id is set —
 // the delegate's scope. See backend models.Delegate for the trust-boundary
 // reasoning behind what a grant actually allows.
+// Two lifecycle states (models.Delegate docstring): PENDING INVITE —
+// telegram_id null, is_active false, waiting for the customer to open the
+// one-time invite link; CLAIMED — telegram_id set, is_active true, the
+// customer's Telegram account is bound and the bot session works.
 export interface Delegate {
   id: number
   customer_id: number | null
   group_id: number | null
   scope_name: string
-  telegram_id: number
+  telegram_id: number | null
   label: string | null
   is_active: boolean
   credit_limit: number | null
@@ -557,6 +561,18 @@ export interface Delegate {
   username_prefix: string
   default_duration_days: number
   created_at: string
+  // Only meaningful on a PENDING invite row: when the deep link stops
+  // working, and the deep link itself (null on claimed rows — the token is
+  // cleared once claimed, there is no link left to hand out).
+  claim_expires_at: string | null
+  invite_url: string | null
+}
+
+// Response of POST /api/delegate/invite (mirrors schemas.DelegateInviteRead —
+// DelegateRead with invite_url narrowed to non-optional: a successful mint
+// always produced a ready-to-send deep link).
+export interface DelegateInvite extends Omit<Delegate, 'invite_url'> {
+  invite_url: string
 }
 
 // Body for POST /api/delegate (partial upsert — see delegatesApi.upsert):
