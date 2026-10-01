@@ -858,7 +858,15 @@ class ShopOrderIntent(BaseModel):
 
 
 class ShopBotAccountRow(BaseModel):
-    order_id: int
+    # One row per service shown in «سرویس‌های من». order_id is None and
+    # source is "linked" for an account the customer owns OUTSIDE the shop
+    # (an operator-created account reached through the customer link — see
+    # models.Customer.shop_user_id); "shop" rows are the self-serve orders,
+    # which keep their order_id. The two can describe the SAME account when
+    # an operator-linked customer bought a renewal through the shop — the
+    # router dedupes by account, preferring the shop row.
+    order_id: Optional[int] = None
+    source: str = "shop"
     marzban_username: str
     data_limit_gb: float
     used_traffic: int
@@ -867,6 +875,61 @@ class ShopBotAccountRow(BaseModel):
     status: Optional[str]
     subscription_url: Optional[str]
     created_at: datetime
+
+
+# ── shop-bot link for EXISTING customers (operator-created accounts) ──────
+
+
+class ShopLinkInviteRequest(BaseModel):
+    """Operator-only (POST /api/shop/link-invite). Binds the invite to the
+    customer it names — eligibility (prepay, not a group rep, not already
+    linked, no live pending invite) is enforced in the router so each 409 can
+    name the rule that refused it, not a generic validation error."""
+    customer_id: int
+
+
+class ShopLinkInviteRead(BaseModel):
+    """Response of POST /api/shop/link-invite — mirrors the delegate invite
+    response's shape minus the delegate row it doesn't have: the customer is
+    the row."""
+    customer_id: int
+    customer_name: str
+    invite_url: str
+    claim_expires_at: datetime
+
+
+class ShopLinkState(BaseModel):
+    """GET /api/shop/link/{customer_id} — everything the panel's Shop-bot
+    card renders in one response: which of the three states (not_linked /
+    pending / linked) the customer is in, plus whatever that state displays.
+    invite_url is populated ONLY while a pending invite exists (same rule as
+    DelegateRead.invite_url — a claimed link is a dead link)."""
+    customer_id: int
+    customer_name: str
+    status: str  # "not_linked" | "pending" | "linked"
+    invite_url: Optional[str] = None
+    claim_expires_at: Optional[datetime] = None
+    linked_telegram_id: Optional[int] = None
+    linked_at: Optional[datetime] = None
+    accounts_linked: int = 0
+
+
+class ShopBotClaimLinkRequest(BaseModel):
+    """shopbot only (POST /api/shop/bot/claim-link): bind the tapping user's
+    Telegram account to the customer whose invite token the deep link
+    carried. Same shape as DelegateClaimRequest — the token is the only
+    credential, the bot key only proves the request came from shopbot."""
+    token: str
+    telegram_id: int
+    telegram_username: Optional[str] = None
+
+
+class ShopBotClaimLinkResult(BaseModel):
+    """What the bot's welcome message needs right after a successful claim:
+    whose service got linked, and how many of their live accounts the
+    customer will now see in «سرویس‌های من»."""
+    customer_name: str
+    accounts_linked: int
 
 
 # ══════════════════════════════════════════════════ delegated self-service

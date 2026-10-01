@@ -372,6 +372,26 @@ def _run_lightweight_migrations() -> None:
         if existing_app_settings and "last_payg_monthly_settlement" not in existing_app_settings:
             conn.execute(text("ALTER TABLE appsettings ADD COLUMN last_payg_monthly_settlement VARCHAR"))
 
+        # Shop-bot customer link (2026-10-01): three nullable columns plus an
+        # index each, same guarded pattern as the delegate invite block above
+        # — nullable adds only, no table rebuild (SQLite ALTER TABLE ADD
+        # COLUMN with no NOT NULL needs none). NULL shop_user_id = not
+        # linked; a row with shop_link_token set is a PENDING invite (see
+        # models.Customer's shop-link section).
+        if existing_customer and "shop_user_id" not in existing_customer:
+            conn.execute(text("ALTER TABLE customer ADD COLUMN shop_user_id INTEGER"))
+        if existing_customer:
+            # Re-run whenever the table exists, column or not — same "the
+            # index must exist whenever the column does" rule as ix_customer_kind.
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_customer_shop_user_id ON customer (shop_user_id)"))
+        if existing_customer and "shop_link_token" not in existing_customer:
+            conn.execute(text("ALTER TABLE customer ADD COLUMN shop_link_token VARCHAR"))
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_customer_shop_link_token ON customer (shop_link_token)"))
+        if existing_customer and "shop_link_expires_at" not in existing_customer:
+            conn.execute(text("ALTER TABLE customer ADD COLUMN shop_link_expires_at DATETIME"))
+        if existing_customer and "shop_link_linked_at" not in existing_customer:
+            conn.execute(text("ALTER TABLE customer ADD COLUMN shop_link_linked_at DATETIME"))
+
         # Delegate invite links (2026-10-01): two new nullable columns, plus a
         # table REBUILD to make telegram_id nullable — SQLite cannot change a
         # column's nullability in place, so the standard copy-out/copy-back

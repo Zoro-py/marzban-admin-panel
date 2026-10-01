@@ -46,6 +46,35 @@ class Customer(SQLModel, table=True):
     # math — a family's balance is the same account roll-up every customer
     # gets (see services.MoneyBook).
     kind: str = Field(default="individual", index=True)
+
+    # ── shop-bot link (2026-10-01) ─────────────────────────────────────────
+    # Binds this CUSTOMER (and through them, every account they own) to one
+    # ShopUser of the customer-facing shop bot, so someone the operator
+    # created by hand can see their existing service in «سرویس‌های من», top
+    # up a wallet, and renew in place — without the operator ever typing a
+    # telegram id. The inverse of ShopUser.customer_id (which stays the
+    # operator's manual, reporting-only annotation): THIS field is the live
+    # link the shop reads.
+    #
+    # Set only by claiming a one-time invite (see shop_link_token below); the
+    # operator clears it via DELETE /api/shop/link/{customer_id}. The link
+    # moves no money between the two economies — shop purchases still debit
+    # only the ShopUser's wallet, and the reseller ledger never sees them.
+    shop_user_id: Optional[int] = Field(default=None, foreign_key="shopuser.id", index=True)
+    # One-time deep-link credential for a PENDING invite: the customer taps
+    # https://t.me/<shop_bot_username>?start=shoplnk_<token> and the claim
+    # endpoint (POST /api/shop/bot/claim-link) binds their telegram to this
+    # customer. Same shape and rules as Delegate.claim_token: token_urlsafe(16)
+    # (anyone holding the token could claim the link, so it must be
+    # unguessable), 7-day TTL enforced against shop_link_expires_at, both
+    # cleared on claim. SQLite's unique indexes allow multiple NULLs, so any
+    # number of unlinked customers coexist with one live token each.
+    shop_link_token: Optional[str] = Field(default=None, unique=True, index=True)
+    shop_link_expires_at: Optional[datetime] = None
+    # When the link was claimed (NULL while unlinked or still pending) — the
+    # "connected since" date the panel's Shop-bot card shows.
+    shop_link_linked_at: Optional[datetime] = None
+
     created_at: datetime = Field(default_factory=utcnow)
 
 

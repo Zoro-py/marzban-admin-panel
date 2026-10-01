@@ -27,6 +27,7 @@ from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_cli
 from app.models import (
     Account,
     AccountEvent,
+    Customer,
     ShopOrder,
     ShopOrderStatus,
     ShopSettings,
@@ -1311,6 +1312,16 @@ def renewable_account(session: Session, shop_user_id: int) -> Optional[Account]:
     The customer's most recently delivered account that still exists and that
     the operator has not disabled. Trials count — upgrading the trial in place
     is the whole point: the link they tested with is the link they keep.
+
+    Linked-customer fallback: a shop user bound to an operator-created
+    customer (see models.Customer.shop_user_id) has no delivered orders here
+    on their first purchase — the fallback returns the customer's own most
+    recent live account, so their purchase extends THE account they already
+    have, in place, exactly as a shop-bought one would. Skipped statuses
+    match the orders loop below plus the listing rule in
+    routers/shop.bot_list_accounts: a disabled account is not extendable
+    (the operator switched it off), and deleted_from_marzban no longer
+    exists to extend.
     """
     orders = session.exec(
         select(ShopOrder)
@@ -1328,13 +1339,36 @@ def renewable_account(session: Session, shop_user_id: int) -> Optional[Account]:
         if account.status in ("disabled", "deleted_from_marzban"):
             continue
         return account
+
+    customer = session.exec(
+        select(Customer).where(Customer.shop_user_id == shop_user_id)
+    ).first()
+    if customer is None:
+        return None
+    linked = session.exec(
+        select(Account)
+        .where(Account.customer_id == customer.id)
+        .order_by(Account.created_at.desc(), Account.id.desc())
+    ).all()
+    for account in linked:
+        if account.status in ("disabled", "deleted_from_marzban"):
+            continue
+        return account
     return None
 
 
 def is_existing_customer(session: Session, shop_user_id: int) -> bool:
     """Has this person ever had a service from us? Used to keep the free
     trial for strangers: an existing customer taking a 'trial' would just be
-    free data on top of what they already pay for."""
+    free data on top of what they already pay for. A shop user linked to an
+    operator-created customer IS an existing customer by definition — the
+    operator already sold them their service — so the link alone answers
+    yes."""
+    linked = session.exec(
+        select(Customer).where(Customer.shop_user_id == shop_user_id)
+    ).first()
+    if linked is not None:
+        return True
     return session.exec(
         select(ShopOrder).where(
             ShopOrder.shop_user_id == shop_user_id,

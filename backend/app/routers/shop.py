@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from datetime import timedelta
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
@@ -44,7 +45,9 @@ from app.db import engine, get_session
 from app import shop_texts
 from app.models import (
     Account,
+    BillingMode,
     Customer,
+    Group,
     ShopOrder,
     ShopOrderStatus,
     ShopTopup,
@@ -52,6 +55,7 @@ from app.models import (
     ShopUser,
     ShopWalletEntry,
     ShopWalletEntryType,
+    utcnow,
 )
 from app.notify import (
     relay_shop_photo_to_admin,
@@ -63,12 +67,17 @@ from app.notify import (
 from app.qr import subscription_qr_png
 from app.schemas import (
     ShopBotAccountRow,
+    ShopBotClaimLinkRequest,
+    ShopBotClaimLinkResult,
     ShopBotOrderAction,
     ShopBotPhoneRequest,
     ShopBotPurchaseRequest,
     ShopBotSession,
     ShopBotSessionRequest,
     ShopBotTopupRequest,
+    ShopLinkInviteRead,
+    ShopLinkInviteRequest,
+    ShopLinkState,
     ShopOrderIntent,
     ShopOrderRead,
     ShopPurchaseResult,
@@ -418,6 +427,220 @@ def list_orders(limit: int = Query(100, ge=1, le=500), session: Session = Depend
         )
         for order in orders
     ]
+
+
+# ══════════════════════════════════════ linking EXISTING customers to the shop
+#
+# The operator's ~163 hand-created customers have never touched the shop bot.
+# A one-time invite link binds the CUSTOMER (models.Customer.shop_user_id) to
+# the shop identity the person taps it from — after which their existing
+# accounts show up in «سرویس‌های من», and a normal purchase renews their real
+# account in place, paid from the shop wallet (see shop_service.renewable_account's
+# linked-customer fallback). No money moves at link time in either direction:
+# this binds identities, never balances. The delegate invite flow
+# (routers/delegate.py) is the pattern deliberately mirrored here — one-time
+# token, 7-day TTL, uniform 404 on unknown/expired/used.
+
+
+# How long a shop-link deep link stays claimable — same value and reasoning
+# as the delegate invite's INVITE_TTL_DAYS: long enough to batch-message every
+# customer at leisure, short enough that a forwarded-to-the-wrong-chat link
+# stops being a live claim inside a week.
+SHOP_LINK_TTL_DAYS = 7
+
+# The deep-link start payload prefix (t.me/<bot>?start=shoplnk_<token>).
+# shopbot's start handler matches this same literal — a two-side constant
+# with no shared import (the bot and the backend are separate processes by
+# design), so changing one means changing both.
+SHOP_LINK_PREFIX = "shoplnk_"
+
+
+def _shop_invite_url(token: str) -> str:
+    return (
+        f"https://t.me/{app_settings.shop_bot_username.strip().lstrip('@')}"
+        f"?start={SHOP_LINK_PREFIX}{token}"
+    )
+
+
+def _customer_has_payg_billing(session: Session, customer_id: int) -> bool:
+    """Does any account this customer owns directly bill pay-as-you-go?
+
+    The rule this enforces is the two-economies rule from models.py's shop
+    section header: a payg account's monthly settle charges the reseller
+    LEDGER from the usage meter, while a shop purchase would debit the
+    wallet and extend the SAME account — the shop payment would never appear
+    in the settle and the settle would never know the service was renewed.
+    Group members aren't examined: an account owned by the customer directly
+    (customer_id set) is what the link exposes and extends, and that is the
+    set checked here. A customer with no accounts has nothing to shadow.
+    """
+    accounts = session.exec(select(Account).where(Account.customer_id == customer_id)).all()
+    for account in accounts:
+        if account.group_id is not None:
+            group = session.get(Group, account.group_id)
+            if group is not None and group.billing_mode == BillingMode.payg:
+                return True
+        elif account.billing_mode == BillingMode.payg:
+            return True
+    return False
+
+
+def _linked_account_count(session: Session, customer: Customer) -> int:
+    """How many of the customer's accounts the shop will show once linked —
+    the same set bot_list_accounts merges in: every directly-owned account
+    except one deleted from Marzban (a disabled one still SHOWS as disabled;
+    a deleted one shows nothing, matching Marzban itself)."""
+    accounts = session.exec(select(Account).where(Account.customer_id == customer.id)).all()
+    return sum(1 for a in accounts if a.status != "deleted_from_marzban")
+
+
+@router.post("/link-invite", response_model=ShopLinkInviteRead)
+def create_shop_link_invite(body: ShopLinkInviteRequest, session: Session = Depends(get_session)):
+    """Mint a one-time t.me deep link that binds an existing customer to the
+    shop bot. The customer taps it, the claim endpoint (POST
+    /api/shop/bot/claim-link) sets Customer.shop_user_id, and their accounts
+    become visible in the bot with no per-account rows to maintain.
+
+    Every refusal below is a different sentence on purpose: the operator is
+    about to send this link to a real person, and a bare "not allowed" would
+    send them digging for which rule tripped. Deliberately refuses to stack
+    pending invites for one customer, exactly like the delegate invite —
+    every extra live token is one more unguessable claim on this customer
+    that the operator has no overview of."""
+    username = app_settings.shop_bot_username.strip().lstrip("@")
+    if not username:
+        raise HTTPException(
+            503,
+            "Shop bot username not configured (SHOP_BOT_USERNAME) — "
+            "invite links would point nowhere",
+        )
+    customer = session.get(Customer, body.customer_id)
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    if customer.is_group_rep:
+        raise HTTPException(
+            409,
+            "This customer is a group/family representative — exposing a shared "
+            "group's accounts to one personal Telegram account would let one "
+            "person see and renew everyone's service. Delegate access covers "
+            "that case instead.",
+        )
+    if _customer_has_payg_billing(session, customer.id):
+        raise HTTPException(
+            409,
+            "This customer has pay-as-you-go billing: the monthly settle keeps "
+            "charging their ledger from real usage, while a shop purchase would "
+            "debit their shop wallet and extend the same account — the two money "
+            "systems would silently shadow each other. Shop linking is refused "
+            "for payg customers.",
+        )
+    if customer.shop_user_id is not None:
+        shop_user = session.get(ShopUser, customer.shop_user_id)
+        bound = f"telegram id {shop_user.telegram_id}" if shop_user else "an unknown shop user"
+        raise HTTPException(
+            409,
+            f"This customer is already linked to the shop bot ({bound}) — "
+            f"unlink first: DELETE /api/shop/link/{customer.id}",
+        )
+    if customer.shop_link_token is not None:
+        raise HTTPException(
+            409,
+            "A pending shop-link invite already exists for this customer "
+            f"(expires {customer.shop_link_expires_at}) — reuse it, or discard "
+            f"it first: DELETE /api/shop/link-invite/{customer.id}",
+        )
+
+    customer.shop_link_token = secrets.token_urlsafe(16)
+    customer.shop_link_expires_at = utcnow() + timedelta(days=SHOP_LINK_TTL_DAYS)
+    session.add(customer)
+    session.commit()
+    session.refresh(customer)
+    return ShopLinkInviteRead(
+        customer_id=customer.id,
+        customer_name=customer.name,
+        invite_url=_shop_invite_url(customer.shop_link_token),
+        claim_expires_at=customer.shop_link_expires_at,
+    )
+
+
+@router.get("/link/{customer_id}", response_model=ShopLinkState)
+def read_shop_link(customer_id: int, session: Session = Depends(get_session)):
+    """The one endpoint the panel's Shop-bot card renders from: which of the
+    three states the customer is in, plus whatever that state displays."""
+    customer = session.get(Customer, customer_id)
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    if customer.shop_user_id is not None:
+        shop_user = session.get(ShopUser, customer.shop_user_id)
+        return ShopLinkState(
+            customer_id=customer.id,
+            customer_name=customer.name,
+            status="linked",
+            linked_telegram_id=shop_user.telegram_id if shop_user else None,
+            linked_at=customer.shop_link_linked_at,
+            accounts_linked=_linked_account_count(session, customer),
+        )
+    if customer.shop_link_token is not None:
+        username = app_settings.shop_bot_username.strip().lstrip("@")
+        return ShopLinkState(
+            customer_id=customer.id,
+            customer_name=customer.name,
+            status="pending",
+            # Rebuilt, not stored: the token IS the stored state, the URL is
+            # derived — so a SHOP_BOT_USERNAME fix repairs old pending links
+            # for free.
+            invite_url=_shop_invite_url(customer.shop_link_token) if username else None,
+            claim_expires_at=customer.shop_link_expires_at,
+        )
+    return ShopLinkState(
+        customer_id=customer.id,
+        customer_name=customer.name,
+        status="not_linked",
+    )
+
+
+@router.delete("/link-invite/{customer_id}")
+def discard_shop_link_invite(customer_id: int, session: Session = Depends(get_session)):
+    """Discards a still-pending invite — the token columns are cleared and
+    the deep link dies. A CLAIMED link is refused here: it isn't pending
+    anymore, and the operator's off-switch for a live link is the unlink
+    endpoint below, not a delete that would imply nothing was ever granted."""
+    customer = session.get(Customer, customer_id)
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    if customer.shop_user_id is not None:
+        raise HTTPException(
+            409,
+            "This customer's shop link was already claimed — unlink it with "
+            f"DELETE /api/shop/link/{customer_id} instead of discarding it",
+        )
+    if customer.shop_link_token is None:
+        raise HTTPException(404, "No pending shop-link invite for this customer")
+    customer.shop_link_token = None
+    customer.shop_link_expires_at = None
+    session.add(customer)
+    session.commit()
+    return {"ok": True}
+
+
+@router.delete("/link/{customer_id}")
+def unlink_shop_customer(customer_id: int, session: Session = Depends(get_session)):
+    """The operator's off-switch. Clears the customer-side link (and any
+    pending invite with it); the ShopUser, its wallet, and every account row
+    are untouched — the customer just loses bot access and their accounts
+    stop appearing in «سرویس‌های من». No money moves in either direction."""
+    customer = session.get(Customer, customer_id)
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    if customer.shop_user_id is None and customer.shop_link_token is None:
+        raise HTTPException(404, "This customer is not linked and has no pending invite")
+    customer.shop_user_id = None
+    customer.shop_link_token = None
+    customer.shop_link_expires_at = None
+    customer.shop_link_linked_at = None
+    session.add(customer)
+    session.commit()
+    return {"ok": True}
 
 
 # ══════════════════════════════════════════════════════ shop-bot endpoints
@@ -908,11 +1131,101 @@ async def _alert_operator_to_topup(
                 logger.exception("Could not alert the operator to top-up #%s at all", topup_id)
 
 
+@bot_router.post("/claim-link", response_model=ShopBotClaimLinkResult)
+def bot_claim_link(body: ShopBotClaimLinkRequest, session: Session = Depends(get_session)):
+    """The other half of the operator's shop-link invite: the customer tapped
+    t.me/<shop_bot>?start=shoplnk_<token>, shopbot relayed the token, and
+    THIS is where the customer row is bound to their Telegram identity.
+    Auth is the shop bot key, not the customer — the customer's only
+    credential is unguessable possession of the token itself, exactly the
+    delegate claim's trust model (routers/delegate.py bot_claim).
+
+    404 = token unknown, already consumed, or expired — all three read
+    identically to a holder of a stale link (no oracle telling an attacker
+    which tokens ever existed). 409 = the binding would contradict one that
+    already exists, in either direction (this customer is already bound to a
+    different Telegram, or this Telegram is already bound to a different
+    customer)."""
+    token = body.token.strip()
+    customer = session.exec(
+        select(Customer).where(Customer.shop_link_token == token)
+    ).first() if token else None
+    # SQLite DATETIME columns store naive UTC here (same convention the rest
+    # of this codebase compares against — see routers/delegate.py's claim),
+    # so the comparison is naive-vs-naive on purpose.
+    now = utcnow().replace(tzinfo=None)
+    if (
+        customer is None
+        or customer.shop_link_expires_at is None
+        or customer.shop_link_expires_at <= now
+    ):
+        raise HTTPException(404, "This invite link is invalid or has expired — ask the operator for a fresh one")
+
+    shop_user = get_or_create_shop_user(
+        session,
+        body.telegram_id,
+        telegram_username=body.telegram_username,
+    )
+
+    # Defensive idempotency: a customer whose token is STILL on the row but
+    # who already has a link can only mean the same person claiming twice in
+    # a race — answering success twice costs nothing, so it does.
+    if customer.shop_user_id is not None:
+        if customer.shop_user_id == shop_user.id:
+            return ShopBotClaimLinkResult(
+                customer_name=customer.name,
+                accounts_linked=_linked_account_count(session, customer),
+            )
+        raise HTTPException(
+            409,
+            "This customer is already linked to a different Telegram account — "
+            "ask the operator to unlink it first",
+        )
+
+    # One Telegram account carries exactly one customer's services: a second
+    # claim would stack two strangers' accounts in one «سرویس‌های من» list.
+    collision = session.exec(
+        select(Customer).where(
+            Customer.shop_user_id == shop_user.id,
+            Customer.id != customer.id,
+        )
+    ).first()
+    if collision is not None:
+        raise HTTPException(
+            409,
+            "This Telegram account is already linked to another customer "
+            f"({collision.name})",
+        )
+
+    customer.shop_user_id = shop_user.id
+    customer.shop_link_linked_at = utcnow()
+    customer.shop_link_token = None
+    customer.shop_link_expires_at = None
+    session.add(customer)
+    session.commit()
+    session.refresh(customer)
+    return ShopBotClaimLinkResult(
+        customer_name=customer.name,
+        accounts_linked=_linked_account_count(session, customer),
+    )
+
+
 @bot_router.get("/accounts", response_model=list[ShopBotAccountRow])
 def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session)):
-    """The customer's own delivered accounts, with live-ish usage from the
-    last sync. Scoped by their orders — never by a name pattern, which would
-    hand someone else's account to anyone who guessed a username."""
+    """The customer's own accounts, with live-ish usage from the last sync.
+    Scoped by their orders — never by a name pattern, which would hand
+    someone else's account to anyone who guessed a username.
+
+    Two sources, merged and deduped by account id: delivered SHOP orders
+    (source "shop", order_id set), and — for a customer linked via the
+    operator's invite — the accounts they own directly outside the shop
+    (source "linked", order_id None). Linked accounts are filtered to the
+    same visibility the operator's own panel gives the customer: a disabled
+    account still SHOWS (as disabled — hiding it would read as the service
+    vanishing), but one deleted from Marzban is gone and shows nothing. An
+    account reachable both ways (an operator-linked customer who later bought
+    its renewal through the shop) appears once, as the shop row — that one
+    carries the order context the pure mirror doesn't have."""
     user = session.exec(select(ShopUser).where(ShopUser.telegram_id == telegram_id)).first()
     if user is None:
         return []
@@ -923,10 +1236,14 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
     ).all()
 
     rows: list[ShopBotAccountRow] = []
+    seen_account_ids: set[int] = set()
     for order in orders:
         account = session.get(Account, order.account_id) if order.account_id else None
+        if account is not None:
+            seen_account_ids.add(account.id)
         rows.append(ShopBotAccountRow(
             order_id=order.id,
+            source="shop",
             marzban_username=order.marzban_username or "—",
             data_limit_gb=order.data_limit_gb,
             used_traffic=account.used_traffic if account else 0,
@@ -936,6 +1253,33 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
             subscription_url=resolve_subscription_url(account.subscription_url) if account else None,
             created_at=order.created_at,
         ))
+
+    customer = session.exec(select(Customer).where(Customer.shop_user_id == user.id)).first()
+    if customer is not None:
+        linked = session.exec(
+            select(Account)
+            .where(Account.customer_id == customer.id)
+            .order_by(Account.created_at.desc(), Account.id.desc())
+        ).all()
+        for account in linked:
+            if account.id in seen_account_ids:
+                continue
+            if account.status == "deleted_from_marzban":
+                continue
+            rows.append(ShopBotAccountRow(
+                order_id=None,
+                source="linked",
+                marzban_username=account.marzban_username,
+                # A GB figure for consistency with shop rows; the bot's own
+                # list rendering reads data_limit (bytes), not this.
+                data_limit_gb=round(account.data_limit / (1024 ** 3), 2) if account.data_limit else 0.0,
+                used_traffic=account.used_traffic,
+                data_limit=account.data_limit,
+                expire=account.expire,
+                status=account.status,
+                subscription_url=resolve_subscription_url(account.subscription_url),
+                created_at=account.created_at,
+            ))
     return rows
 
 

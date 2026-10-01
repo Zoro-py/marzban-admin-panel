@@ -117,6 +117,17 @@ class Settings(BaseSettings):
     # buyer, without routing it back through the bot process.
     shop_bot_token: str = ""
 
+    # The shop bot's Telegram username WITHOUT the "@" (e.g. "my_shop_bot"
+    # for t.me/my_shop_bot). Needed to build the one-time deep links that
+    # bind an EXISTING operator-created customer to their shop identity
+    # (POST /api/shop/link-invite -> https://t.me/<username>?start=shoplnk_
+    # <token>). Same reasoning as delegate_bot_username below: invite
+    # creation is refused with a clear 503 while this is blank, so the
+    # operator can't mint links that point nowhere. The bot's own token
+    # keeps living only in shopbot/.env — the backend needs the username,
+    # never the token.
+    shop_bot_username: str = ""
+
     # Shared secret delegate_bot/ presents on /api/delegate/bot/*. Same
     # fail-closed reasoning as shop_bot_api_key above: a Delegate is a
     # trusted customer, but the PROCESS talking to this key still runs on
