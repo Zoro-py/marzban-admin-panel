@@ -782,7 +782,14 @@ def test_renewal_warnings() -> None:
             account = session.get(Account, order.account_id)
             account.expire = int(_time.time()) + 20 * 86400
             account.used_traffic = int(account.data_limit * 0.10)
+            # The 24h post-delivery grace (2026-10-01: a paid customer heard
+            # "94% used" one minute after paying) would swallow every warning
+            # below — these scenarios are "the service has been RUNNING for a
+            # while", so backdate the delivery past the grace window.
+            from datetime import timedelta as _td
+            order.delivered_at = utcnow() - _td(days=8)
             session.add(account)
+            session.add(order)
             session.commit()
 
             notify_module.send_to_shop_user = capture
