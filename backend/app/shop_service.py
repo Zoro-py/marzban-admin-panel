@@ -252,6 +252,15 @@ async def purchase(session: Session, shop_user: ShopUser, data_limit_gb: float) 
     if shop_user.is_blocked:
         raise ShopError("This account can't make purchases. Contact support.")
 
+    # UNLIMITED GUARD — refuse BEFORE the wallet moves. A customer whose
+    # current service has no data cap has nothing a volume purchase can add
+    # to it, and the extend path would CAP it if it tried (it did, live
+    # 2026-10-01: base_limit fell back to used_traffic, so a name-unlimited
+    # account came out of a +30 GB purchase as a used+30 GB plan with a
+    # fresh 30-day expiry). The stable "SERVICE_IS_UNLIMITED" prefix is what
+    # routers/shop.py and shopbot key the customer's Persian text on.
+    refuse_unlimited_renewal(session, shop_user.id)
+
     settings = get_shop_settings(session)
     validate_purchase_request(settings, data_limit_gb)
     price = quote_price(settings, data_limit_gb)
@@ -856,6 +865,8 @@ async def deliver_order_to_customer(session: Session, order: ShopOrder) -> bool:
         # message is about what changed — and that they need to do nothing.
         remaining_gb = None
         days_left = None
+        total_after_gb = (account.data_limit / (1024 ** 3)) if account.data_limit is not None else None
+        total_before_gb = (total_after_gb - order.data_limit_gb) if total_after_gb is not None else None
         if account.data_limit is not None:
             remaining_gb = max(0, account.data_limit - account.used_traffic) / (1024 ** 3)
         if account.expire:
@@ -863,7 +874,8 @@ async def deliver_order_to_customer(session: Session, order: ShopOrder) -> bool:
         try:
             await send_to_shop_user(
                 user.telegram_id,
-                shop_texts.renewed_in_place(order.data_limit_gb, remaining_gb, days_left, settings.support_handle),
+                shop_texts.renewed_in_place(order.data_limit_gb, total_before_gb, total_after_gb,
+                                            remaining_gb, days_left, settings.support_handle),
             )
             return True
         except Exception:
@@ -1185,6 +1197,12 @@ EXPIRY_WARN_DAYS = 3
 USAGE_WARN_PERCENT = 80
 # A trial is measured in hours, so its warning is too.
 TRIAL_WARN_HOURS = 2
+# Deliveries hold ALL warnings off for this long. A customer who paid MINUTES
+# ago must not hear "your volume is running out" — an extend leaves
+# used/limit high by construction (live 2026-10-01: a 94%-used warning landed
+# one minute after the approval message, on the very service they had just
+# paid to top up).
+WARN_GRACE_AFTER_DELIVERY = timedelta(hours=24)
 
 
 async def warn_customers_before_service_ends(session: Session) -> int:
@@ -1228,6 +1246,20 @@ async def warn_customers_before_service_ends(session: Session) -> int:
         if account.status in ("disabled", "deleted_from_marzban"):
             continue
         is_trial = order.price == 0
+        # Fresh-delivery grace (see WARN_GRACE_AFTER_DELIVERY) — PAID orders
+        # only. A trial is delivered and then nudged within the same couple
+        # of hours by design (TRIAL_WARN_HOURS); a grace window would erase
+        # the trial nudge entirely.
+        # Naive-vs-naive on purpose: SQLite stores naive UTC (same convention
+        # as routers/delegate.py's claim comparison).
+        delivered = order.delivered_at.replace(tzinfo=None) if order.delivered_at is not None else None
+        if not is_trial and delivered is not None and (utcnow().replace(tzinfo=None) - delivered) < WARN_GRACE_AFTER_DELIVERY:
+            continue
+        # The volume LABEL must name the service's real total — for an
+        # extended account that is the account's cap, not the last order's
+        # top-up slice (live 2026-10-01: "94% of your 30GB service" computed
+        # a percentage over 599 GB while naming it 30 GB).
+        account_gb = round(account.data_limit / (1024 ** 3), 2) if account.data_limit else order.data_limit_gb
 
         message = None
         mark = None
@@ -1239,13 +1271,13 @@ async def warn_customers_before_service_ends(session: Session) -> int:
                     mark = "expiry"
             elif 0 < seconds_left <= EXPIRY_WARN_DAYS * 86400:
                 days_left = max(1, int(-(-seconds_left // 86400)))
-                message = shop_texts.expiring_soon(order.data_limit_gb, days_left, handle)
+                message = shop_texts.expiring_soon(account_gb, days_left, handle)
                 mark = "expiry"
 
         if message is None and order.usage_warned_at is None and not is_trial and account.data_limit:
             percent = int(account.used_traffic * 100 / account.data_limit)
             if USAGE_WARN_PERCENT <= percent < 100:
-                message = shop_texts.data_almost_gone(order.data_limit_gb, percent, handle)
+                message = shop_texts.data_almost_gone(account_gb, percent, handle)
                 mark = "usage"
 
         if message is None:
@@ -1377,6 +1409,25 @@ def is_existing_customer(session: Session, shop_user_id: int) -> bool:
     ).first() is not None
 
 
+def refuse_unlimited_renewal(session: Session, shop_user_id: int) -> None:
+    """Raises ShopError (stable prefix "SERVICE_IS_UNLIMITED") when the
+    account this customer's next purchase would extend has NO data cap.
+
+    Called before money moves — from purchase() ahead of the wallet debit,
+    and from the /quote and /orders endpoints so the confirm screen never
+    even appears for a service that needs nothing. Reads the LOCAL mirror
+    (last sync); _extend_order re-checks against the LIVE panel as defence
+    in depth, because a same-day top-up elsewhere in the panel could have
+    capped the account after this mirror last synced.
+    """
+    existing = renewable_account(session, shop_user_id)
+    if existing is not None and existing.data_limit is None:
+        raise ShopError(
+            "SERVICE_IS_UNLIMITED: this customer's current service is unlimited — "
+            "a volume purchase cannot be added to it"
+        )
+
+
 async def _extension_landed(username: str, target_limit: int, target_expire: int) -> Optional[dict]:
     """The panel's user if the extension is already applied, else None.
 
@@ -1393,7 +1444,15 @@ async def _extension_landed(username: str, target_limit: int, target_expire: int
         return None
     if user is None:
         return None
-    if (user.get("data_limit") or 0) >= target_limit and (user.get("expire") or 0) >= target_expire - 60:
+    limit_ok = (user.get("data_limit") or 0) >= target_limit
+    if target_expire is None:
+        # The order extended a never-expiring service: 'applied' means the
+        # panel STILL has no expiry — any date here is someone else's edit,
+        # not our modify.
+        expire_ok = not user.get("expire")
+    else:
+        expire_ok = (user.get("expire") or 0) >= target_expire - 60
+    if limit_ok and expire_ok:
         return user
     return None
 
@@ -1464,12 +1523,29 @@ async def _extend_order(session: Session, order: ShopOrder, account: Account) ->
                            order.id, username)
             return False
 
-        used = int(current.get("used_traffic") or 0)
         limit = current.get("data_limit")
-        base_limit = int(limit) if limit is not None else used
-        target_limit = base_limit + bytes_from_gb(order.data_limit_gb)
+        if limit is None:
+            # Defence in depth behind purchase()'s guard: the LIVE panel is
+            # the truth, and an unlimited service cannot take a volume
+            # top-up — any limit we wrote here would CAP it (live 2026-10-01:
+            # an unlimited account came out of a +30 GB purchase as a
+            # used+30 GB plan). The wallet has already moved, so this is a
+            # full refund with a plain-language reason; the customer hears
+            # the Persian wording via the shop's refund notice.
+            refund_order(session, order,
+                         reason="The current service is unlimited — a volume top-up cannot be added to it")
+            return True
+        target_limit = int(limit) + bytes_from_gb(order.data_limit_gb)
         now_ts = int(utcnow().timestamp())
-        target_expire = max(now_ts, int(current.get("expire") or 0)) + order.duration_days * SECONDS_IN_DAY
+        current_expire = current.get("expire")
+        if current_expire:
+            target_expire = max(now_ts, int(current_expire)) + order.duration_days * SECONDS_IN_DAY
+        else:
+            # A service that never expires STAYS never-expiring: topping up
+            # volume must not invent a deadline the operator never sold
+            # (second half of the same live incident — expire used to be
+            # forced to now+30d, quietly time-bombing a no-expiry package).
+            target_expire = None
 
         # Committed BEFORE the call: these are the evidence a timeout or a
         # crash is later checked against. See ShopOrder.target_data_limit.

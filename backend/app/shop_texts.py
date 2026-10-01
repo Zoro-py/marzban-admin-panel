@@ -230,21 +230,31 @@ def provisional_stopped() -> str:
     )
 
 
-def renewed_in_place(added_gb: float, remaining_gb: Optional[float], days_left: Optional[int],
-                     handle: Optional[str]) -> str:
+def renewed_in_place(added_gb: float, total_before_gb: Optional[float], total_after_gb: Optional[float],
+                     remaining_gb: Optional[float], days_left: Optional[int], handle: Optional[str]) -> str:
     """A renewal on the account the customer already has. The whole message
-    is built around one fact: they do not have to do anything. Their app
-    already holds this link, and it simply has more on it now."""
-    remaining = ""
-    if remaining_gb is not None and days_left is not None:
-        remaining = f"\nالان: {fa_num(round(remaining_gb, 2))} گیگ باقیمانده · {fa_num(days_left)} روز"
-    return (
-        f"✅ {fa_num(added_gb)} گیگ به سرویس‌تان اضافه شد."
-        + remaining
-        + "\n\nهمان لینک قبلی کار می‌کند — لازم نیست چیزی را عوض کنید.\n"
-        "اگر برنامه هنوز حجم قبلی را نشان می‌دهد، روی اشتراک بزنید و «به‌روزرسانی» را انتخاب کنید."
-        + support_line(handle)
-    )
+    is built around two facts: exactly what changed (BEFORE → AFTER, so the
+    new total never reads like a brand-new service they didn't buy), and
+    that they do not have to do anything — their app already holds this link
+    and it simply has more on it now."""
+    lines = [f"✅ {fa_num(added_gb)} گیگ به سرویس‌تان اضافه شد."]
+    if total_before_gb is not None and total_after_gb is not None:
+        lines.append(f"حجم سرویس‌تان: {fa_num(round(total_before_gb, 2))} گیگ ← {fa_num(round(total_after_gb, 2))} گیگ")
+    tail = []
+    if remaining_gb is not None:
+        tail.append(f"{fa_num(round(remaining_gb, 2))} گیگ باقیمانده")
+    if days_left is not None:
+        tail.append(f"{fa_num(days_left)} روز")
+    elif total_after_gb is not None:
+        # A service the operator sold without an expiry keeps having none —
+        # silence here would read as "did the expiry disappear?", so say it.
+        tail.append("بدون انقضا (بدون تغییر)")
+    if tail:
+        lines.append("الان: " + " · ".join(tail))
+    lines.append("")
+    lines.append("همان لینک قبلی کار می‌کند — لازم نیست چیزی را عوض کنید.\n"
+                 "اگر برنامه هنوز حجم قبلی را نشان می‌دهد، روی اشتراک بزنید و «به‌روزرسانی» را انتخاب کنید.")
+    return "\n".join(lines) + support_line(handle)
 
 
 def payment_overdue(reference: Optional[str], handle: Optional[str]) -> str:

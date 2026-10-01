@@ -109,6 +109,7 @@ from app.shop_service import (
     post_wallet_entry,
     purchase,
     quote_price,
+    refuse_unlimited_renewal,
     reject_topup,
     revoke_provisional,
     validate_purchase_request,
@@ -707,19 +708,27 @@ def bot_quote(body: ShopBotPurchaseRequest, session: Session = Depends(get_sessi
     the real number, rather than one the bot computed itself from a cached
     rate that may since have changed.
 
-    Runs the SAME validation as /purchase. Quoting without it meant the
-    confirm screen would happily price a 5000 GB plan against a 200 GB
-    maximum, or quote at all while the shop was closed — the customer only
-    discovering it after tapping buy. A quote that cannot be honoured is
-    worse than no quote.
+    Runs the SAME validation as /purchase — including the unlimited-service
+    refusal, so the confirm screen never even appears for a customer whose
+    service needs nothing. Quoting without validation meant the confirm
+    screen would happily price a 5000 GB plan against a 200 GB maximum, or
+    quote at all while the shop was closed — the customer only discovering
+    it after tapping buy. A quote that cannot be honoured is worse than no
+    quote.
     """
+    user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
+    if user is not None:
+        try:
+            refuse_unlimited_renewal(session, user.id)
+        except ShopError as exc:
+            raise HTTPException(409, str(exc))
     settings = get_shop_settings(session)
     try:
         validate_purchase_request(settings, body.data_limit_gb)
         return {"data_limit_gb": body.data_limit_gb, "price": quote_price(settings, body.data_limit_gb),
                 "duration_days": settings.plan_duration_days}
     except ShopError as exc:
-        raise HTTPException(400, str(exc))
+        raise HTTPException(409 if str(exc).startswith("SERVICE_IS_UNLIMITED") else 400, str(exc))
 
 
 @bot_router.post("/purchase", response_model=ShopPurchaseResult)
@@ -732,7 +741,9 @@ async def bot_purchase(body: ShopBotPurchaseRequest, session: Session = Depends(
         order = await purchase(session, user, body.data_limit_gb)
     except ShopError as exc:
         # A 400 with the user-facing sentence, which the bot shows verbatim.
-        raise HTTPException(400, str(exc))
+        # The unlimited refusal rides 409 with its stable prefix — shopbot
+        # maps that to the Persian explanation instead of raw English.
+        raise HTTPException(409 if str(exc).startswith("SERVICE_IS_UNLIMITED") else 400, str(exc))
 
     subscription_url = None
     if order.account_id is not None:
@@ -834,10 +845,16 @@ def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depends(ge
     user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
     if user is None:
         raise HTTPException(404, "Unknown shop user — call /session first")
+    # Same unlimited refusal as /purchase — here it stops the RECEIPT flow
+    # from ever starting for a service that needs nothing.
+    try:
+        refuse_unlimited_renewal(session, user.id)
+    except ShopError as exc:
+        raise HTTPException(409, str(exc))
     try:
         order = create_awaiting_order(session, user, body.data_limit_gb)
     except ShopError as exc:
-        raise HTTPException(400, str(exc))
+        raise HTTPException(409 if str(exc).startswith("SERVICE_IS_UNLIMITED") else 400, str(exc))
 
     balance = wallet_balance(session, user.id)
     settings = get_shop_settings(session)
