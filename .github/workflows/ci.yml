@@ -122,6 +122,12 @@ jobs:
           DELEGATE_BOT_API_KEY: ci
           API_BASE_URL: http://localhost:8000
         run: python test_list_flood_guard.py
+      - name: Run delegate-bot invite-claim test (dlgtok_ deep links)
+        env:
+          DELEGATE_BOT_TOKEN: "123:ci"
+          DELEGATE_BOT_API_KEY: ci
+          API_BASE_URL: http://localhost:8000
+        run: python test_invite_claim.py
 
   frontend:
     runs-on: ubuntu-latest
