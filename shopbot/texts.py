@@ -400,3 +400,46 @@ def support_text(handle: Optional[str]) -> str:
     if handle:
         return f"هر سؤال یا مشکلی داشتید به @{handle.lstrip('@')} پیام بدهید — خودم جواب می‌دهم."
     return "فعلاً راه ارتباطی ثبت نشده. کمی بعد دوباره امتحان کنید."
+
+
+# ── shop-link invite (t.me/<bot>?start=shoplnk_...) ───────────────────────
+#
+# The operator's own customers — people whose service was created by hand in
+# the panel, before this bot existed — enter through a one-time deep link the
+# operator sends them, not through buying. The texts below are the outcomes
+# of tapping that link, worded for someone who already IS a customer: they
+# are being welcomed in, not sold to.
+
+# 404 from the backend covers three indistinguishable-to-the-user cases
+# (unknown token, already-used token, expired) — one text for all of them,
+# always ending in the same instruction: ask for a fresh link. Same shape as
+# delegate_bot's INVITE_INVALID_OR_EXPIRED.
+LINK_INVALID_OR_EXPIRED = (
+    "این لینک دعوت معتبر نیست یا منقضی شده است.\n"
+    "از مدیریت بخواهید لینک تازه‌ای برایتان بفرستد."
+)
+
+# 409: the binding would contradict one that already exists — either this
+# Telegram account is already connected to another customer's services, or
+# the customer this link belongs to is already connected to a different
+# Telegram account (from the tapper's side the two look the same). One text
+# for both, ending in the same place: ask the operator to sort it out.
+LINK_ALREADY_CONNECTED = (
+    "این لینک الان قابل استفاده نیست — این اکانت تلگرام یا مشتریِ پشت این لینک، "
+    "قبلاً به یک حساب دیگر وصل شده است.\n"
+    "لطفاً به مدیریت بگویید تا بررسی کند."
+)
+
+
+def link_welcome(customer_name: str, accounts_linked: int) -> str:
+    """The moment the link lands: whose services got connected, how many of
+    them, and the two things they can now do — see status, and renew in
+    place (the renewal sentence is the whole point of the feature: the link
+    in their VPN app keeps working, nothing needs re-importing)."""
+    return (
+        f"سلام {customer_name} عزیز 👋\n"
+        f"سرویس‌هایتان وصل شد — {fa(accounts_linked)} سرویس فعلی به این ربات اضافه شد.\n\n"
+        f"از «{MENU_ACCOUNTS}» وضعیت سرویس‌هایتان را ببینید.\n"
+        f"برای تمدید هم کافی است از «{MENU_BUY}» خرید کنید — حجم تازه به همان سرویس فعلی‌تان "
+        "اضافه می‌شود و لینکی که در برنامه دارید بدون تغییر کار می‌کند."
+    )

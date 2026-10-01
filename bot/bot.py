@@ -40,6 +40,7 @@ from handlers.delegate_admin import (  # noqa: E402
 )
 from handlers.report import report_command  # noqa: E402
 from handlers.since import since_command  # noqa: E402
+from handlers.shop_link_admin import shoplink_command, shoplink_off_command  # noqa: E402
 from handlers.start import help_command, start_command  # noqa: E402
 from handlers.sync import sync_command  # noqa: E402
 from handlers.topup import (  # noqa: E402
@@ -122,6 +123,9 @@ def main() -> None:
     app.add_handler(CommandHandler("delegate_invite", delegate_invite_command))
     app.add_handler(CommandHandler("delegate_revoke", delegate_revoke_command))
     app.add_handler(CommandHandler("delegate_invite_dump", delegate_invite_dump_command))
+    # Existing-customer → shop-bot link (see handlers/shop_link_admin.py).
+    app.add_handler(CommandHandler("shoplink", shoplink_command))
+    app.add_handler(CommandHandler("shoplink_off", shoplink_off_command))
     app.add_handler(CommandHandler("sync", sync_command))
     app.add_handler(CommandHandler("backup", backup_command))
     # Debt-reminder payment console (backend's nudge message carries the

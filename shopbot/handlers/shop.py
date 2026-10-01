@@ -232,6 +232,15 @@ async def _reply(update: Update, text: str, session: dict | None = None, **kwarg
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
+    # Shop-link deep link (see models.Customer's shop-link section on the
+    # backend): /start shoplnk_<token> binds this Telegram account to the
+    # EXISTING customer the operator invited, instead of opening the shop as
+    # a stranger. A failed claim must NOT fall through to the normal welcome
+    # — someone holding a dead link is exactly who the ordinary welcome (buy
+    # something new) would leave confused about where their real service went.
+    args = list(context.args or [])
+    if args and args[0].startswith("shoplnk_"):
+        return await _claim_link(update, args[0][len("shoplnk_"):])
     try:
         session = await _session(update)
     except ShopApiError:
@@ -249,6 +258,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             session.get("trial_hours", 0),
         ),
         session,
+    )
+
+
+async def _claim_link(update: Update, token: str) -> None:
+    """POST /api/shop/bot/claim-link with the token from the deep link plus
+    this Telegram account's identity — the mirror of delegate_bot's
+    _claim_invite. Backend outcomes: 200 = bound, the payload names the
+    customer and how many services came across; 404 = unknown/used/expired
+    token; 409 = the binding would contradict an existing one (this Telegram
+    already carries another customer's services, or the other way round).
+    Anything else is a genuine server problem -> generic_error. Backend text
+    is English for the operator and never shown — same rule as everywhere
+    else in this bot."""
+    user = update.effective_user
+    try:
+        result = await backend.post("/api/shop/bot/claim-link", json={
+            "token": token,
+            "telegram_id": user.id,
+            "telegram_username": user.username,
+        })
+    except ShopApiError as exc:
+        if exc.status == 404:
+            await update.effective_message.reply_text(texts.LINK_INVALID_OR_EXPIRED)
+        elif exc.status == 409:
+            await update.effective_message.reply_text(texts.LINK_ALREADY_CONNECTED)
+        else:
+            await update.effective_message.reply_text(texts.generic_error(None))
+        return
+    await update.effective_message.reply_text(
+        texts.link_welcome(result["customer_name"], result["accounts_linked"]),
+        reply_markup=main_menu(None),
     )
 
 
