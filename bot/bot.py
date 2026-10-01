@@ -32,8 +32,11 @@ from handlers.delegate_admin import (  # noqa: E402
     delegate_add_callback,
     delegate_add_command,
     delegate_cap_command,
+    delegate_invite_command,
+    delegate_invite_dump_command,
     delegate_list_command,
     delegate_off_command,
+    delegate_revoke_command,
 )
 from handlers.report import report_command  # noqa: E402
 from handlers.since import since_command  # noqa: E402
@@ -116,6 +119,9 @@ def main() -> None:
     app.add_handler(CommandHandler("delegate_cap", delegate_cap_command))
     app.add_handler(CommandHandler("delegate_list", delegate_list_command))
     app.add_handler(CommandHandler("delegate_off", delegate_off_command))
+    app.add_handler(CommandHandler("delegate_invite", delegate_invite_command))
+    app.add_handler(CommandHandler("delegate_revoke", delegate_revoke_command))
+    app.add_handler(CommandHandler("delegate_invite_dump", delegate_invite_dump_command))
     app.add_handler(CommandHandler("sync", sync_command))
     app.add_handler(CommandHandler("backup", backup_command))
     # Debt-reminder payment console (backend's nudge message carries the

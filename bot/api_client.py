@@ -73,6 +73,16 @@ class BackendClient:
             raise ValueError(resp.json().get("detail", resp.text))
         return resp.json()
 
+    async def delete(self, path: str) -> Any:
+        resp = await self._request("DELETE", path)
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except ValueError:
+                detail = resp.text
+            raise ValueError(detail if isinstance(detail, str) else str(detail))
+        return resp.json()
+
 
 backend = BackendClient(
     base_url=os.environ["API_BASE_URL"],

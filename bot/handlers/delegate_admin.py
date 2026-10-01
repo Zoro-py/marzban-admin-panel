@@ -20,11 +20,18 @@ in a digit and, combined with the backend's old "overwrite every field"
 upsert, meant re-running /delegate_add to fix a typo silently reset an
 existing credit_limit to unlimited. It's now its own command
 (/delegate_cap) that only ever touches that one field.
+
+/delegate_invite needs no Confirm step: it creates only a PENDING invite —
+a one-time deep link the customer must still tap before ANY access exists —
+so a misresolve is reversible with /delegate_revoke <id> and grants nothing
+by itself. That is why it fuzzy-resolves and posts in one shot.
 """
 
 from __future__ import annotations
 
+import io
 import itertools
+from datetime import datetime, timezone
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -246,3 +253,104 @@ async def delegate_off_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     await update.message.reply_text(f"⛔ Delegate access revoked for {md(match['scope_name'])} (id {telegram_id}).",
                                     parse_mode="Markdown")
+
+
+@admin_only
+async def delegate_invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) < 1:
+        await update.message.reply_text(
+            "Usage: `/delegate_invite <customer name or id>`\n"
+            "Creates a one-time t.me deep link for that customer — they tap "
+            "it in Telegram and are bound to delegate_bot automatically, no "
+            "numeric telegram_id needed. The link is single-use and expires "
+            "in 7 days; revoke an unused one with /delegate_revoke <id>. "
+            "One pending invite per customer at a time.",
+            parse_mode="Markdown",
+        )
+        return
+
+    query = " ".join(context.args)
+    try:
+        customer = await resolve_customer(query)
+    except AmbiguousMatch as exc:
+        await _reply_ambiguous(update, exc.matches)
+        return
+    if customer is None:
+        await update.message.reply_text(f"No customer matches '{query}'.")
+        return
+
+    try:
+        invite = await backend.post("/api/delegate/invite", json={"customer_id": customer["id"]})
+    except Exception as exc:  # noqa: BLE001 — includes 409 (pending already exists) and 503 (username unset)
+        await update.message.reply_text(f"Could not create the invite: {exc}")
+        return
+
+    # Message 1 is the forward-ready block: the operator forwards THIS
+    # message (and only this one) to the customer — the operator-facing
+    # note deliberately goes in a separate message so a careless
+    # forward-everything can't leak it.
+    forward_block = (
+        f"سلام {invite['scope_name']} عزیز!\n"
+        "این لینک اختصاصی شماست — با زدن آن، بات مدیریت اکانت‌هایتان فعال می‌شود "
+        "(ساخت اکانت جدید، تمدید و حذف، بدون نیاز به هماهنگی با تیم فروش).\n"
+        "لینک فقط یک‌بار قابل استفاده است و ۷ روز اعتبار دارد:\n"
+        "\n"
+        f"{invite['invite_url']}"
+    )
+    await update.message.reply_text(forward_block)
+    await update.message.reply_text(
+        f"✅ Pending invite #{invite['id']} for {md(invite['scope_name'])} created.\n"
+        "Single-use: the first Telegram account that taps it claims it.\n"
+        f"Revoke if unused: /delegate_revoke {invite['id']}\n"
+        "List all pending invites: /delegate_invite_dump",
+        parse_mode="Markdown",
+    )
+
+
+@admin_only
+async def delegate_revoke_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) != 1 or not context.args[0].isdigit():
+        await update.message.reply_text(
+            "Usage: `/delegate_revoke <invite_id>`\n"
+            "Deletes a still-unclaimed invite created by /delegate_invite "
+            "(the id is in the invite reply). A delegate that has ALREADY "
+            "been claimed is not touched — revoke its access with "
+            "/delegate_off <telegram_id> instead.",
+            parse_mode="Markdown",
+        )
+        return
+    invite_id = int(context.args[0])
+    try:
+        await backend.delete(f"/api/delegate/{invite_id}")
+    except Exception as exc:  # noqa: BLE001 — 404 unknown id, 409 already claimed
+        await update.message.reply_text(f"Could not delete invite #{invite_id}: {exc}")
+        return
+    await update.message.reply_text(f"🗑 Pending invite #{invite_id} deleted — the link is dead.")
+
+
+@admin_only
+async def delegate_invite_dump_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The mass-onboarding path: one .txt with a line per pending invite, so
+    the operator can work through 100+ customers from one file instead of
+    scrolling chat history."""
+    try:
+        delegates = await backend.get("/api/delegate")
+    except Exception as exc:  # noqa: BLE001
+        await update.message.reply_text(f"Could not read delegates: {exc}")
+        return
+    pending = [d for d in delegates if d.get("telegram_id") is None]
+    if not pending:
+        await update.message.reply_text("No pending invites — create one with /delegate_invite <customer>.")
+        return
+
+    buf = io.BytesIO()
+    for d in pending:
+        expires = (d.get("claim_expires_at") or "?")[:10]  # ISO date part only
+        url = d.get("invite_url") or "?"
+        buf.write(f"#{d['id']} | {d['scope_name']} | {url} | expires {expires}\n".encode("utf-8"))
+    buf.seek(0)
+    filename = f"delegate_invites_{datetime.now(timezone.utc):%Y-%m-%d}.txt"
+    await context.bot.send_document(chat_id=update.effective_chat.id, document=buf, filename=filename)
+    await update.message.reply_text(
+        f"{len(pending)} pending invite(s) — one line each: id | customer | link | expiry.",
+    )

@@ -70,6 +70,15 @@ def main_menu() -> ReplyKeyboardMarkup:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Invite deep link (see models.Delegate's docstring on the backend):
+    # /start dlgtok_<token> claims the pending invite this token names and
+    # lands the user straight on the normal welcome + menu. A failed claim
+    # must NOT fall through to the _session/NOT_A_DELEGATE path — the user
+    # holding a dead link is exactly the person NOT_A_DELEGATE's wording
+    # ("تماس بگیرید" with no reason given) would leave confused.
+    args = list(context.args or [])
+    if args and args[0].startswith("dlgtok_"):
+        return await _claim_invite(update, args[0][len("dlgtok_"):])
     try:
         session = await _session(update)
     except DelegateApiError:
@@ -77,6 +86,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if session is None:
         await update.effective_message.reply_text(texts.NOT_A_DELEGATE)
+        return
+    await update.effective_message.reply_text(texts.welcome(session["scope_name"]), reply_markup=main_menu())
+
+
+async def _claim_invite(update: Update, token: str) -> None:
+    """POST /api/delegate/bot/claim with the token from the deep link plus
+    this Telegram account's identity. Backend outcomes: 200 = bound, returns
+    the same session shape /session would; 404 = unknown/used/expired token;
+    409 = this Telegram account is already linked to some delegate. Anything
+    else is a genuine server problem -> GENERIC_ERROR."""
+    user = update.effective_user
+    try:
+        session = await backend.post("/api/delegate/bot/claim", json={
+            "token": token,
+            "telegram_id": user.id,
+            "telegram_username": user.username,
+        })
+    except DelegateApiError as exc:
+        if exc.status == 404:
+            await update.effective_message.reply_text(texts.INVITE_INVALID_OR_EXPIRED)
+        elif exc.status == 409:
+            await update.effective_message.reply_text(texts.INVITE_ALREADY_USED)
+        else:
+            await update.effective_message.reply_text(texts.GENERIC_ERROR)
         return
     await update.effective_message.reply_text(texts.welcome(session["scope_name"]), reply_markup=main_menu())
 

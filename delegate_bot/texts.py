@@ -32,6 +32,23 @@ NOT_A_DELEGATE = (
     "اگر فکر می‌کنید این اشتباه است، با تیم فروش تماس بگیرید."
 )
 
+# Deep-link invite (t.me/<bot>?start=dlgtok_...) outcomes. 404 from the
+# backend covers three indistinguishable-to-the-user cases (unknown token,
+# already-used token, expired) — one text for all of them, always ending in
+# the same instruction: ask for a fresh link.
+INVITE_INVALID_OR_EXPIRED = (
+    "این لینک دعوت معتبر نیست یا منقضی شده است.\n"
+    "از مدیر بخواهید لینک تازه‌ای برایتان بفرستد."
+)
+
+# 409: the Telegram account tapping the link is already bound to another
+# delegate row — worded to also cover the token-used case, since from the
+# customer's side they look the same.
+INVITE_ALREADY_USED = (
+    "این لینک قبلاً استفاده شده، یا این اکانت تلگرام شما قبلاً به پنل وصل شده است.\n"
+    "از مدیر بخواهید لینک تازه‌ای برایتان بفرستد."
+)
+
 GENERIC_ERROR = "یک مشکل پیش آمد — چند لحظه دیگر دوباره امتحان کنید."
 
 MENU_NEW = "➕ اکانت جدید"
