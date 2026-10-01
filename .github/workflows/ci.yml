@@ -92,6 +92,12 @@ jobs:
           API_BASE_URL: http://localhost:8000
           SHOP_BOT_API_KEY: ci
         run: python -c "import bot"
+      - name: Run shopbot shop-link claim test (shoplnk_ deep links)
+        env:
+          SHOP_BOT_TOKEN: "123:ci"
+          API_BASE_URL: http://localhost:8000
+          SHOP_BOT_API_KEY: ci
+        run: python test_shop_link_claim.py
 
   delegate-bot:
     runs-on: ubuntu-latest
