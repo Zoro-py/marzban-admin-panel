@@ -32,6 +32,7 @@ users. Do not re-add the future import to this module.
 
 import logging
 import secrets
+from datetime import timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -50,13 +51,16 @@ from app.delegate_service import (
     scope_name,
 )
 from app.services import serialise_billing
-from app.models import Customer, Delegate, Group
+from app.models import Customer, Delegate, Group, utcnow
 from app.schemas import (
     DelegateAccountCreateRequest,
     DelegateAccountDeleteRequest,
     DelegateAccountRenewRequest,
     DelegateAccountRow,
+    DelegateClaimRequest,
     DelegateCreateRequest,
+    DelegateInviteCreateRequest,
+    DelegateInviteRead,
     DelegateRead,
     DelegateSession,
     DelegateSessionRequest,
@@ -87,7 +91,24 @@ bot_router = APIRouter(
 )
 
 
+# How long a /delegate_invite deep link stays claimable. Long enough that the
+# operator can batch-message 100+ customers at their leisure, short enough
+# that a link forwarded to the wrong chat stops being a live grant within a
+# week. The operator can revoke any pending invite earlier (see DELETE below).
+INVITE_TTL_DAYS = 7
+
+
+def _invite_url(claim_token: str) -> str:
+    """The t.me deep link the customer taps: Telegram opens delegate_bot with
+    /start dlgtok_<claim_token> (see delegate_bot's start handler)."""
+    return f"https://t.me/{app_settings.delegate_bot_username.strip().lstrip('@')}?start=dlgtok_{claim_token}"
+
+
 def _read(session: Session, delegate: Delegate) -> DelegateRead:
+    # invite_url is populated ONLY for a still-pending invite row — once
+    # claimed, the token is cleared (it would be a dead link anyway) and
+    # there is nothing to hand back out.
+    pending_invite = delegate.telegram_id is None and delegate.claim_token is not None
     return DelegateRead(
         id=delegate.id,
         customer_id=delegate.customer_id,
@@ -101,6 +122,8 @@ def _read(session: Session, delegate: Delegate) -> DelegateRead:
         username_prefix=delegate.username_prefix,
         default_duration_days=delegate.default_duration_days,
         created_at=delegate.created_at,
+        claim_expires_at=delegate.claim_expires_at if pending_invite else None,
+        invite_url=_invite_url(delegate.claim_token) if pending_invite and app_settings.delegate_bot_username.strip() else None,
     )
 
 
@@ -177,6 +200,79 @@ def create_or_update_delegate(body: DelegateCreateRequest, session: Session = De
     return _read(session, delegate)
 
 
+@router.post("/invite", response_model=DelegateInviteRead)
+def create_delegate_invite(body: DelegateInviteCreateRequest, session: Session = Depends(get_session)):
+    """Mint a one-time t.me deep link instead of asking the operator to collect
+    each customer's numeric Telegram id (/delegate_add stays valid for anyone
+    who already knows their id). The row is created as a PENDING invite —
+    telegram_id=None, is_active=False — and becomes a normal claimed delegate
+    only when the customer taps the link (POST /api/delegate/bot/claim).
+
+    Deliberately refuses to stack pending invites for one scope: every extra
+    live link is one more token that still grants this scope, and the operator
+    has no good way to know which of them is still floating around."""
+    username = app_settings.delegate_bot_username.strip().lstrip("@")
+    if not username:
+        raise HTTPException(
+            503,
+            "Delegate bot username not configured (DELEGATE_BOT_USERNAME) — "
+            "invite links would point nowhere",
+        )
+    if (body.customer_id is None) == (body.group_id is None):
+        raise HTTPException(400, "Provide exactly one of customer_id or group_id")
+    if body.customer_id is not None and not session.get(Customer, body.customer_id):
+        raise HTTPException(404, "customer_id not found")
+    if body.group_id is not None and not session.get(Group, body.group_id):
+        raise HTTPException(404, "group_id not found")
+
+    scope_filter = Delegate.customer_id == body.customer_id if body.customer_id is not None else Delegate.group_id == body.group_id
+    pending = session.exec(
+        select(Delegate).where(Delegate.telegram_id.is_(None), scope_filter)
+    ).first()
+    if pending is not None:
+        raise HTTPException(
+            409,
+            f"A pending invite already exists for this scope (delegate id {pending.id}) — "
+            f"revoke it first: DELETE /api/delegate/{pending.id}",
+        )
+
+    delegate = Delegate(
+        customer_id=body.customer_id,
+        group_id=body.group_id,
+        telegram_id=None,
+        is_active=False,
+        claim_token=secrets.token_urlsafe(16),
+        claim_expires_at=utcnow() + timedelta(days=INVITE_TTL_DAYS),
+    )
+    session.add(delegate)
+    session.commit()
+    session.refresh(delegate)
+    # _read() already resolves invite_url for a pending row (the username
+    # blank-check above guarantees it isn't None here), so this is just the
+    # same payload narrowed to the non-Optional invite_url type.
+    return DelegateInviteRead(**_read(session, delegate).model_dump())
+
+
+@router.delete("/{delegate_id}")
+def delete_pending_delegate(delegate_id: int, session: Session = Depends(get_session)):
+    """Delete a delegate row, but ONLY while it is still a PENDING invite.
+    A claimed row carries history (credit_limit decisions, AccountEvents,
+    ledger entries via its accounts) — that one goes through the deactivate
+    endpoint, which flips is_active without losing anything."""
+    delegate = session.get(Delegate, delegate_id)
+    if not delegate:
+        raise HTTPException(404, "Delegate not found")
+    if delegate.telegram_id is not None:
+        raise HTTPException(
+            409,
+            "This delegate is already claimed — deactivate it with "
+            f"POST /api/delegate/{delegate_id}/deactivate instead of deleting it",
+        )
+    session.delete(delegate)
+    session.commit()
+    return {"ok": True}
+
+
 @router.post("/{delegate_id}/deactivate", response_model=DelegateRead)
 def deactivate_delegate(delegate_id: int, session: Session = Depends(get_session)):
     delegate = session.get(Delegate, delegate_id)
@@ -199,9 +295,10 @@ def _require_delegate(session: Session, telegram_id: int) -> Delegate:
     return delegate
 
 
-@bot_router.post("/session", response_model=DelegateSession)
-def bot_session(body: DelegateSessionRequest, session: Session = Depends(get_session)):
-    delegate = _require_delegate(session, body.telegram_id)
+def _session_payload(session: Session, delegate: Delegate) -> DelegateSession:
+    """Everything delegate_bot needs to draw its menu — shared by /session
+    (already-claimed delegates) and /claim (the moment a pending invite is
+    claimed), so both endpoints can never drift apart in shape."""
     return DelegateSession(
         delegate_id=delegate.id,
         label=delegate.label,
@@ -209,6 +306,63 @@ def bot_session(body: DelegateSessionRequest, session: Session = Depends(get_ses
         default_duration_days=delegate.default_duration_days,
         quick_volumes_gb=[10, 20, 30, 50, 100],
     )
+
+
+@bot_router.post("/session", response_model=DelegateSession)
+def bot_session(body: DelegateSessionRequest, session: Session = Depends(get_session)):
+    delegate = _require_delegate(session, body.telegram_id)
+    return _session_payload(session, delegate)
+
+
+@bot_router.post("/claim", response_model=DelegateSession)
+def bot_claim(body: DelegateClaimRequest, session: Session = Depends(get_session)):
+    """The other half of /delegate_invite: the customer tapped
+    t.me/<bot>?start=dlgtok_<token>, delegate_bot relayed the token, and THIS
+    is where the pending row becomes a real grant. Auth is the delegate bot
+    key, not the customer — the customer's only credential is unguessable
+    possession of the token itself.
+
+    404 = token unknown, already consumed, or expired (all three read
+    identically to a holder of a stale link — no oracle telling an attacker
+    which tokens ever existed); 409 = this Telegram account is already bound
+    to some other delegate row."""
+    token = body.token.strip()
+    delegate = session.exec(select(Delegate).where(Delegate.claim_token == token)).first() if token else None
+    # SQLite DATETIME columns store naive UTC here (same convention the rest
+    # of this codebase compares against — see groups.py's `utcnow().replace(
+    # tzinfo=None)`), so the comparison is naive-vs-naive on purpose.
+    now = utcnow().replace(tzinfo=None)
+    if (
+        delegate is None
+        or delegate.telegram_id is not None
+        or delegate.claim_expires_at is None
+        or delegate.claim_expires_at <= now
+    ):
+        raise HTTPException(404, "This invite link is invalid or has expired — ask the operator for a fresh one")
+
+    collision = session.exec(
+        select(Delegate).where(Delegate.telegram_id == body.telegram_id)
+    ).first()
+    if collision is not None:
+        raise HTTPException(
+            409,
+            "This Telegram account is already linked to a delegate "
+            f"(delegate id {collision.id})",
+        )
+
+    delegate.telegram_id = body.telegram_id
+    # Label the row with the Telegram handle only if the operator never set
+    # one — never overwrite an existing label (it may hold a name the
+    # operator chose deliberately).
+    if not (delegate.label or "").strip() and body.telegram_username:
+        delegate.label = body.telegram_username
+    delegate.is_active = True
+    delegate.claim_token = None
+    delegate.claim_expires_at = None
+    session.add(delegate)
+    session.commit()
+    session.refresh(delegate)
+    return _session_payload(session, delegate)
 
 
 @bot_router.get("/accounts", response_model=list[DelegateAccountRow])

@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import bindparam, text, event
+from sqlalchemy.dialects import sqlite as sqlite_dialect
+from sqlalchemy.schema import CreateTable
 from sqlmodel import SQLModel, Session, create_engine
 
 from app.config import settings
@@ -369,6 +371,57 @@ def _run_lightweight_migrations() -> None:
         existing_app_settings = {row[1] for row in conn.execute(text("PRAGMA table_info(appsettings)"))}
         if existing_app_settings and "last_payg_monthly_settlement" not in existing_app_settings:
             conn.execute(text("ALTER TABLE appsettings ADD COLUMN last_payg_monthly_settlement VARCHAR"))
+
+        # Delegate invite links (2026-10-01): two new nullable columns, plus a
+        # table REBUILD to make telegram_id nullable — SQLite cannot change a
+        # column's nullability in place, so the standard copy-out/copy-back
+        # rebuild is the only way. A PENDING invite row carries
+        # telegram_id=NULL + claim_token/claim_expires_at (see models.Delegate's
+        # docstring); the live production table is empty today, but dev DBs with
+        # real delegate rows must survive this too, hence the full copy.
+        delegate_cols = conn.execute(text("PRAGMA table_info(delegate)")).fetchall()
+        existing_delegate = {row[1] for row in delegate_cols}
+        if existing_delegate:
+            if "claim_token" not in existing_delegate:
+                conn.execute(text("ALTER TABLE delegate ADD COLUMN claim_token VARCHAR"))
+                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_delegate_claim_token ON delegate (claim_token)"))
+            if "claim_expires_at" not in existing_delegate:
+                conn.execute(text("ALTER TABLE delegate ADD COLUMN claim_expires_at DATETIME"))
+
+            telegram_id_col = next((row for row in delegate_cols if row[1] == "telegram_id"), None)
+            # PRAGMA table_info columns: (cid, name, type, notnull, dflt_value, pk).
+            # The rebuild is guarded on the LIVE nullability, not on "some old
+            # schema existed" — once it has run once, notnull is 0 and this
+            # branch is a no-op on every later startup.
+            if telegram_id_col is not None and telegram_id_col[3]:
+                # Generated from the CURRENT model so it can never drift from
+                # what create_all() would make on a fresh database.
+                new_ddl = str(
+                    CreateTable(models.Delegate.__table__)
+                    .compile(dialect=sqlite_dialect.dialect())
+                ).strip() + ";"
+                new_columns = [c.name for c in models.Delegate.__table__.columns]
+                # Copy every column that exists on BOTH sides, in the model's
+                # order: on a pre-invite DB the two new columns don't exist on
+                # the old table and stay NULL, which is exactly the PENDING-
+                # free, fully-claimed state those rows were in anyway.
+                copy_columns = [c for c in new_columns if c in existing_delegate]
+                conn.execute(text("DROP TABLE IF EXISTS delegate_new"))
+                conn.execute(text(new_ddl.replace(f"CREATE TABLE delegate (", "CREATE TABLE delegate_new (", 1)))
+                conn.execute(text(
+                    f"INSERT INTO delegate_new ({', '.join(copy_columns)}) "
+                    f"SELECT {', '.join(copy_columns)} FROM delegate"
+                ))
+                conn.execute(text("DROP TABLE delegate"))
+                conn.execute(text("ALTER TABLE delegate_new RENAME TO delegate"))
+                # DROP TABLE took the old indexes with it — recreate every
+                # indexed column's index, names matching SQLAlchemy's own
+                # ix_<table>_<column> convention (same reasoning as the index
+                # block further up).
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_delegate_customer_id ON delegate (customer_id)"))
+                conn.execute(text("CREATE INDEX IF NOT EXISTS ix_delegate_group_id ON delegate (group_id)"))
+                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_delegate_telegram_id ON delegate (telegram_id)"))
+                conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_delegate_claim_token ON delegate (claim_token)"))
 
 
 def _run_shop_migrations() -> None:

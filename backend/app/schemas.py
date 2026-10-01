@@ -904,7 +904,9 @@ class DelegateRead(BaseModel):
     customer_id: Optional[int]
     group_id: Optional[int]
     scope_name: str
-    telegram_id: int
+    # Optional since invite links: None on a PENDING invite row no Telegram
+    # account has claimed yet (see models.Delegate's docstring).
+    telegram_id: Optional[int]
     label: Optional[str]
     is_active: bool
     credit_limit: Optional[float]
@@ -912,6 +914,35 @@ class DelegateRead(BaseModel):
     username_prefix: str
     default_duration_days: int
     created_at: datetime
+    # Only meaningful on a PENDING invite row: when the deep link stops
+    # working, and the deep link itself (None on claimed rows — an already
+    # claimed grant has no link to hand out).
+    claim_expires_at: Optional[datetime] = None
+    invite_url: Optional[str] = None
+
+
+class DelegateInviteCreateRequest(BaseModel):
+    """Operator-only (POST /api/delegate/invite). Exactly one of
+    customer_id/group_id — same XOR rule as DelegateCreateRequest, enforced
+    in the router so the 400 can name the rule instead of a generic
+    pydantic validation error."""
+    customer_id: Optional[int] = None
+    group_id: Optional[int] = None
+
+
+class DelegateInviteRead(DelegateRead):
+    """Response of POST /api/delegate/invite — the freshly created PENDING
+    row plus its ready-to-send deep link. invite_url is non-Optional here:
+    a successful invite creation always produced one."""
+    invite_url: str
+
+
+class DelegateClaimRequest(BaseModel):
+    """delegate_bot only (POST /api/delegate/bot/claim): bind the tapping
+    user's Telegram account to the PENDING invite row the token names."""
+    token: str
+    telegram_id: int
+    telegram_username: Optional[str] = None
 
 
 class DelegateSessionRequest(BaseModel):

@@ -696,7 +696,21 @@ class Delegate(SQLModel, table=True):
     existing customer or group. Not every customer gets this — it's an
     explicit, per-customer opt-in the operator creates (see bot/handlers/
     delegate_admin.py's /delegate_add), never something a customer can
-    request for themselves."""
+    request for themselves.
+
+    Two lifecycle states, distinguished by telegram_id:
+
+      PENDING INVITE — telegram_id=None, is_active=False, claim_token set,
+      claim_expires_at set. Created by /delegate_invite (a one-time t.me
+      deep link, so the operator no longer needs to ask each customer for
+      their numeric Telegram id); claiming (POST /api/delegate/bot/claim)
+      or a direct POST /api/delegate (the old path) turns it into:
+
+      CLAIMED — telegram_id set, is_active=True, claim_token/claim_expires_at
+      cleared. Only then can the customer actually use delegate_bot.
+
+    SQLite's unique indexes allow multiple NULLs, so telegram_id stays
+    unique across CLAIMED rows while any number of PENDING rows exist."""
 
     id: Optional[int] = Field(default=None, primary_key=True)
 
@@ -711,11 +725,24 @@ class Delegate(SQLModel, table=True):
     # Telegram's own numeric id — the identity delegate_bot authenticates
     # by, exact match only (see delegate_bot's docstring for why this is
     # never a fuzzy name lookup, same reasoning as bot/handlers/wallet.py).
-    telegram_id: int = Field(unique=True, index=True)
+    # Optional since the invite-link flow: None = a PENDING invite row that
+    # no Telegram account has claimed yet (see the class docstring).
+    telegram_id: Optional[int] = Field(default=None, unique=True, index=True)
     label: Optional[str] = None
     # Revokes access without losing the row's history (credit_limit, past
     # AccountEvents still point here). The operator's own off-switch.
+    # A PENDING invite row carries is_active=False until it is claimed.
     is_active: bool = True
+
+    # One-time deep-link credentials for a PENDING invite (see the class
+    # docstring): the customer taps
+    # https://t.me/<delegate_bot_username>?start=dlgtok_<claim_token> and the
+    # bot binds their telegram_id to this row. token_urlsafe(16) = 128 bits —
+    # unguessable, because anyone holding the token CLAIMS the grant.
+    # claim_expires_at bounds the exposure of a link forwarded to the wrong
+    # chat (7 days, set by the invite endpoint); both are cleared on claim.
+    claim_token: Optional[str] = Field(default=None, unique=True, index=True)
+    claim_expires_at: Optional[datetime] = None
 
     # HARD stop, financial: total posted debt (MoneyBook.customer_posted /
     # group_posted — the real, billed figure, not pending/unbilled usage)

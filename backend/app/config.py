@@ -127,6 +127,15 @@ class Settings(BaseSettings):
     # check, not by this key).
     delegate_bot_api_key: str = ""
 
+    # The delegate bot's Telegram username WITHOUT the "@" (e.g. "my_panel_bot"
+    # for t.me/my_panel_bot). Needed to build the one-time invite deep links
+    # (/delegate_invite -> https://t.me/<username>?start=dlgtok_<token>):
+    # invite creation is refused with a clear 503 while this is blank, so the
+    # operator can't mint links that point nowhere. The bot's own token keeps
+    # living only in delegate_bot/.env — the backend needs the username, never
+    # the token.
+    delegate_bot_username: str = ""
+
     # Shared secret the monitoring agents on the VPN servers present on
     # POST /api/monitor/ingest (X-Monitor-Token header). Fail closed exactly
     # like the bot keys above: an unset token refuses every ingest rather
