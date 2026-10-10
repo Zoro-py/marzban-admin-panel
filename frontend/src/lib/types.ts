@@ -507,6 +507,29 @@ export interface UpcomingRenewal {
   queued_at: string
 }
 
+export type AnomalyKind = 'rate_mismatch' | 'external_change_unbilled' | 'stale_open_period' | 'dampened_resize'
+
+export interface Anomaly {
+  kind: AnomalyKind
+  account_id: number
+  account: string
+  date: string
+  entry_id?: number
+  // Shape depends on `kind` — see backend/app/audit.py's docstring for each
+  // one's exact fields; read defensively (optional chaining / fallbacks)
+  // rather than asserting a shape per kind here.
+  detail: Record<string, unknown>
+}
+
+export interface AnomaliesReport {
+  scanned_accounts: number
+  window: { since: string; until: string; days: number }
+  usage_log_available: boolean
+  usage_log_error: string | null
+  counts: Record<AnomalyKind, number>
+  findings: Anomaly[]
+}
+
 export interface FinanceTransaction {
   id: number
   type: LedgerType

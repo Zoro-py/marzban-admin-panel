@@ -4,6 +4,7 @@ import type {
   AccountEvent,
   AccountInvoice,
   AccountRow,
+  AnomaliesReport,
   Balance,
   BillingMode,
   BulkAccountPreview,
@@ -251,6 +252,10 @@ export const reportsApi = {
     (await api.get<OnlineHistory>('/api/reports/online-history', { params: { range } })).data,
   systemStatus: async () => (await api.get<SystemStatus>('/api/reports/system-status')).data,
   upcomingRenewals: async () => (await api.get<UpcomingRenewal[]>('/api/reports/upcoming-renewals')).data,
+  anomalies: async (lookbackDays?: number) =>
+    (await api.get<AnomaliesReport>('/api/reports/anomalies', {
+      params: lookbackDays ? { lookback_days: lookbackDays } : undefined,
+    })).data,
 }
 
 export const syncApi = {

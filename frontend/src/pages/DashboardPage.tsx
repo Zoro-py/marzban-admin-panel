@@ -8,13 +8,18 @@ import {
   CalendarX,
   CheckCircle2,
   Clock,
+  Hourglass,
   RefreshCw,
+  Scale,
   Tag,
+  TrendingDown,
+  Unplug,
   UserX,
   Wallet,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { reportsApi } from '@/lib/api'
+import type { Anomaly } from '@/lib/types'
 import { StatCard } from '@/components/StatCard'
 import { Money } from '@/components/Money'
 import { OnlineTrendChart } from '@/components/dashboard/OnlineTrendChart'
@@ -33,6 +38,10 @@ export function DashboardPage() {
 
   const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['reports', 'summary'], queryFn: reportsApi.summary })
   const financeQuery = useQuery({ queryKey: ['reports', 'finance'], queryFn: () => reportsApi.finance() })
+  // Cross-account billing anomalies (app/audit.py) — a slower, independent
+  // read (it touches Marzban's local usage log across every account), so it
+  // loads on its own rather than gating the rest of the page.
+  const anomaliesQuery = useQuery({ queryKey: ['reports', 'anomalies'], queryFn: () => reportsApi.anomalies() })
   const openAccount = useOpenAccountInspector()
 
   if (isLoading) {
@@ -61,7 +70,10 @@ export function DashboardPage() {
     data.near_quota_accounts.length +
     data.pending_settlement.length +
     data.unassigned_accounts.length +
-    data.no_rate_accounts.length
+    data.no_rate_accounts.length +
+    (anomaliesQuery.data?.findings.length ?? 0)
+
+  const findingsByKind = (kind: Anomaly['kind']) => anomaliesQuery.data?.findings.filter((f) => f.kind === kind) ?? []
 
   return (
     <div className="flex flex-col gap-4">
@@ -331,6 +343,84 @@ export function DashboardPage() {
                   )}
                 />
               )}
+            </QueueSection>
+
+            {/* Cross-account billing anomalies (app/audit.py) — unprompted,
+                whole-fleet checks the operator would otherwise only catch by
+                opening Statement on the one account they already suspect.
+                Grouped last among money items: real, but something already
+                posted/running, not a service outage. */}
+            <QueueSection icon={Scale} tone="warn" title="Rate mismatch" count={findingsByKind('rate_mismatch').length}>
+              <Virtuoso
+                useWindowScroll
+                data={findingsByKind('rate_mismatch')}
+                itemContent={(_, f) => (
+                  <AccountQueueRow
+                    key={f.entry_id}
+                    onClick={() => openAccount(f.account_id)}
+                    username={f.account}
+                    owner={null}
+                    metric={
+                      <span className="font-medium text-warning">
+                        {(f.detail.gap as number) > 0 ? '+' : ''}
+                        {formatToman(f.detail.gap as number)} off
+                      </span>
+                    }
+                  />
+                )}
+              />
+            </QueueSection>
+
+            <QueueSection icon={Unplug} tone="warn" title="Changed in Marzban, nothing billed" count={findingsByKind('external_change_unbilled').length}>
+              <Virtuoso
+                useWindowScroll
+                data={findingsByKind('external_change_unbilled')}
+                itemContent={(_, f) => (
+                  <AccountQueueRow
+                    key={`${f.account_id}-${f.date}`}
+                    onClick={() => openAccount(f.account_id)}
+                    username={f.account}
+                    owner={null}
+                    metric={<span className="truncate text-xs text-muted-foreground">{f.detail.note as string}</span>}
+                  />
+                )}
+              />
+            </QueueSection>
+
+            <QueueSection icon={Hourglass} tone="warn" title="Package open far too long" count={findingsByKind('stale_open_period').length}>
+              <Virtuoso
+                useWindowScroll
+                data={findingsByKind('stale_open_period')}
+                itemContent={(_, f) => (
+                  <AccountQueueRow
+                    key={f.account_id}
+                    onClick={() => openAccount(f.account_id)}
+                    username={f.account}
+                    owner={null}
+                    metric={
+                      <span className="font-medium text-warning">
+                        {(f.detail.age_days as number).toFixed(0)}d open · {formatToman(f.detail.pending_amount as number)}
+                      </span>
+                    }
+                  />
+                )}
+              />
+            </QueueSection>
+
+            <QueueSection icon={TrendingDown} tone="info" title="Package size capped (dampened)" count={findingsByKind('dampened_resize').length}>
+              <Virtuoso
+                useWindowScroll
+                data={findingsByKind('dampened_resize')}
+                itemContent={(_, f) => (
+                  <AccountQueueRow
+                    key={`${f.account_id}-${f.date}`}
+                    onClick={() => openAccount(f.account_id)}
+                    username={f.account}
+                    owner={null}
+                    metric={<span className="text-xs text-muted-foreground">worth a gut check</span>}
+                  />
+                )}
+              />
             </QueueSection>
           </div>
         )}

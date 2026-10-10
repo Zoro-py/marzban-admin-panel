@@ -517,3 +517,18 @@ def upcoming_renewals(session: Session = Depends(get_session)):
     # time left to reconsider or cancel.
     rows.sort(key=lambda r: (r["days_until_activation"] is None, r["days_until_activation"]))
     return rows
+
+
+@router.get("/anomalies")
+def anomalies(lookback_days: int = 60, session: Session = Depends(get_session)):
+    """Cross-account billing anomalies — see app/audit.py for what each
+    `kind` means and why these four and not others. Read-only, no live
+    Marzban HTTP calls (only Marzban's local reset-log, a cheap sqlite read),
+    so this scans the whole fleet in one request instead of the operator
+    opening Statement on ~170 accounts one at a time to find the handful
+    that need a look."""
+    if not 1 <= lookback_days <= 365:
+        raise HTTPException(400, "lookback_days must be between 1 and 365")
+    from app.audit import build_anomalies
+
+    return build_anomalies(session, lookback_days=lookback_days)
