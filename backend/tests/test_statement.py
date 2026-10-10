@@ -169,6 +169,10 @@ check("recharges: the -2GB reduction is reported as excluded, not subtracted sil
 st_payg = stmt(account_id=ids["payg"], since=since, usage="false")
 check("recharges: +285GB cap move on a PAYG account is excluded (standard-shape sweep, not a sale)",
       st_payg["volume"]["recharged_gb"] == 0 and any(r["gb"] == 285.0 for r in st_payg["volume"]["excluded"]), st_payg["volume"])
+check("payg_equivalent: a PAYG account's own row is always None (nothing hypothetical about what it already is)",
+      st_payg["accounts"][0]["payg_equivalent"] is None, st_payg["accounts"])
+check("prepay_vs_payg: a pure-PAYG scope has no prepay account to compare -> None",
+      st_payg["prepay_vs_payg"] is None, st_payg["prepay_vs_payg"])
 check("recharges: malformed detail and set_data_limit are never parsed into GB",
       not any(r["gb"] in (999.0, 80.0) for r in st["recharges"] + v["excluded"]))
 
@@ -178,6 +182,12 @@ import sqlite3  # noqa: E402
 r = stmt(account_id=ids["pre"], since=since)
 check("usage: Marzban usage log not mounted -> unavailable, money still returned",
       r["volume"]["usage_status"] == "unavailable" and r["volume"]["used_gb"] is None and r["statement"]["charge_count"] == 1, r["volume"])
+check("payg_equivalent: a prepay account with unknown usage is None, not a silent 0",
+      r["accounts"][0]["payg_equivalent"] is None, r["accounts"])
+check("prepay_vs_payg: unknown usage on the only prepay account -> payg_equivalent/diff None, counted as missing",
+      r["prepay_vs_payg"]["payg_equivalent"] is None and r["prepay_vs_payg"]["diff"] is None
+      and r["prepay_vs_payg"]["accounts_missing_usage"] == 1 and r["prepay_vs_payg"]["accounts_missing_rate"] == 0,
+      r["prepay_vs_payg"])
 
 # st_pre lived three periods: created -60d, reset at -30d (40 GB used), reset
 # at `mid` (-10d, 25 GB used), and the open period since then (8 GB so far).
@@ -316,6 +326,23 @@ check("all-time: usage is every Marzban period exactly (not a stray 0)",
       r["volume"]["usage_status"] == "complete" and abs((r["volume"]["used_gb"] or 0) - 73) < 0.01, r["volume"]["used_gb"])
 check("all-time: month money still sums to the window total",
       abs(sum(m["charged"] for m in r["months"]) - r["statement"]["charged"]) < 0.01)
+# st_pre has no account-level rate -> falls back to AppSettings.default_rate_per_gb (5000).
+# 73 GB used all-time x 5000 = 365,000: what st_pre would have been charged on PAYG.
+check("payg_equivalent: prepay account, known usage, default rate -> used_gb x rate",
+      abs(r["accounts"][0]["payg_equivalent"] - 73 * 5000) < 1, r["accounts"][0])
+check("prepay_vs_payg: single-prepay-account scope mirrors that account's own figures",
+      r["prepay_vs_payg"]["prepay_charged"] == r["statement"]["charged"]
+      and abs(r["prepay_vs_payg"]["payg_equivalent"] - 73 * 5000) < 1
+      and abs(r["prepay_vs_payg"]["diff"] - (r["statement"]["charged"] - 73 * 5000)) < 1
+      and r["prepay_vs_payg"]["accounts_missing_usage"] == 0 and r["prepay_vs_payg"]["accounts_missing_rate"] == 0,
+      r["prepay_vs_payg"])
+# cust scope = st_pre (prepay) + st_payg (payg): the payg account must be
+# excluded from prepay_charged/payg_equivalent even though both are in scope.
+r_cust = stmt(customer_id=ids["cust"], since="2000-01-01T00:00:00Z")
+check("prepay_vs_payg: a PAYG sibling in the same scope never leaks into the prepay comparison",
+      abs(r_cust["prepay_vs_payg"]["prepay_charged"] - r["prepay_vs_payg"]["prepay_charged"]) < 1
+      and abs(r_cust["prepay_vs_payg"]["payg_equivalent"] - r["prepay_vs_payg"]["payg_equivalent"]) < 1,
+      (r_cust["prepay_vs_payg"], r["prepay_vs_payg"]))
 
 # ---- 6) errors -------------------------------------------------------------------
 check("errors: two scopes -> 400", client.get("/api/ledger/statement", params={"account_id": 1, "customer_id": 1, "since": since}).status_code == 400)

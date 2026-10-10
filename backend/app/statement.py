@@ -457,6 +457,16 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
         })
 
     # --- per-account breakdown ----------------------------------------------------
+    # "What if this prepay account had been PAYG instead" (owner ask, D32):
+    # actual used_gb x the account's own rate, same figure PAYG's own monthly
+    # settle would have charged. Only computed where usage is actually known
+    # for this account (usage_by_acc holds None on an unknown/unavailable
+    # account) and a rate is set — never a silent 0 standing in for "unknown".
+    payg_prepay_charged = 0.0
+    payg_prepay_equivalent = 0.0
+    payg_prepay_missing_usage = 0
+    payg_prepay_missing_rate = 0
+
     acc_rows = []
     for a in scope.accounts:
         ac = [e for e in charges if e.account_id == a.id]
@@ -464,15 +474,29 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
         ar = [r for r in counted if r["account_id"] == a.id]
         if not (ac or ap or ar or usage_by_acc.get(a.id)) and (a.deleted_at is not None or a.status == "deleted_from_marzban"):
             continue
+        a_charged = round(sum(e.amount for e in ac), 2)
+        a_used = usage_by_acc.get(a.id)
+        a_rate = rates[a.id]
+        is_prepay = modes[a.id] == BillingMode.prepay
+        payg_equivalent = round(a_used * a_rate, 2) if is_prepay and a_used is not None and a_rate else None
+        if is_prepay and not (a.deleted_at is not None or a.status == "deleted_from_marzban"):
+            payg_prepay_charged += a_charged
+            if payg_equivalent is not None:
+                payg_prepay_equivalent += payg_equivalent
+            elif a_used is None:
+                payg_prepay_missing_usage += 1
+            elif not a_rate:
+                payg_prepay_missing_rate += 1
         acc_rows.append({
             "account_id": a.id, "username": a.marzban_username,
             "billing_mode": getattr(modes[a.id], "value", modes[a.id]), "rate": rates[a.id],
             "deleted": a.deleted_at is not None or a.status == "deleted_from_marzban",
-            "charged": round(sum(e.amount for e in ac), 2), "charge_count": len(ac),
+            "charged": a_charged, "charge_count": len(ac),
             "paid": round(sum(e.amount for e in ap), 2),
             "recharged_gb": round(sum(r["gb"] for r in ar), 3), "recharge_count": len(ar),
-            "used_gb": usage_by_acc.get(a.id),
+            "used_gb": a_used,
             "used_estimated_gb": est_by_acc.get(a.id, 0.0),
+            "payg_equivalent": payg_equivalent,
             "pending": round(book.account_pending(a), 2),
         })
 
@@ -527,6 +551,16 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
         },
         "months": month_rows,
         "periods": period_rows,
+        # Only present when at least one live prepay account's usage over
+        # this window is actually known — otherwise None, never a 0 that
+        # looks like "they'd have paid nothing on PAYG".
+        "prepay_vs_payg": None if not any(a["billing_mode"] == "prepay" and not a["deleted"] for a in acc_rows) else {
+            "prepay_charged": round(payg_prepay_charged, 2),
+            "payg_equivalent": round(payg_prepay_equivalent, 2) if payg_prepay_missing_usage == 0 else None,
+            "diff": round(payg_prepay_charged - payg_prepay_equivalent, 2) if payg_prepay_missing_usage == 0 else None,
+            "accounts_missing_usage": payg_prepay_missing_usage,
+            "accounts_missing_rate": payg_prepay_missing_rate,
+        },
         "accounts": acc_rows,
         "recharges": counted,
         "entries": entries,

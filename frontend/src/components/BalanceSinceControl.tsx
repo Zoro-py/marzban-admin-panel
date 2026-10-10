@@ -121,6 +121,51 @@ function StatementLines({ s, lang }: { s: Statement; lang: Lang }) {
   )
 }
 
+/** "If this had been PAYG" — what a prepay account/scope was actually
+ * charged in this window vs. what its actual usage would have cost billed
+ * as PAYG, at each account's own rate. Only rendered when the backend could
+ * actually compute it (prepay_vs_payg !== null): at least one live prepay
+ * account in scope with known usage. */
+function PaygWhatIfLine({ s, lang }: { s: Statement; lang: Lang }) {
+  const w = s.prepay_vs_payg
+  if (!w) return null
+  const known = w.payg_equivalent !== null && w.diff !== null
+  return (
+    <div className="rounded-md border border-dashed border-border px-3 py-2 text-xs" data-testid="payg-whatif">
+      <p className="mb-1 text-[11px] font-medium text-muted-foreground">
+        {tr(lang, 'اگر prepay بودن نبود، به‌جایش PAYG', 'If billed PAYG instead of prepay')}
+      </p>
+      <div className="flex items-baseline justify-between gap-3 py-0.5">
+        <span className="text-muted-foreground">{tr(lang, 'واقعاً شارژ شده (prepay)', 'Actually charged (prepay)')}</span>
+        <Num>{formatToman(w.prepay_charged)}</Num>
+      </div>
+      <div className="flex items-baseline justify-between gap-3 py-0.5">
+        <span className="text-muted-foreground">{tr(lang, 'اگر PAYG بود (مصرف واقعی × نرخ)', 'If PAYG (actual usage × rate)')}</span>
+        <Num>{known ? formatToman(w.payg_equivalent!) : '—'}</Num>
+      </div>
+      {known && (
+        <div className="flex items-baseline justify-between gap-3 border-t border-border py-0.5 pt-1 font-semibold">
+          <span className="text-muted-foreground">{tr(lang, 'تفاوت', 'Difference')}</span>
+          <Num className={w.diff! > 0 ? 'text-warning' : w.diff! < 0 ? 'text-success' : undefined}>
+            {w.diff! > 0 ? '+' : ''}{formatToman(w.diff!)}
+            {w.diff! > 0 && <span className="ms-1 font-normal text-[10.5px]">{tr(lang, '(prepay گران‌تر بوده)', '(prepay cost more)')}</span>}
+            {w.diff! < 0 && <span className="ms-1 font-normal text-[10.5px]">{tr(lang, '(prepay ارزان‌تر بوده)', '(prepay cost less)')}</span>}
+          </Num>
+        </div>
+      )}
+      {(w.accounts_missing_usage > 0 || w.accounts_missing_rate > 0) && (
+        <p className="mt-1 text-[10.5px] text-muted-foreground">
+          {w.accounts_missing_usage > 0 &&
+            tr(lang, `مصرف ${w.accounts_missing_usage} اکانت نامعلوم است`, `usage unknown for ${w.accounts_missing_usage} account(s)`)}
+          {w.accounts_missing_usage > 0 && w.accounts_missing_rate > 0 && (lang === 'fa' ? '، ' : ', ')}
+          {w.accounts_missing_rate > 0 &&
+            tr(lang, `نرخ ${w.accounts_missing_rate} اکانت تنظیم نشده`, `rate not set for ${w.accounts_missing_rate} account(s)`)}
+        </p>
+      )}
+    </div>
+  )
+}
+
 function UsageTile({ s, lang }: { s: Statement; lang: Lang }) {
   const v = s.volume
   let sub: React.ReactNode = null
@@ -301,6 +346,9 @@ function AccountsTable({ s, lang }: { s: Statement; lang: Lang }) {
             <th>{tr(lang, 'پرداخت', 'Paid')}</th>
             <th>{tr(lang, 'حجم شارژشده', 'Recharged')}</th>
             <th>{tr(lang, 'مصرف', 'Used')}</th>
+            <th title={tr(lang, 'اگر این اکانت PAYG بود، با مصرف واقعی چقدر شارژ می‌شد (فقط prepay)', 'What this account would have been charged on PAYG for its actual usage (prepay only)')}>
+              {tr(lang, 'اگر PAYG بود', 'If PAYG')}
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -321,6 +369,15 @@ function AccountsTable({ s, lang }: { s: Statement; lang: Lang }) {
                   {a.used_estimated_gb > 0.0005 ? '≈ ' : ''}
                   {fmtGb(a.used_gb)}
                 </Num>
+              </td>
+              <td>
+                {a.payg_equivalent === null ? (
+                  <span className="text-muted-foreground">—</span>
+                ) : (
+                  <Num className={a.payg_equivalent > a.charged ? 'text-warning' : a.payg_equivalent < a.charged ? 'text-success' : undefined}>
+                    {formatToman(a.payg_equivalent)}
+                  </Num>
+                )}
               </td>
             </tr>
           ))}
@@ -554,6 +611,8 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
           </div>
 
           <StatementLines s={s} lang={lang} />
+
+          <PaygWhatIfLine s={s} lang={lang} />
 
           {s.volume.excluded.length > 0 && (
             <p className="text-[10.5px] leading-snug text-muted-foreground">

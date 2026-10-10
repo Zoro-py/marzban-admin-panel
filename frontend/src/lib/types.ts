@@ -361,8 +361,22 @@ export interface Statement {
     recharge_count: number
     used_gb: number | null
     used_estimated_gb: number
+    /** What this account would have been charged on PAYG for its actual
+     * usage, at its own rate. Only set for a live prepay account whose usage
+     * over the window is known; null otherwise (never a silent 0). */
+    payg_equivalent: number | null
     pending: number
   }[]
+  /** Prepay accounts only: what they were actually charged in this window
+   * vs. what their actual usage would have cost on PAYG, at each account's
+   * own rate. Null when no live prepay account's usage is known. */
+  prepay_vs_payg: {
+    prepay_charged: number
+    payg_equivalent: number | null
+    diff: number | null
+    accounts_missing_usage: number
+    accounts_missing_rate: number
+  } | null
   /** One row per Marzban usage period (between two usage resets) that
    * overlaps the window: exact usage of that period, the package sold for it
    * (when matched), and what was billed for it. */
