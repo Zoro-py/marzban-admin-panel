@@ -527,6 +527,9 @@ construction (pinned by `tests/test_statement.py`). Volume side: recharges from 
 activations and code-formatted AccountEvent details (`extend_gb=`, `+N GB added outside this
 dashboard`); a change made directly in Marzban counts as a recharge only if the account billed
 **prepay at that moment** (rebuilt from `billing_change` / `relationship_change`). Consumption
-comes from Marzban's per-user usage history and is trusted only from `USAGE_HISTORY_FROM`
-(2026-09-25 — deleted nodes took the older per-user rows with them); earlier periods read
-"not recorded", never 0. Details: `docs/DECISIONS.md` D30, `backend/app/statement.py`.
+comes from Marzban's reset log (`user_usage_logs.used_traffic_at_reset`: exact usage of every
+period between two usage resets, read from Marzban's sqlite mounted READ-ONLY at
+`MARZBAN_DB_PATH`) plus the live current period. Marzban's per-node history is wiped at every
+reset (`node_usages.clear()`), so it is used only inside the current period; a window that cuts
+an old period gets a time-prorated share, reported as an estimate. The `periods` list pairs each
+period's usage with the package sold for it and its bill. Details: `docs/DECISIONS.md` D30–D31, `backend/app/statement.py`.
