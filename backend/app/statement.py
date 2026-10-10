@@ -47,6 +47,7 @@ from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
 from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_client
+from app.marzban_usage_log import load_periods
 from app.models import (
     Account, AccountEvent, BillingMode, Customer, Group, LedgerEntry, LedgerType,
     QueuedPlan, QueuedPlanStatus, utcnow,
@@ -67,15 +68,16 @@ MAX_USAGE_CALLS = 60
 MAX_MONTHS = 13
 USAGE_CONCURRENCY = 6
 
-# First moment Marzban's PER-USER usage history can be trusted as "what this
-# account consumed". Measured 2026-10-10 on live data: before 2026-09-20 most
-# traffic ran through the Dallas nodes, and deleting a node deletes its
-# per-user usage rows — fleet per-user totals read 8% of node traffic on
-# 09-18/19 and ramp 12% -> 54% over 09-20..09-24. From 09-25, 31 of 38 spot-
-# checked accounts match the billing meter (used_traffic since their last
-# reset) at 98-100% (the rest 60-97%, likely reset-time differences). Months
-# before this are reported as "not recorded", never as 0.
-USAGE_HISTORY_FROM = datetime(2026, 9, 25)
+# Consumption source (D31): Marzban's reset log (app/marzban_usage_log.py)
+# splits each user's life into periods between usage resets, each with its
+# EXACT traffic. A span that fully covers a period gets it exactly; a span that
+# cuts into the CURRENT period reads Marzban's per-node history, which is
+# exact inside the current period (it is wiped at every reset, so it is never
+# valid across one); a span that cuts into an OLD period gets that period
+# prorated by time and is reported as an estimate. Never a silent 0.
+# Two events are "the same moment" within this tolerance when matching a
+# package activation / settle charge to a Marzban reset.
+PERIOD_MATCH = timedelta(minutes=15)
 
 _EXTEND_GB = re.compile(r"^extend_gb=(-?\d+(?:\.\d+)?)(?:,|$| )")
 _EXTERNAL_GB = re.compile(r"^\+(\d+(?:\.\d+)?) GB added outside this dashboard")
@@ -171,6 +173,12 @@ def _scope_condition(scope: Scope):
 
 def _signed(e: LedgerEntry) -> float:
     return e.amount if e.type == LedgerType.charge else -e.amount
+
+
+def _prorate(used: int, lo: datetime, hi: datetime, p_start: datetime, p_end: datetime) -> float:
+    """Time-proportional share of a period's exact total — an ESTIMATE, only
+    used where a span cuts an old period (no finer data survives a reset)."""
+    return used * (hi - lo).total_seconds() / max(1.0, (p_end - p_start).total_seconds())
 
 
 async def _usage(username: str, start: datetime, end: datetime, sem: asyncio.Semaphore) -> tuple[Optional[int], Optional[str]]:
@@ -284,6 +292,12 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
     rates = {a.id: effective_rate(session, a, groups.get(a.group_id)) for a in scope.accounts}
 
     # --- recharges (volume added) ---------------------------------------------
+    plans_by_acc: dict[int, list[QueuedPlan]] = defaultdict(list)
+    if acc_by_id:
+        for q in session.exec(select(QueuedPlan).where(
+                QueuedPlan.account_id.in_(list(acc_by_id)), QueuedPlan.status == QueuedPlanStatus.activated,
+                QueuedPlan.activated_at.is_not(None))).all():
+            plans_by_acc[q.account_id].append(q)
     history = _ModeHistory(session, scope.accounts)
     recharges: list[dict] = []
     ids = list(acc_by_id)
@@ -320,62 +334,112 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
     counted = [r for r in recharges if r["counted"]]
     recharged_gb = round(sum(r["gb"] for r in counted), 3)
 
-    # --- real usage from Marzban -------------------------------------------------
-    # Only the part of the window inside Marzban's trustworthy per-user history
-    # (see USAGE_HISTORY_FROM) is measured; earlier months report None
-    # ("not recorded"), never a misleading 0.
+    # --- real usage (Marzban reset log + current-period history) -----------------
     # Month rows start at the scope's first activity (an all-time window from
     # 2000 would otherwise list 26 empty years) and keep the most recent ones.
-    first_activity = min([e.date for e in rows] + [r["date"] for r in recharges]
+    live_accounts = [a for a in scope.accounts if a.status != "deleted_from_marzban" and a.deleted_at is None]
+    periods_by_user, why = (load_periods([a.marzban_username for a in live_accounts])
+                            if with_usage and live_accounts else ({}, None))
+    # Marzban's own period starts count as activity too: a user created in
+    # Marzban before its first ledger row still consumed in that time.
+    period_starts = [ps.start for pl in (periods_by_user or {}).values() for ps in pl if ps.start > datetime(2001, 1, 1)]
+    first_activity = min([e.date for e in rows] + [r["date"] for r in recharges] + period_starts
                          + [a.created_at for a in scope.accounts if a.created_at] or [until])
     months = _jalali_month_starts(max(since, first_activity), until) if since < until else []
-    usage_since = max(since, USAGE_HISTORY_FROM)
-    usage_months = [(lbl, max(s, USAGE_HISTORY_FROM), e) for lbl, s, e in months if e > USAGE_HISTORY_FROM]
-    live_accounts = [a for a in scope.accounts if a.status != "deleted_from_marzban" and a.deleted_at is None]
     usage_by_acc: dict[int, Optional[float]] = {a.id: None for a in scope.accounts}
+    est_by_acc: dict[int, float] = defaultdict(float)
     usage_by_month: dict[str, Optional[float]] = {m[0]: None for m in months}
+    est_by_month: dict[str, float] = defaultdict(float)
     usage_errors: list[str] = []
     usage_status = "skipped"
-    if usage_since >= until:
-        usage_status = "before_history"
-    elif with_usage and live_accounts:
-        sem = asyncio.Semaphore(USAGE_CONCURRENCY)
-        # Per-month reads only when the month rows cover the whole measured
-        # span (they keep only the latest MAX_MONTHS); otherwise one read per
-        # account for the window total.
-        covered = bool(usage_months) and usage_months[0][1] <= usage_since
-        per_month = covered and len(usage_months) * len(live_accounts) <= MAX_USAGE_CALLS
-        if per_month:
-            jobs = [(a, m) for a in live_accounts for m in usage_months]
-            res = await asyncio.gather(*(_usage(a.marzban_username, m[1], m[2], sem) for a, m in jobs))
-            acc_tot: dict[int, float] = defaultdict(float)
-            mon_tot: dict[str, float] = defaultdict(float)
-            failed_acc: set[int] = set()
-            for (a, m), (used, err) in zip(jobs, res):
-                if err:
-                    failed_acc.add(a.id)
-                    usage_errors.append(f"{a.marzban_username}: {err}")
-                    continue
-                gb = (used or 0) / GB
-                acc_tot[a.id] += gb
-                mon_tot[m[0]] += gb
+    period_rows: list[dict] = []
+    if with_usage and live_accounts:
+        if periods_by_user is None:
+            usage_status = "unavailable"
+            usage_errors.append(why or "unavailable")
+        else:
+            spans = [("__window__", since, until)] + [(m[0], m[1], m[2]) for m in months]
+            exact: dict[tuple[int, str], float] = defaultdict(float)
+            est: dict[tuple[int, str], float] = defaultdict(float)
+            history_jobs: list[tuple] = []
+            ok_accounts: list[Account] = []
             for a in live_accounts:
-                usage_by_acc[a.id] = None if a.id in failed_acc else round(acc_tot[a.id], 3)
-            if not failed_acc:
-                usage_by_month.update({m[0]: round(mon_tot[m[0]], 3) for m in usage_months})
-        else:
-            res = await asyncio.gather(*(_usage(a.marzban_username, usage_since, until, sem) for a in live_accounts))
-            for a, (used, err) in zip(live_accounts, res):
-                if err:
-                    usage_errors.append(f"{a.marzban_username}: {err}")
-                else:
-                    usage_by_acc[a.id] = round((used or 0) / GB, 3)
-        if usage_errors:
-            usage_status = "partial" if any(v is not None for v in usage_by_acc.values()) else "unavailable"
-        else:
-            usage_status = "complete" if usage_since == since else "from_history_start"
+                plist = periods_by_user.get(a.marzban_username)
+                if plist is None:
+                    usage_errors.append(f"{a.marzban_username}: unknown to Marzban")
+                    continue
+                ok_accounts.append(a)
+                for key, s_, u_ in spans:
+                    for p in plist:
+                        p_end = p.end or now
+                        lo, hi = max(s_, p.start), min(u_, p_end)
+                        if lo >= hi:
+                            continue
+                        if s_ <= p.start and u_ >= p_end:
+                            exact[(a.id, key)] += p.used_bytes
+                        elif p.end is None:
+                            history_jobs.append((a, key, lo, hi, p.used_bytes, p.start, p_end))
+                        else:
+                            est[(a.id, key)] += _prorate(p.used_bytes, lo, hi, p.start, p_end)
+                # package-vs-usage table: every period overlapping the window
+                acc_plans = [q for q in plans_by_acc.get(a.id, [])]
+                for p in plist:
+                    p_end = p.end or now
+                    if p_end <= since or p.start >= until:
+                        continue
+                    plan = next((q for q in acc_plans if abs((q.activated_at - p.start).total_seconds()) <= PERIOD_MATCH.total_seconds()), None)
+                    package_gb = float(plan.data_limit_gb) if plan else None
+                    if package_gb is None and p.end is None and a.data_limit and history.at(a.id, now) == BillingMode.prepay:
+                        package_gb = round(a.data_limit / GB, 3)
+                    # The period's bill: the charge posted when it ended (auto-settle /
+                    # settle reset happen in the same second), or any charge whose
+                    # note names this period's package ("QueuedPlan #<id>" — how
+                    # manual recovery charges reference the package they bill).
+                    plan_ref = re.compile(rf"QueuedPlan #{plan.id}\b") if plan else None
+                    settle = [e for e in rows if e.account_id == a.id and e.type == LedgerType.charge and (
+                        (p.end is not None and abs((e.date - p.end).total_seconds()) <= PERIOD_MATCH.total_seconds())
+                        or (plan_ref is not None and plan_ref.search(e.note or "")))]
+                    period_rows.append({
+                        "account_id": a.id, "account": a.marzban_username,
+                        "start": p.start, "end": p.end, "is_open": p.end is None,
+                        "mode": history.at(a.id, p.start).value,
+                        "used_gb": round(p.used_bytes / GB, 3),
+                        "package_gb": package_gb,
+                        "used_pct": round(p.used_bytes / GB / package_gb * 100, 1) if package_gb else None,
+                        "billed": round(sum(e.amount for e in settle), 2) if settle else None,
+                        "billed_gb": next((e.gb_amount for e in settle if e.gb_amount is not None), None),
+                        "pending": round(book.account_pending(a), 2) if p.end is None else None,
+                        "partial_in_window": p.start < since or p_end > until,
+                    })
+            # Sub-spans of the CURRENT period: Marzban's node history is exact
+            # there (it was wiped at the period's start, never before it).
+            if history_jobs:
+                sem = asyncio.Semaphore(USAGE_CONCURRENCY)
+                jobs = history_jobs[:MAX_USAGE_CALLS]
+                res = await asyncio.gather(*(_usage(j[0].marzban_username, j[2], j[3], sem) for j in jobs))
+                for (a, key, lo, hi, p_used, p_start, p_end), (used, err) in zip(jobs, res):
+                    if err or used is None:
+                        est[(a.id, key)] += _prorate(p_used, lo, hi, p_start, p_end)
+                    else:
+                        exact[(a.id, key)] += min(used, p_used)
+                for a, key, lo, hi, p_used, p_start, p_end in history_jobs[MAX_USAGE_CALLS:]:
+                    est[(a.id, key)] += _prorate(p_used, lo, hi, p_start, p_end)
+            for a in ok_accounts:
+                usage_by_acc[a.id] = round((exact[(a.id, "__window__")] + est[(a.id, "__window__")]) / GB, 3)
+                est_by_acc[a.id] = round(est[(a.id, "__window__")] / GB, 3)
+            for label, _, _ in months:
+                if ok_accounts:
+                    usage_by_month[label] = round(sum(exact[(a.id, label)] + est[(a.id, label)] for a in ok_accounts) / GB, 3)
+                    est_by_month[label] = round(sum(est[(a.id, label)] for a in ok_accounts) / GB, 3)
+            any_est = any(v > 0.0005 for v in est_by_acc.values())
+            if usage_errors:
+                usage_status = "partial" if ok_accounts else "unavailable"
+            else:
+                usage_status = "estimated" if any_est else "complete"
     known_usage = [v for v in usage_by_acc.values() if v is not None]
     used_gb = round(sum(known_usage), 3) if known_usage else None
+    used_estimated_gb = round(sum(est_by_acc.values()), 3)
+    period_rows.sort(key=lambda r: (r["start"], r["account"]))
 
     # --- monthly breakdown --------------------------------------------------------
     month_rows = []
@@ -389,7 +453,7 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
             "paid": round(sum(e.amount for e in mp), 2), "payment_count": len(mp),
             "recharged_gb": round(sum(r["gb"] for r in mr), 3), "recharge_count": len(mr),
             "used_gb": usage_by_month.get(label),
-            "usage_partial_month": m_start < USAGE_HISTORY_FROM < m_end,
+            "used_estimated_gb": est_by_month.get(label, 0.0),
         })
 
     # --- per-account breakdown ----------------------------------------------------
@@ -408,6 +472,7 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
             "paid": round(sum(e.amount for e in ap), 2),
             "recharged_gb": round(sum(r["gb"] for r in ar), 3), "recharge_count": len(ar),
             "used_gb": usage_by_acc.get(a.id),
+            "used_estimated_gb": est_by_acc.get(a.id, 0.0),
             "pending": round(book.account_pending(a), 2),
         })
 
@@ -451,8 +516,7 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
                         for k in ("package", "panel", "delegate", "outside_panel")},
             "excluded": [r for r in recharges if not r["counted"]],
             "used_gb": used_gb,
-            "usage_from": usage_since if usage_status not in ("before_history", "skipped") else None,
-            "usage_history_from": USAGE_HISTORY_FROM,
+            "used_estimated_gb": used_estimated_gb,
             "usage_status": usage_status,
             "usage_errors": usage_errors[:10],
             # Ratios only when the measured usage covers the whole window — a
@@ -462,6 +526,7 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
             "toman_per_used_gb": round(charged / used_gb) if usage_status == "complete" and used_gb and used_gb > 0.01 and charged > 0 else None,
         },
         "months": month_rows,
+        "periods": period_rows,
         "accounts": acc_rows,
         "recharges": counted,
         "entries": entries,

@@ -21,8 +21,12 @@ services:
       # In the volume, not the image layer: otherwise every rebuild mints a
       # new signing secret and logs every session out.
       JWT_SECRET_FILE: /app/data/.jwt_secret
+      # Marzban's own DB, READ-ONLY: the Statement reads user_usage_logs (exact
+      # usage at every reset). Nothing in this panel ever writes there.
+      MARZBAN_DB_PATH: ${MARZBAN_DB_PATH:-/marzban-data/db.sqlite3}
     volumes:
       - backend_data:/app/data
+      - ${MARZBAN_DATA_DIR:-/var/lib/marzban}:/marzban-data:ro
     ports:
       # BIND_ADDRESS=127.0.0.1 (the installer sets it) keeps the API reachable
       # only through the host's nginx. Left unset it listens on every

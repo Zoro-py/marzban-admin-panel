@@ -15,6 +15,9 @@ from pathlib import Path
 
 _TMP_DB = Path(tempfile.mkdtemp(prefix="statement_test_")) / "test.db"
 os.environ["DATABASE_URL"] = f"sqlite:///{_TMP_DB.as_posix()}"
+# A fake Marzban DB (users + user_usage_logs), created in section 4.
+_MZ_DB = Path(tempfile.mkdtemp(prefix="statement_mz_")) / "db.sqlite3"
+os.environ["MARZBAN_DB_PATH"] = str(_MZ_DB)
 os.environ.setdefault("MARZBAN_BASE_URL", "https://panel.test")
 os.environ.setdefault("MARZBAN_USERNAME", "test")
 os.environ.setdefault("MARZBAN_PASSWORD", "test")
@@ -49,7 +52,6 @@ def check(label: str, cond: bool, detail: object = "") -> None:
 
 
 GB = 1024 ** 3
-HORIZON = statement_module.USAGE_HISTORY_FROM
 
 # --- fake Marzban usage: 1 GB per started day in [start, end) per user, unless
 # the user is in FAIL (raises Unavailable) --------------------------------------
@@ -170,34 +172,79 @@ check("recharges: +285GB cap move on a PAYG account is excluded (standard-shape 
 check("recharges: malformed detail and set_data_limit are never parsed into GB",
       not any(r["gb"] in (999.0, 80.0) for r in st["recharges"] + v["excluded"]))
 
-# ---- 4) usage horizon ---------------------------------------------------------
-after = (HORIZON + timedelta(days=2)).replace(tzinfo=timezone.utc).isoformat()
-until = (HORIZON + timedelta(days=5)).replace(tzinfo=timezone.utc).isoformat()
-u = stmt(account_id=ids["pre"], since=after, until=until)["volume"]
-check("usage: window fully after the history horizon -> complete, 3 days × 1GB", u["usage_status"] == "complete" and abs(u["used_gb"] - 3.0) < 0.01, u)
-before_start = (HORIZON - timedelta(days=10)).replace(tzinfo=timezone.utc).isoformat()
-r = stmt(account_id=ids["pre"], since=before_start, until=until)
-u = r["volume"]
-check("usage: window straddling the horizon -> from_history_start, measured only from the horizon (5GB)",
-      u["usage_status"] == "from_history_start" and abs(u["used_gb"] - 5.0) < 0.01, u)
-check("usage: no ratio is computed from a partial usage figure", u["utilization_pct"] is None and u["toman_per_used_gb"] is None)
-check("usage: no Marzban call ever asks for time before the horizon",
-      all(datetime.fromisoformat(c[1]) >= HORIZON for c in CALLS), CALLS[-3:])
-r = stmt(account_id=ids["pre"], since=(HORIZON - timedelta(days=30)).replace(tzinfo=timezone.utc).isoformat(),
-         until=(HORIZON - timedelta(days=2)).replace(tzinfo=timezone.utc).isoformat())
-check("usage: window entirely before the horizon -> before_history, used_gb null (never 0)",
-      r["volume"]["usage_status"] == "before_history" and r["volume"]["used_gb"] is None, r["volume"]["usage_status"])
-check("usage: months before the horizon report used_gb null", all(mo["used_gb"] is None for mo in r["months"]), r["months"])
+# ---- 4) usage from Marzban's reset log --------------------------------------------
+import sqlite3  # noqa: E402
+
+r = stmt(account_id=ids["pre"], since=since)
+check("usage: Marzban usage log not mounted -> unavailable, money still returned",
+      r["volume"]["usage_status"] == "unavailable" and r["volume"]["used_gb"] is None and r["statement"]["charge_count"] == 1, r["volume"])
+
+# st_pre lived three periods: created -60d, reset at -30d (40 GB used), reset
+# at `mid` (-10d, 25 GB used), and the open period since then (8 GB so far).
+# st_payg is NOT in Marzban's DB (deleted there).
+created, r1 = now - timedelta(days=60), now - timedelta(days=30)
+con = sqlite3.connect(_MZ_DB)
+con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT, created_at DATETIME, used_traffic BIGINT)")
+con.execute("CREATE TABLE user_usage_logs (id INTEGER PRIMARY KEY, user_id INT, used_traffic_at_reset BIGINT, reset_at DATETIME)")
+con.execute("INSERT INTO users VALUES (1, 'st_pre', ?, ?)", (str(created), 8 * GB))
+con.execute("INSERT INTO user_usage_logs (user_id, used_traffic_at_reset, reset_at) VALUES (1, ?, ?)", (40 * GB, str(r1)))
+con.execute("INSERT INTO user_usage_logs (user_id, used_traffic_at_reset, reset_at) VALUES (1, ?, ?)", (25 * GB, str(mid)))
+con.commit()
+con.close()
+
+
+def iso(d):
+    return d.replace(tzinfo=timezone.utc).isoformat()
+
+
+after, until = iso(now - timedelta(days=3)), iso(now - timedelta(days=1))  # used by the error cases in section 6
+
+
+u = stmt(account_id=ids["pre"], since=iso(r1))["volume"]
+check("usage: window starting exactly at a reset -> whole periods, exact (25 + 8 = 33 GB)",
+      u["usage_status"] == "complete" and abs(u["used_gb"] - 33) < 0.01 and u["used_estimated_gb"] == 0, u)
+u = stmt(account_id=ids["pre"], since=iso(now - timedelta(days=20)))["volume"]
+check("usage: window cutting an OLD period -> that period prorated and labeled (12.5 est + 8 exact)",
+      u["usage_status"] == "estimated" and abs(u["used_gb"] - 20.5) < 0.01 and abs(u["used_estimated_gb"] - 12.5) < 0.01, u)
+check("usage: no ratio is computed from an estimated usage figure", u["utilization_pct"] is None and u["toman_per_used_gb"] is None)
+CALLS.clear()
+u = stmt(account_id=ids["pre"], since=iso(now - timedelta(days=5)))["volume"]
+check("usage: window inside the CURRENT period -> Marzban per-node history (exact, 5 days x 1 GB)",
+      u["usage_status"] == "complete" and abs(u["used_gb"] - 5) < 0.05, u)
+check("usage: the history call never reaches back past the current period's reset",
+      CALLS and all(datetime.fromisoformat(c[1]) >= mid - timedelta(seconds=1) for c in CALLS), CALLS)
+r = stmt(account_id=ids["pre"], since="2000-01-01T00:00:00Z")
+check("usage: all-time = every period exactly (40 + 25 + 8 = 73 GB)",
+      r["volume"]["usage_status"] == "complete" and abs(r["volume"]["used_gb"] - 73) < 0.01, r["volume"])
+check("usage: month rows add up to the window usage",
+      abs(sum(m["used_gb"] or 0 for m in r["months"]) - r["volume"]["used_gb"]) < 0.05, [(m["month"], m["used_gb"]) for m in r["months"]])
+per = stmt(account_id=ids["pre"], since=iso(now - timedelta(days=40)))["periods"]
+check("periods: three package periods overlap the window", len(per) == 3, per)
+check("periods: each shows its exact usage (40 / 25 / 8 GB)", [p["used_gb"] for p in per] == [40, 25, 8], [p["used_gb"] for p in per])
+check("periods: the first starts before the window -> flagged partial_in_window", per[0]["partial_in_window"] and not per[1]["partial_in_window"])
+check("periods: the open period is matched to its 30 GB package -> 26.7% used",
+      per[2]["is_open"] and per[2]["package_gb"] == 30.0 and per[2]["used_pct"] == 26.7, per[2])
+# A late manual charge that names the package ("QueuedPlan #<id>") is that period's bill;
+# a reference to a different plan whose id merely shares a prefix is not.
+with Session(engine) as s:
+    plan30 = s.exec(select(QueuedPlan).where(QueuedPlan.account_id == ids["pre"], QueuedPlan.data_limit_gb == 30.0)).first()
+    s.add(LedgerEntry(type=LedgerType.charge, amount=150_000, account_id=ids["pre"], customer_id=ids["cust"],
+                      date=now - timedelta(days=2), gb_amount=30.0, note=f"Recovery charge: 30GB package (QueuedPlan #{plan30.id}, ...)"))
+    s.add(LedgerEntry(type=LedgerType.charge, amount=9, account_id=ids["pre"], customer_id=ids["cust"],
+                      date=now - timedelta(days=2), note=f"unrelated (QueuedPlan #{plan30.id}9)"))
+    s.commit()
+per = stmt(account_id=ids["pre"], since=iso(now - timedelta(days=40)))["periods"]
+check("periods: a late charge naming the package (QueuedPlan #id) is matched as its bill, the #id9 one is not",
+      per[2]["billed"] == 150_000 and per[2]["billed_gb"] == 30.0, per[2])
 FAIL.add("st_pre")
-r = stmt(account_id=ids["pre"], since=after, until=until)
-check("usage: Marzban down -> unavailable, the money statement is still returned",
-      r["volume"]["usage_status"] == "unavailable" and r["volume"]["used_gb"] is None and r["statement"]["charge_count"] >= 0, r["volume"])
+u = stmt(account_id=ids["pre"], since=iso(now - timedelta(days=5)))["volume"]
+check("usage: per-node history down -> falls back to a prorated estimate, never silent",
+      u["usage_status"] == "estimated" and u["used_gb"] is not None and u["used_estimated_gb"] > 0, u)
 FAIL.clear()
-FAIL.add("st_payg")
-r = stmt(customer_id=ids["cust"], since=after, until=until)
-check("usage: one account failing -> partial, the other still counted",
-      r["volume"]["usage_status"] == "partial" and abs((r["volume"]["used_gb"] or 0) - 3.0) < 0.01, r["volume"])
-FAIL.clear()
+r = stmt(customer_id=ids["cust"], since=iso(r1))
+check("usage: an account unknown to Marzban -> partial, the other still counted",
+      r["volume"]["usage_status"] == "partial" and abs((r["volume"]["used_gb"] or 0) - 33) < 0.01
+      and any("st_payg" in e for e in r["volume"]["usage_errors"]), r["volume"])
 
 # ---- 5) Shamsi month buckets use Tehran midnight -------------------------------
 with Session(engine) as s:
@@ -265,8 +312,8 @@ r = stmt(account_id=ids["pre"], since="2000-01-01T00:00:00Z")
 check("all-time: month rows start at the first activity, not in 1378", r["months"] and r["months"][0]["month"] >= "1405/01", r["months"][:1])
 check("all-time: at most 13 month rows, ending with the current month",
       len(r["months"]) <= 13 and r["months"][-1]["end"][:10] >= (now - timedelta(days=1)).date().isoformat())
-check("all-time: usage measured from the history start (not a stray 0)",
-      r["volume"]["usage_status"] == "from_history_start" and (r["volume"]["used_gb"] or 0) > 0, r["volume"]["used_gb"])
+check("all-time: usage is every Marzban period exactly (not a stray 0)",
+      r["volume"]["usage_status"] == "complete" and abs((r["volume"]["used_gb"] or 0) - 73) < 0.01, r["volume"]["used_gb"])
 check("all-time: month money still sums to the window total",
       abs(sum(m["charged"] for m in r["months"]) - r["statement"]["charged"]) < 0.01)
 
@@ -279,7 +326,7 @@ check("errors: missing since -> 422", client.get("/api/ledger/statement", params
 
 # ---- 7) read-only -----------------------------------------------------------------
 with Session(engine) as s:
-    ledger_after = s.exec(select(func.count()).select_from(LedgerEntry)).one() - 2  # minus the 2 month-edge rows added above
+    ledger_after = s.exec(select(func.count()).select_from(LedgerEntry)).one() - 4  # minus the 2 month-edge + 2 plan-ref rows added above
 check("read-only: no ledger row written by any statement call", ledger_after == ledger_before, (ledger_before, ledger_after))
 
 print()

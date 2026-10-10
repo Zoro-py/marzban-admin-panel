@@ -99,6 +99,16 @@ class Settings(BaseSettings):
     # untouched either way — this never rewrites a host Marzban chose.
     marzban_subscription_base_url: str = ""
 
+    # Path to Marzban's OWN sqlite DB, mounted READ-ONLY into this container
+    # (docker-compose: /var/lib/marzban -> /marzban-data:ro). Used only to
+    # read `user_usage_logs` — the exact traffic each user had at every usage
+    # reset — because Marzban's per-node usage history is wiped on every
+    # reset (crud.reset_user_data_usage: node_usages.clear()) and so can't
+    # answer "how much was used" across a package change. Empty = feature
+    # off: the statement then reports usage as unavailable instead of
+    # guessing. Never written to.
+    marzban_db_path: str = ""
+
     # Shared secret the customer-facing SHOP bot presents on /api/shop/bot/*.
     #
     # Deliberately NOT the Marzban admin credentials the operator's own bot
