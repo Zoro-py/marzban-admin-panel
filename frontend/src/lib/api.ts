@@ -39,6 +39,7 @@ import type {
   ServerMetricPoint,
   ServerSummary,
   ShopWalletEntry,
+  Statement,
   SyncStatus,
   SystemStatus,
   UpcomingRenewal,
@@ -232,6 +233,8 @@ export const ledgerApi = {
     (await api.post<LedgerEntry>('/api/ledger', body, idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : undefined)).data,
   balance: async (params: { customer_id?: number; group_id?: number; account_id?: number; since?: string }) =>
     (await api.get<Balance>('/api/ledger/balance', { params })).data,
+  statement: async (params: { customer_id?: number; group_id?: number; account_id?: number; since: string; usage?: boolean }) =>
+    (await api.get<Statement>('/api/ledger/statement', { params })).data,
 }
 
 // ---- reports / sync ----

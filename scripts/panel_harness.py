@@ -102,6 +102,15 @@ def main() -> None:
         async def reset_user(self, username):
             return self._rec("reset_user", username)
 
+        async def get_user_usage_bytes(self, username, start, end):
+            # Deterministic per-user daily volume (0.5–3 GB/day) so the
+            # statement widget renders real-looking usage without Marzban.
+            from datetime import datetime as _dt
+            self.calls.append(("get_user_usage_bytes", username))
+            days = (_dt.fromisoformat(end) - _dt.fromisoformat(start)).total_seconds() / 86400
+            per_day = 0.5 + (sum(map(ord, username)) % 26) / 10
+            return int(days * per_day * 1024 ** 3)
+
         def __getattr__(self, name):
             async def _any(*a, **k):
                 return self._rec(name, a)
@@ -116,7 +125,7 @@ def main() -> None:
     real = marzban_module.marzban_client
     for name in ("verify_admin_login", "get_admin_token", "list_all_users",
                  "get_user", "create_user", "modify_user", "delete_user",
-                 "reset_user"):
+                 "reset_user", "get_user_usage_bytes"):
         setattr(real, name, getattr(fake, name))
 
     app.dependency_overrides[require_auth] = lambda: "harness-admin"

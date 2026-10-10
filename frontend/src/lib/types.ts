@@ -279,6 +279,96 @@ export interface Balance {
   carried_over_balance?: number | null
 }
 
+/** GET /api/ledger/statement — see backend/app/statement.py. */
+export interface StatementEntry {
+  id: number
+  date: string
+  type: 'charge' | 'credit'
+  amount: number
+  gb_amount: number | null
+  consumed_gb: number | null
+  note: string | null
+  account: string | null
+  source: string | null
+  created_by: string | null
+  balance_after: number
+}
+
+export type RechargeKind = 'package' | 'panel' | 'delegate' | 'outside_panel'
+
+export interface StatementRecharge {
+  date: string
+  account_id: number
+  account: string
+  kind: RechargeKind
+  gb: number
+  days?: number
+  counted: boolean
+}
+
+export type UsageStatus = 'complete' | 'from_history_start' | 'before_history' | 'partial' | 'unavailable' | 'skipped'
+
+export interface Statement {
+  scope: { type: 'account' | 'group' | 'customer'; id: number; name: string; account_count: number; billing_modes: string[] }
+  window: { since: string; until: string; is_open: boolean }
+  statement: {
+    opening_balance: number
+    charged: number
+    charge_count: number
+    paid: number
+    payment_count: number
+    closing_balance: number
+    pending: number
+    owed_now: number
+    all_time_posted: number
+  }
+  charges_gb: { gb: number | null; with_gb: number; of: number }
+  volume: {
+    recharged_gb: number
+    recharge_count: number
+    by_kind: Record<RechargeKind, { gb: number; count: number }>
+    excluded: StatementRecharge[]
+    used_gb: number | null
+    usage_from: string | null
+    usage_history_from: string
+    usage_status: UsageStatus
+    usage_errors: string[]
+    utilization_pct: number | null
+    toman_per_used_gb: number | null
+  }
+  months: {
+    month: string
+    start: string
+    end: string
+    charged: number
+    charge_count: number
+    paid: number
+    payment_count: number
+    recharged_gb: number
+    recharge_count: number
+    used_gb: number | null
+    usage_partial_month: boolean
+  }[]
+  accounts: {
+    account_id: number
+    username: string
+    billing_mode: string
+    rate: number
+    deleted: boolean
+    charged: number
+    charge_count: number
+    paid: number
+    recharged_gb: number
+    recharge_count: number
+    used_gb: number | null
+    pending: number
+  }[]
+  recharges: StatementRecharge[]
+  entries: StatementEntry[]
+  entries_truncated: boolean
+  last_payment_at: string | null
+}
+
 export interface InvoiceLine {
   account_id: number
   marzban_username: string
