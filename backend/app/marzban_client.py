@@ -112,6 +112,18 @@ class MarzbanClient:
         except (httpx.HTTPError, httpx.InvalidURL) as exc:
             raise MarzbanUnavailable(f"Could not reach Marzban at {self._base_url}: {exc}") from exc
 
+    async def get_user_usage_bytes(self, username: str, start: str, end: str) -> Optional[int]:
+        """Real traffic the user moved in [start, end) — summed over every
+        node — from Marzban's own per-node usage history. `start`/`end` are
+        naive-UTC ISO strings (Marzban stores its hourly usage buckets in UTC).
+        Independent of usage resets: resetting a user zeroes the live meter,
+        not this history. None = Marzban doesn't know the user (404)."""
+        resp = await self._request("GET", f"/api/user/{username}/usage", params={"start": start, "end": end})
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return sum(int(u.get("used_traffic") or 0) for u in resp.json().get("usages", []))
+
     async def list_users(self, offset: int = 0, limit: int = 200) -> dict:
         resp = await self._request("GET", "/api/users", params={"offset": offset, "limit": limit})
         resp.raise_for_status()

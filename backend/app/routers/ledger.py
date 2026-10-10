@@ -202,3 +202,36 @@ def get_balance(
         all_time_balance=round(all_time_balance, 2),
         carried_over_balance=round(all_time_balance - balance, 2),
     )
+
+
+@router.get("/statement")
+async def get_statement(
+    since: datetime,
+    until: Optional[datetime] = None,
+    customer_id: Optional[int] = None,
+    group_id: Optional[int] = None,
+    account_id: Optional[int] = None,
+    usage: bool = True,
+    session: Session = Depends(get_session),
+):
+    """Bank-statement view of one scope over [since, until): opening balance,
+    charges, payments, closing balance, not-invoiced-yet, owed now — plus the
+    volume side (GB recharged, GB really consumed per Marzban's own usage
+    history), a Shamsi-month breakdown, a per-account breakdown and every
+    transaction with its running balance. Read-only. See app/statement.py.
+
+    `usage=false` skips the live Marzban reads (money-only, instant)."""
+    provided = [x is not None for x in (customer_id, group_id, account_id)]
+    if sum(provided) != 1:
+        raise HTTPException(400, "Provide exactly one of customer_id, group_id or account_id")
+    if until is not None and since >= until:
+        raise HTTPException(400, "since must be before until")
+    from app.statement import build_statement
+
+    result = await build_statement(
+        session, since=since, until=until,
+        account_id=account_id, group_id=group_id, customer_id=customer_id, with_usage=usage,
+    )
+    if result is None:
+        raise HTTPException(404, "Scope not found")
+    return result
