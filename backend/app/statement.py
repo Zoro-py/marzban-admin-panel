@@ -466,6 +466,17 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
     # the default itself falls back to 0), so a 0 rate is a real, deliberate
     # price (a comp/free account) and must stay IN the sum, not be read as
     # "rate not configured" — there is no such state to detect here.
+    #
+    # payg_prepay_charged is POSTED + PENDING (book.account_pending), not just
+    # posted charges — a bug caught live (Masih-mom, 2026-10-11): prepay only
+    # posts a charge when a package ENDS, so an open/not-yet-settled package
+    # showed charged=0 while its used_gb was already counted on the PAYG
+    # side, making a cheaper-looking "prepay cost less" that was backwards —
+    # prepay bills the WHOLE package regardless of how much of it was used,
+    # so for equal used_gb it can never beat PAYG's metered cost. pending is
+    # exactly that committed-but-not-yet-invoiced package cost (same figure
+    # "Owes now" itself adds), so including it is what makes this an
+    # apples-to-apples "what would this account owe, either way" comparison.
     payg_prepay_charged = 0.0
     payg_prepay_equivalent = 0.0
     payg_prepay_missing_usage = 0
@@ -483,7 +494,7 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
         is_prepay = modes[a.id] == BillingMode.prepay
         payg_equivalent = round(a_used * a_rate, 2) if is_prepay and a_used is not None else None
         if is_prepay and not (a.deleted_at is not None or a.status == "deleted_from_marzban"):
-            payg_prepay_charged += a_charged
+            payg_prepay_charged += a_charged + book.account_pending(a)
             if payg_equivalent is not None:
                 payg_prepay_equivalent += payg_equivalent
             else:

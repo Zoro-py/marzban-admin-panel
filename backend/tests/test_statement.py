@@ -330,12 +330,24 @@ check("all-time: month money still sums to the window total",
 # 73 GB used all-time x 5000 = 365,000: what st_pre would have been charged on PAYG.
 check("payg_equivalent: prepay account, known usage, default rate -> used_gb x rate",
       abs(r["accounts"][0]["payg_equivalent"] - 73 * 5000) < 1, r["accounts"][0])
-check("prepay_vs_payg: single-prepay-account scope mirrors that account's own figures",
-      r["prepay_vs_payg"]["prepay_charged"] == r["statement"]["charged"]
+# prepay_charged is charged + pending (the full committed package cost,
+# settled or not — see the module docstring on why posted-only was a live
+# bug), not just r["statement"]["charged"].
+expected_prepay_charged = r["statement"]["charged"] + r["statement"]["pending"]
+check("prepay_vs_payg: single-prepay-account scope mirrors charged+pending, not charged alone",
+      r["prepay_vs_payg"]["prepay_charged"] == expected_prepay_charged
       and abs(r["prepay_vs_payg"]["payg_equivalent"] - 73 * 5000) < 1
-      and abs(r["prepay_vs_payg"]["diff"] - (r["statement"]["charged"] - 73 * 5000)) < 1
+      and abs(r["prepay_vs_payg"]["diff"] - (expected_prepay_charged - 73 * 5000)) < 1
       and r["prepay_vs_payg"]["accounts_missing_usage"] == 0,
       r["prepay_vs_payg"])
+# Regression (Masih-mom, 2026-10-11 live): an account with a currently OPEN,
+# never-yet-settled package has charged=0 (prepay only posts a charge when a
+# package ENDS) but real usage already accrued and already counted on the
+# PAYG side — pending must be folded in, or this reads as "prepay is
+# magically cheaper", which can't be true for equal used_gb.
+check("prepay_vs_payg: an open unsettled package's pending package price counts toward prepay_charged, not just its 0 posted charges",
+      r["statement"]["pending"] > 0 and r["prepay_vs_payg"]["prepay_charged"] >= r["statement"]["pending"],
+      (r["statement"]["pending"], r["prepay_vs_payg"]["prepay_charged"]))
 # Regression: effective_rate() NEVER returns None (it falls through to the
 # dashboard default, which itself falls back to 0) — a rate of exactly 0 is
 # a real, deliberate price (a comp/free account), not "rate unconfigured".

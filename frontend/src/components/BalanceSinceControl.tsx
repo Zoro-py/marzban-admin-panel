@@ -121,11 +121,23 @@ function StatementLines({ s, lang }: { s: Statement; lang: Lang }) {
   )
 }
 
-/** "If this had been PAYG" — what a prepay account/scope was actually
- * charged in this window vs. what its actual usage would have cost billed
- * as PAYG, at each account's own rate. Only rendered when the backend could
- * actually compute it (prepay_vs_payg !== null): at least one live prepay
- * account in scope with known usage. */
+/** "If this had been PAYG" — the full committed cost of a prepay
+ * account/scope (posted charges + whatever's still pending — the full
+ * package price either way, same figure "Owes now" itself adds) vs. what
+ * its actual usage would have cost billed as PAYG, at each account's own
+ * rate. Only rendered when the backend could actually compute it
+ * (prepay_vs_payg !== null): at least one live prepay account in scope with
+ * known usage.
+ *
+ * prepay_charged is NOT just posted charges — a live bug (Masih-mom,
+ * 2026-10-11): prepay only posts a charge when a package ENDS, so an open
+ * package showed 0 "charged" while its usage already counted on the PAYG
+ * side, making prepay look cheaper than PAYG, which can't be true for the
+ * same used_gb (prepay bills the whole package regardless of how little of
+ * it was used). Fixed server-side to include pending; "prepay cost less"
+ * below is still a real, valid message — it fires correctly when usage
+ * actually exceeded the package (an overage PAYG would have billed for, but
+ * the fixed package price didn't). */
 function PaygWhatIfLine({ s, lang }: { s: Statement; lang: Lang }) {
   const w = s.prepay_vs_payg
   if (!w) return null
@@ -136,7 +148,7 @@ function PaygWhatIfLine({ s, lang }: { s: Statement; lang: Lang }) {
         {tr(lang, 'اگر prepay بودن نبود، به‌جایش PAYG', 'If billed PAYG instead of prepay')}
       </p>
       <div className="flex items-baseline justify-between gap-3 py-0.5">
-        <span className="text-muted-foreground">{tr(lang, 'واقعاً شارژ شده (prepay)', 'Actually charged (prepay)')}</span>
+        <span className="text-muted-foreground">{tr(lang, 'هزینهٔ prepay (شارژشده + صورتحساب‌نشده)', 'Prepay cost (charged + not yet invoiced)')}</span>
         <Num>{formatToman(w.prepay_charged)}</Num>
       </div>
       <div className="flex items-baseline justify-between gap-3 py-0.5">
