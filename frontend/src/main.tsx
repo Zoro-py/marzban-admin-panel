@@ -61,3 +61,15 @@ createRoot(document.getElementById('root')!).render(
     </QueryClientProvider>
   </StrictMode>,
 )
+
+// The index.html boot guard shows a static "reload" banner when the app never
+// mounts (stale entry chunk, module-incapable browser). Mounted means the
+// banner must never appear — and if a very slow load let it appear already,
+// take it back down.
+declare global {
+  interface Window {
+    __VPN_PANEL_MOUNTED__?: boolean
+  }
+}
+window.__VPN_PANEL_MOUNTED__ = true
+document.getElementById('vpn-boot-guard')?.remove()

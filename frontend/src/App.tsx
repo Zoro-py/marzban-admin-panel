@@ -1,23 +1,24 @@
-import { Suspense, lazy } from 'react'
+import { Suspense } from 'react'
 import { Route, Routes } from 'react-router-dom'
 import { AppShell } from '@/components/layout/AppShell'
 import { RequireAuth } from '@/components/layout/RequireAuth'
 import { GlobalErrorBoundary } from '@/components/GlobalErrorBoundary'
+import { recoverableLazy } from '@/lib/chunkRecovery'
 
-const LoginPage = lazy(() => import('@/pages/LoginPage').then(m => ({ default: m.LoginPage })))
-const DashboardPage = lazy(() => import('@/pages/DashboardPage').then(m => ({ default: m.DashboardPage })))
-const CustomersPage = lazy(() => import('@/pages/CustomersPage').then(m => ({ default: m.CustomersPage })))
-const CustomerDetailPage = lazy(() => import('@/pages/CustomerDetailPage').then(m => ({ default: m.CustomerDetailPage })))
-const GroupsPage = lazy(() => import('@/pages/GroupsPage').then(m => ({ default: m.GroupsPage })))
-const GroupDetailPage = lazy(() => import('@/pages/GroupDetailPage').then(m => ({ default: m.GroupDetailPage })))
-const AccountsPage = lazy(() => import('@/pages/AccountsPage').then(m => ({ default: m.AccountsPage })))
-const FinancePage = lazy(() => import('@/pages/FinancePage').then(m => ({ default: m.FinancePage })))
-const ChargeHistoryPage = lazy(() => import('@/pages/ChargeHistoryPage').then(m => ({ default: m.ChargeHistoryPage })))
-const MonthlySettlementsPage = lazy(() => import('@/pages/MonthlySettlementsPage').then(m => ({ default: m.MonthlySettlementsPage })))
-const ShopPage = lazy(() => import('@/pages/ShopPage').then(m => ({ default: m.ShopPage })))
-const DelegatesPage = lazy(() => import('@/pages/DelegatesPage').then(m => ({ default: m.DelegatesPage })))
-const ServersPage = lazy(() => import('@/pages/ServersPage').then(m => ({ default: m.ServersPage })))
-const ServerDetailPage = lazy(() => import('@/pages/ServerDetailPage').then(m => ({ default: m.ServerDetailPage })))
+const LoginPage = recoverableLazy(() => import('@/pages/LoginPage').then(m => ({ default: m.LoginPage })))
+const DashboardPage = recoverableLazy(() => import('@/pages/DashboardPage').then(m => ({ default: m.DashboardPage })))
+const CustomersPage = recoverableLazy(() => import('@/pages/CustomersPage').then(m => ({ default: m.CustomersPage })))
+const CustomerDetailPage = recoverableLazy(() => import('@/pages/CustomerDetailPage').then(m => ({ default: m.CustomerDetailPage })))
+const GroupsPage = recoverableLazy(() => import('@/pages/GroupsPage').then(m => ({ default: m.GroupsPage })))
+const GroupDetailPage = recoverableLazy(() => import('@/pages/GroupDetailPage').then(m => ({ default: m.GroupDetailPage })))
+const AccountsPage = recoverableLazy(() => import('@/pages/AccountsPage').then(m => ({ default: m.AccountsPage })))
+const FinancePage = recoverableLazy(() => import('@/pages/FinancePage').then(m => ({ default: m.FinancePage })))
+const ChargeHistoryPage = recoverableLazy(() => import('@/pages/ChargeHistoryPage').then(m => ({ default: m.ChargeHistoryPage })))
+const MonthlySettlementsPage = recoverableLazy(() => import('@/pages/MonthlySettlementsPage').then(m => ({ default: m.MonthlySettlementsPage })))
+const ShopPage = recoverableLazy(() => import('@/pages/ShopPage').then(m => ({ default: m.ShopPage })))
+const DelegatesPage = recoverableLazy(() => import('@/pages/DelegatesPage').then(m => ({ default: m.DelegatesPage })))
+const ServersPage = recoverableLazy(() => import('@/pages/ServersPage').then(m => ({ default: m.ServersPage })))
+const ServerDetailPage = recoverableLazy(() => import('@/pages/ServerDetailPage').then(m => ({ default: m.ServerDetailPage })))
 
 function GlobalLoader() {
   return (
@@ -39,8 +40,13 @@ function NotFoundPage() {
 
 function App() {
   return (
-    <Suspense fallback={<GlobalLoader />}>
-      <Routes>
+    // Outer boundary (over Suspense too): a chunk failure on /login — which is
+    // outside the RequireAuth boundary below — used to unmount the whole tree
+    // into a blank page. The inner boundary keeps a page crash inside the
+    // shell; this one catches everything else.
+    <GlobalErrorBoundary>
+      <Suspense fallback={<GlobalLoader />}>
+        <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route element={<RequireAuth />}>
           <Route
@@ -67,8 +73,9 @@ function App() {
           </Route>
         </Route>
         <Route path="*" element={<NotFoundPage />} />
-      </Routes>
-    </Suspense>
+        </Routes>
+      </Suspense>
+    </GlobalErrorBoundary>
   )
 }
 
