@@ -512,3 +512,17 @@ anything outside `/api/shop`.
 - It does not auto-approve payments. Every credit is an operator decision.
 - It does not store receipt images. Only Telegram's `file_id` is kept, so a
   stolen database does not carry customers' bank receipts with it.
+
+
+## Statement (the "Balance since" widget) — `GET /api/ledger/statement`
+
+Read-only view of one scope over `[since, until)`, laid out as a bank statement:
+`opening balance + charges − payments = posted balance; + not invoiced yet = owes now`.
+Rows are MoneyBook's single-owner buckets, so `owes now` equals the page's «Owes now» by
+construction (pinned by `tests/test_statement.py`). Volume side: recharges from QueuedPlan
+activations and code-formatted AccountEvent details (`extend_gb=`, `+N GB added outside this
+dashboard`); a change made directly in Marzban counts as a recharge only if the account billed
+**prepay at that moment** (rebuilt from `billing_change` / `relationship_change`). Consumption
+comes from Marzban's per-user usage history and is trusted only from `USAGE_HISTORY_FROM`
+(2026-09-25 — deleted nodes took the older per-user rows with them); earlier periods read
+"not recorded", never 0. Details: `docs/DECISIONS.md` D30, `backend/app/statement.py`.
