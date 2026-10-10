@@ -375,7 +375,6 @@ export interface Statement {
     payg_equivalent: number | null
     diff: number | null
     accounts_missing_usage: number
-    accounts_missing_rate: number
   } | null
   /** One row per Marzban usage period (between two usage resets) that
    * overlaps the window: exact usage of that period, the package sold for it

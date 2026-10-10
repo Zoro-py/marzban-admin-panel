@@ -153,13 +153,9 @@ function PaygWhatIfLine({ s, lang }: { s: Statement; lang: Lang }) {
           </Num>
         </div>
       )}
-      {(w.accounts_missing_usage > 0 || w.accounts_missing_rate > 0) && (
+      {w.accounts_missing_usage > 0 && (
         <p className="mt-1 text-[10.5px] text-muted-foreground">
-          {w.accounts_missing_usage > 0 &&
-            tr(lang, `مصرف ${w.accounts_missing_usage} اکانت نامعلوم است`, `usage unknown for ${w.accounts_missing_usage} account(s)`)}
-          {w.accounts_missing_usage > 0 && w.accounts_missing_rate > 0 && (lang === 'fa' ? '، ' : ', ')}
-          {w.accounts_missing_rate > 0 &&
-            tr(lang, `نرخ ${w.accounts_missing_rate} اکانت تنظیم نشده`, `rate not set for ${w.accounts_missing_rate} account(s)`)}
+          {tr(lang, `مصرف ${w.accounts_missing_usage} اکانت نامعلوم است`, `usage unknown for ${w.accounts_missing_usage} account(s)`)}
         </p>
       )}
     </div>

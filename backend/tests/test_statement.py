@@ -186,7 +186,7 @@ check("payg_equivalent: a prepay account with unknown usage is None, not a silen
       r["accounts"][0]["payg_equivalent"] is None, r["accounts"])
 check("prepay_vs_payg: unknown usage on the only prepay account -> payg_equivalent/diff None, counted as missing",
       r["prepay_vs_payg"]["payg_equivalent"] is None and r["prepay_vs_payg"]["diff"] is None
-      and r["prepay_vs_payg"]["accounts_missing_usage"] == 1 and r["prepay_vs_payg"]["accounts_missing_rate"] == 0,
+      and r["prepay_vs_payg"]["accounts_missing_usage"] == 1,
       r["prepay_vs_payg"])
 
 # st_pre lived three periods: created -60d, reset at -30d (40 GB used), reset
@@ -334,8 +334,27 @@ check("prepay_vs_payg: single-prepay-account scope mirrors that account's own fi
       r["prepay_vs_payg"]["prepay_charged"] == r["statement"]["charged"]
       and abs(r["prepay_vs_payg"]["payg_equivalent"] - 73 * 5000) < 1
       and abs(r["prepay_vs_payg"]["diff"] - (r["statement"]["charged"] - 73 * 5000)) < 1
-      and r["prepay_vs_payg"]["accounts_missing_usage"] == 0 and r["prepay_vs_payg"]["accounts_missing_rate"] == 0,
+      and r["prepay_vs_payg"]["accounts_missing_usage"] == 0,
       r["prepay_vs_payg"])
+# Regression: effective_rate() NEVER returns None (it falls through to the
+# dashboard default, which itself falls back to 0) — a rate of exactly 0 is
+# a real, deliberate price (a comp/free account), not "rate unconfigured".
+# It must stay IN the sum as 0, never be read as missing data.
+with Session(engine) as s:
+    acc = s.get(Account, ids["pre"])
+    acc.rate_per_gb = 0.0
+    s.add(acc)
+    s.commit()
+r0 = stmt(account_id=ids["pre"], since="2000-01-01T00:00:00Z")
+check("payg_equivalent: a deliberate 0 rate (comp account) -> 0, not None/'missing'",
+      r0["accounts"][0]["payg_equivalent"] == 0.0 and r0["prepay_vs_payg"]["payg_equivalent"] == 0.0
+      and r0["prepay_vs_payg"]["accounts_missing_usage"] == 0,
+      r0["accounts"][0])
+with Session(engine) as s:
+    acc = s.get(Account, ids["pre"])
+    acc.rate_per_gb = None
+    s.add(acc)
+    s.commit()
 # cust scope = st_pre (prepay) + st_payg (payg): the payg account must be
 # excluded from prepay_charged/payg_equivalent even though both are in scope.
 r_cust = stmt(customer_id=ids["cust"], since="2000-01-01T00:00:00Z")
