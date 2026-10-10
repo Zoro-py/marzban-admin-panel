@@ -306,7 +306,7 @@ export interface StatementRecharge {
   counted: boolean
 }
 
-export type UsageStatus = 'complete' | 'from_history_start' | 'before_history' | 'partial' | 'unavailable' | 'skipped'
+export type UsageStatus = 'complete' | 'estimated' | 'partial' | 'unavailable' | 'skipped'
 
 export interface Statement {
   scope: { type: 'account' | 'group' | 'customer'; id: number; name: string; account_count: number; billing_modes: string[] }
@@ -329,8 +329,7 @@ export interface Statement {
     by_kind: Record<RechargeKind, { gb: number; count: number }>
     excluded: StatementRecharge[]
     used_gb: number | null
-    usage_from: string | null
-    usage_history_from: string
+    used_estimated_gb: number
     usage_status: UsageStatus
     usage_errors: string[]
     utilization_pct: number | null
@@ -347,7 +346,7 @@ export interface Statement {
     recharged_gb: number
     recharge_count: number
     used_gb: number | null
-    usage_partial_month: boolean
+    used_estimated_gb: number
   }[]
   accounts: {
     account_id: number
@@ -361,7 +360,26 @@ export interface Statement {
     recharged_gb: number
     recharge_count: number
     used_gb: number | null
+    used_estimated_gb: number
     pending: number
+  }[]
+  /** One row per Marzban usage period (between two usage resets) that
+   * overlaps the window: exact usage of that period, the package sold for it
+   * (when matched), and what was billed for it. */
+  periods: {
+    account_id: number
+    account: string
+    start: string
+    end: string | null
+    is_open: boolean
+    mode: string
+    used_gb: number
+    package_gb: number | null
+    used_pct: number | null
+    billed: number | null
+    billed_gb: number | null
+    pending: number | null
+    partial_in_window: boolean
   }[]
   recharges: StatementRecharge[]
   entries: StatementEntry[]

@@ -80,7 +80,7 @@ const KIND_LABEL: Record<RechargeKind, [string, string]> = {
  * flips them to "T 224,237". */
 function Num({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
-    <bdi dir="ltr" className={cn('tabular-nums', className)}>
+    <bdi dir="ltr" className={cn('whitespace-nowrap tabular-nums', className)}>
       {children}
     </bdi>
   )
@@ -121,27 +121,28 @@ function StatementLines({ s, lang }: { s: Statement; lang: Lang }) {
   )
 }
 
-function UsageTile({ s, lang, cal }: { s: Statement; lang: Lang; cal: CalendarKind }) {
+function UsageTile({ s, lang }: { s: Statement; lang: Lang }) {
   const v = s.volume
   let sub: React.ReactNode = null
   let value: React.ReactNode = fmtGb(v.used_gb)
   switch (v.usage_status) {
     case 'complete':
-      sub = tr(lang, 'اندازه‌گیری مرزبان، کل بازه', 'measured by Marzban, whole window')
+      sub = tr(lang, 'دقیق — از گزارش مصرفِ خودِ مرزبان', 'exact — from Marzban’s own usage log')
       break
-    case 'from_history_start':
-      sub = `${tr(lang, 'فقط از', 'only from')} ${fmtDate(v.usage_from ?? v.usage_history_from, cal)} — ${tr(lang, 'قبل از آن ثبت نشده', 'not recorded before')}`
-      break
-    case 'before_history':
-      value = '—'
-      sub = `${tr(lang, 'مرزبان مصرف را فقط از', 'Marzban only recorded usage from')} ${fmtDate(v.usage_history_from, cal)}`
+    case 'estimated':
+      value = <>≈ {fmtGb(v.used_gb)}</>
+      sub = tr(
+        lang,
+        `${fmtGb(v.used_estimated_gb)} تخمینی: بازه وسطِ یک دورهٔ قدیمی شروع/تمام شده و مرزبان فقط جمعِ آن دوره را نگه می‌دارد`,
+        `${fmtGb(v.used_estimated_gb)} estimated: the window cuts an old period, and Marzban keeps only that period’s total`,
+      )
       break
     case 'partial':
-      sub = tr(lang, `بدون ${v.usage_errors.length} اکانت (خطای مرزبان)`, `missing ${v.usage_errors.length} account(s) — Marzban error`)
+      sub = tr(lang, `بدون ${v.usage_errors.length} اکانت (در مرزبان نیست)`, `missing ${v.usage_errors.length} account(s) — not in Marzban`)
       break
     case 'unavailable':
       value = '—'
-      sub = tr(lang, 'مرزبان در دسترس نبود', 'Marzban unreachable')
+      sub = tr(lang, 'گزارش مصرف مرزبان در دسترس نبود', 'Marzban usage log unavailable')
       break
     case 'skipped':
       value = '—'
@@ -150,31 +151,82 @@ function UsageTile({ s, lang, cal }: { s: Statement; lang: Lang; cal: CalendarKi
   return <Tile label={tr(lang, 'مصرف واقعی', 'Actually used')} value={value} sub={sub} />
 }
 
-function Utilization({ s, lang }: { s: Statement; lang: Lang }) {
-  const v = s.volume
-  if (v.utilization_pct === null) return null
-  const pct = Math.min(100, v.utilization_pct)
+/** One row per Marzban usage period (a package's life between two usage
+ * resets): the package sold for it, what was really used out of it, and
+ * what was billed for it — the per-package answer to "how much did they buy
+ * and how much did they use". Newest first; the open period shows what is
+ * still pending (not invoiced yet). */
+function PeriodsTable({ s, lang, cal }: { s: Statement; lang: Lang; cal: CalendarKind }) {
+  const multi = s.scope.type !== 'account'
+  const rows = [...s.periods].reverse()
   return (
-    <div className="space-y-1 text-[11px]">
-      <div className="flex flex-wrap justify-between gap-x-3 text-muted-foreground">
-        <span>
-          {tr(lang, 'از حجم شارژشده مصرف شد', 'of the recharged volume used')}: <b className="text-foreground"><Num>{v.utilization_pct}%</Num></b>
-        </span>
-        {v.toman_per_used_gb !== null && (
-          <span>
-            {tr(lang, 'هزینه به ازای هر گیگ مصرفی', 'paid per used GB')}: <b className="text-foreground"><Num>{formatToman(v.toman_per_used_gb)}</Num></b>
-          </span>
-        )}
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-primary/12">
-        <div className={cn('h-full rounded-full', v.utilization_pct > 100 ? 'bg-warning' : 'bg-primary/80')} style={{ width: `${Math.max(2, pct)}%` }} />
-      </div>
-    </div>
+    <ul className="divide-y divide-border text-[11px]">
+      {rows.map((p) => {
+        const pct = p.used_pct
+        return (
+          <li key={`${p.account_id}-${p.start}`} className="space-y-1 px-3 py-2">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-muted-foreground">
+                <Num>{fmtDate(p.start, cal)}</Num>
+                {lang === 'fa' ? ' ← ' : ' → '}
+                {p.end ? <Num>{fmtDate(p.end, cal)}</Num> : <b className="text-foreground">{tr(lang, 'دورهٔ فعلی', 'current')}</b>}
+                {multi && <span className="ms-1 font-mono text-foreground/80">{p.account}</span>}
+                {p.partial_in_window && <span className="ms-1 text-warning" title={tr(lang, 'این دوره بیرون از بازه هم ادامه دارد', 'this period extends outside the window')}>*</span>}
+              </span>
+              <span className="text-muted-foreground">{p.mode}</span>
+            </div>
+            <div className="flex items-baseline justify-between gap-2">
+              <span>
+                {tr(lang, 'مصرف', 'used')} <Num className="font-semibold">{fmtGb(p.used_gb)}</Num>
+                {p.package_gb !== null && (
+                  <>
+                    {' '}
+                    {tr(lang, 'از بستهٔ', 'of a')}{' '}
+                    <Num>
+                      {fmtGb(p.package_gb)}
+                      {pct !== null && <span className={cn('ms-1', pct >= 100 ? 'text-warning' : 'text-muted-foreground')}>({pct}%)</span>}
+                    </Num>
+                    {lang === 'en' && ' package'}
+                  </>
+                )}
+              </span>
+              <span className="text-end">
+                {p.is_open ? (
+                  p.pending ? (
+                    <>
+                      <span className="text-muted-foreground">{tr(lang, 'صورتحساب‌نشده', 'not invoiced')} </span>
+                      <Num><Money amount={p.pending} kind="pending" /></Num>
+                    </>
+                  ) : null
+                ) : p.billed !== null ? (
+                  <>
+                    <span className="text-muted-foreground">{tr(lang, 'صورتحساب', 'billed')} </span>
+                    <Num className="font-medium">
+                      {formatToman(p.billed)}
+                      {p.billed_gb !== null && <span className="font-normal text-muted-foreground"> · {fmtGb(p.billed_gb)}</span>}
+                    </Num>
+                  </>
+                ) : (
+                  <span className="text-muted-foreground" title={tr(lang, 'هیچ شارژی هم‌زمان با پایان این دوره ثبت نشده (۱۵ دقیقه)', 'no charge posted at this period’s end (±15 min)')}>
+                    {tr(lang, 'بدون صورتحساب هم‌زمان', 'no matching bill')}
+                  </span>
+                )}
+              </span>
+            </div>
+            {pct !== null && (
+              <div className="h-1 overflow-hidden rounded-full bg-primary/12">
+                <div className={cn('h-full rounded-full', pct >= 100 ? 'bg-warning' : 'bg-primary/80')} style={{ width: `${Math.max(2, Math.min(100, pct))}%` }} />
+              </div>
+            )}
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 
-function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
-  const [open, setOpen] = React.useState(false)
+function Section({ title, count, children, defaultOpen = false }: { title: string; count?: number; children: React.ReactNode; defaultOpen?: boolean }) {
+  const [open, setOpen] = React.useState(defaultOpen)
   return (
     <div className="rounded-md border border-border">
       <button
@@ -220,9 +272,15 @@ function MonthsTable({ s, lang }: { s: Statement; lang: Lang }) {
                 <Num>{m.recharged_gb ? fmtGb(m.recharged_gb) : '—'}</Num>
                 {m.recharge_count > 0 && <Num className="text-muted-foreground"> ×{m.recharge_count}</Num>}
               </td>
-              <td title={m.usage_partial_month ? tr(lang, 'فقط بخشی از ماه ثبت شده', 'only part of this month recorded') : undefined}>
-                {m.used_gb === null ? <span className="text-muted-foreground">{tr(lang, 'ثبت نشده', 'n/a')}</span> : <Num>{fmtGb(m.used_gb)}</Num>}
-                {m.usage_partial_month && m.used_gb !== null && <span className="text-warning">*</span>}
+              <td title={m.used_estimated_gb > 0 ? tr(lang, `${fmtGb(m.used_estimated_gb)} تخمینی (دوره از مرز ماه رد می‌شود)`, `${fmtGb(m.used_estimated_gb)} estimated (a period crosses the month edge)`) : undefined}>
+                {m.used_gb === null ? (
+                  <span className="text-muted-foreground">—</span>
+                ) : (
+                  <Num>
+                    {m.used_estimated_gb > 0.0005 ? '≈ ' : ''}
+                    {fmtGb(m.used_gb)}
+                  </Num>
+                )}
               </td>
             </tr>
           ))}
@@ -258,7 +316,12 @@ function AccountsTable({ s, lang }: { s: Statement; lang: Lang }) {
               </td>
               <td><Num>{a.paid ? formatToman(a.paid) : '—'}</Num></td>
               <td><Num>{a.recharged_gb ? `${fmtGb(a.recharged_gb)} ×${a.recharge_count}` : '—'}</Num></td>
-              <td><Num>{fmtGb(a.used_gb)}</Num></td>
+              <td>
+                <Num>
+                  {a.used_estimated_gb > 0.0005 ? '≈ ' : ''}
+                  {fmtGb(a.used_gb)}
+                </Num>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -487,10 +550,9 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
                     : tr(lang, 'در این بازه شارژی نشده', 'none in this window')
               }
             />
-            <UsageTile s={s} lang={lang} cal={cal} />
+            <UsageTile s={s} lang={lang} />
           </div>
 
-          <Utilization s={s} lang={lang} />
           <StatementLines s={s} lang={lang} />
 
           {s.volume.excluded.length > 0 && (
@@ -502,6 +564,11 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
             </p>
           )}
 
+          {s.periods.length > 0 && (
+            <Section title={tr(lang, 'بسته‌ها: خریده در برابر مصرف‌شده', 'Packages: bought vs used')} count={s.periods.length} defaultOpen>
+              <PeriodsTable s={s} lang={lang} cal={cal} />
+            </Section>
+          )}
           {s.months.length > 1 && (
             <Section title={tr(lang, 'ماه‌به‌ماه (شمسی)', 'By Shamsi month')} count={s.months.length}>
               <MonthsTable s={s} lang={lang} />
