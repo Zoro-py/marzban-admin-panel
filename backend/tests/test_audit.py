@@ -43,7 +43,7 @@ from app.auth import require_auth  # noqa: E402
 from app.db import engine, init_db  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import (  # noqa: E402
-    Account, AccountEvent, AppSettings, BillingMode, Customer, LedgerEntry, LedgerSource, LedgerType, RateChange,
+    Account, AccountEvent, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, RateChange,
 )
 
 init_db()
@@ -82,6 +82,18 @@ with Session(engine) as s:
     s.add(cust)
     s.commit()
     s.refresh(cust)
+    # Group rate 4000 -> 6000 is set up AFTER the fixture accounts below (it
+    # needs the group's id first); see t_group_rate_change further down.
+    grp = Group(name="Audit Grp", representative_customer_id=cust.id, billing_mode=BillingMode.prepay, rate_per_gb=4000)
+    # Live regression (group "seyed", 2026-10-11): a group rate that was
+    # simply configured once, at group creation, with ZERO RateChange rows
+    # ever (no group-level PATCH was ever made through the tracked endpoint).
+    grp_no_history = Group(name="Audit Grp No History", representative_customer_id=cust.id,
+                           billing_mode=BillingMode.prepay, rate_per_gb=50)
+    s.add_all([grp, grp_no_history])
+    s.commit()
+    s.refresh(grp)
+    s.refresh(grp_no_history)
 
     accounts = {
         # --- rate_mismatch: history around the ONE real false positive found live ---
@@ -94,6 +106,23 @@ with Session(engine) as s:
         # a genuine drift, must be flagged.
         "au_rate_bad": Account(marzban_username="au_rate_bad", customer_id=cust.id, billing_mode=BillingMode.prepay,
                                rate_per_gb=3000, data_limit=50 * GB, billed_data_limit=50 * GB, used_traffic=1 * GB),
+        # A NEGATIVE gb_amount (a real correction/clawback row, seen live)
+        # that doesn't match rate x gb_amount — must still be flagged; the
+        # old `gb_amount <= 0` guard silently skipped every such row.
+        "au_rate_neg": Account(marzban_username="au_rate_neg", customer_id=cust.id, billing_mode=BillingMode.prepay,
+                               rate_per_gb=3000, data_limit=50 * GB, billed_data_limit=50 * GB, used_traffic=1 * GB),
+        # Inherits a group's rate (50/GB) that has NEVER logged a RateChange
+        # at all -- the exact live bug: reconstruction must fall back to the
+        # group's own current rate, not skip straight past it to the
+        # dashboard default (5000).
+        "au_rate_group_no_history": Account(marzban_username="au_rate_group_no_history", customer_id=cust.id,
+                                            group_id=grp_no_history.id, billing_mode=BillingMode.prepay,
+                                            data_limit=50 * GB, billed_data_limit=50 * GB, used_traffic=1 * GB),
+        # Inherits its rate from the group (own rate_per_gb=None). The GROUP's
+        # rate changes AFTER this charge was correctly billed at the group's
+        # OLD rate. Must not be flagged -- the charge was right when posted.
+        "au_rate_group_ok": Account(marzban_username="au_rate_group_ok", customer_id=cust.id, group_id=grp.id,
+                                    billing_mode=BillingMode.prepay, data_limit=50 * GB, billed_data_limit=50 * GB, used_traffic=1 * GB),
         # --- external_change_unbilled ---
         "au_ext_unbilled": Account(marzban_username="au_ext_unbilled", customer_id=cust.id, billing_mode=BillingMode.prepay,
                                    data_limit=50 * GB, billed_data_limit=50 * GB, used_traffic=1 * GB),
@@ -132,6 +161,21 @@ with Session(engine) as s:
                       date=t_rate_change - timedelta(days=5), note="billed at the default, before the rate change"))
     s.add(LedgerEntry(type=LedgerType.charge, amount=50000, gb_amount=10, account_id=ids["au_rate_bad"], customer_id=cust.id,
                       date=t_rate_change + timedelta(days=5), note="should be 30000 at the new 3000 rate, is not"))
+    s.add(LedgerEntry(type=LedgerType.charge, amount=-10000, gb_amount=-2, account_id=ids["au_rate_neg"], customer_id=cust.id,
+                      date=now - timedelta(days=3), note="negative-GB correction, wrong at the 3000 rate (-2x3000=-6000)"))
+    # Billed at the group's 50/GB (10 x 50 = 500), correctly -- no RateChange
+    # row exists for this group at all, so reconstruction must fall back to
+    # the group's own CURRENT rate_per_gb, not jump past it to the default.
+    s.add(LedgerEntry(type=LedgerType.charge, amount=500, gb_amount=10, account_id=ids["au_rate_group_no_history"], customer_id=cust.id,
+                      date=now - timedelta(days=3), note="billed at the group's own 50/GB rate, correctly"))
+
+    # Group rate was 2000, changed to 4000 (the Group row above) at
+    # t_group_rate_change. The charge below is dated BEFORE that, billed
+    # correctly at the group's OLD rate (2000 x 10 = 20000).
+    t_group_rate_change = now - timedelta(days=15)
+    s.add(RateChange(scope="group", group_id=grp.id, old_rate=2000, new_rate=4000, created_at=t_group_rate_change))
+    s.add(LedgerEntry(type=LedgerType.charge, amount=20000, gb_amount=10, account_id=ids["au_rate_group_ok"], customer_id=cust.id,
+                      date=t_group_rate_change - timedelta(days=5), note="billed at the group's rate BEFORE it changed to 4000"))
 
     t_ext = now - timedelta(days=10)
     s.add(AccountEvent(account_id=ids["au_ext_unbilled"], action="external_data_limit_increase",
@@ -178,6 +222,14 @@ check("rate_mismatch: a charge that doesn't match the rate in effect when it was
 bad = next(f for f in rm if f["account"] == "au_rate_bad")
 check("rate_mismatch: detail carries the rate that should have applied and the gap",
       bad["detail"]["rate_then"] == 3000 and abs(bad["detail"]["gap"] - (50000 - 30000)) < 1, bad["detail"])
+check("rate_mismatch: a NEGATIVE gb_amount correction is checked too, not silently skipped",
+      has_account(rm, "au_rate_neg"), rm)
+check("rate_mismatch: an account inheriting a GROUP rate that changed AFTER its charge is not flagged "
+      "(point-in-time reconstruction must walk the group level too, not just the account's own history)",
+      not has_account(rm, "au_rate_group_ok"), rm)
+check("rate_mismatch: an account inheriting a group rate with ZERO RateChange history is not flagged "
+      "(the group's own current rate is the fallback, not a jump straight to the dashboard default)",
+      not has_account(rm, "au_rate_group_no_history"), rm)
 
 # ---- 2) external_change_unbilled -------------------------------------------------
 ext = by_kind(r, "external_change_unbilled")

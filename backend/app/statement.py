@@ -407,7 +407,13 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
                         "package_gb": package_gb,
                         "used_pct": round(p.used_bytes / GB / package_gb * 100, 1) if package_gb else None,
                         "billed": round(sum(e.amount for e in settle), 2) if settle else None,
-                        "billed_gb": next((e.gb_amount for e in settle if e.gb_amount is not None), None),
+                        # sum, not next(): a period can match MORE than one
+                        # charge (e.g. an original settle + a later recovery
+                        # correction for the same period) — `billed` above
+                        # already sums all of them, so billed_gb must match
+                        # instead of silently reporting only the first.
+                        "billed_gb": round(sum(e.gb_amount for e in settle if e.gb_amount is not None), 3)
+                        if any(e.gb_amount is not None for e in settle) else None,
                         "pending": round(book.account_pending(a), 2) if p.end is None else None,
                         "partial_in_window": p.start < since or p_end > until,
                     })

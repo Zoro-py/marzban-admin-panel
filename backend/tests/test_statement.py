@@ -238,14 +238,26 @@ check("periods: the open period is matched to its 30 GB package -> 26.7% used",
 # a reference to a different plan whose id merely shares a prefix is not.
 with Session(engine) as s:
     plan30 = s.exec(select(QueuedPlan).where(QueuedPlan.account_id == ids["pre"], QueuedPlan.data_limit_gb == 30.0)).first()
+    plan30_id = plan30.id
     s.add(LedgerEntry(type=LedgerType.charge, amount=150_000, account_id=ids["pre"], customer_id=ids["cust"],
-                      date=now - timedelta(days=2), gb_amount=30.0, note=f"Recovery charge: 30GB package (QueuedPlan #{plan30.id}, ...)"))
+                      date=now - timedelta(days=2), gb_amount=30.0, note=f"Recovery charge: 30GB package (QueuedPlan #{plan30_id}, ...)"))
     s.add(LedgerEntry(type=LedgerType.charge, amount=9, account_id=ids["pre"], customer_id=ids["cust"],
-                      date=now - timedelta(days=2), note=f"unrelated (QueuedPlan #{plan30.id}9)"))
+                      date=now - timedelta(days=2), note=f"unrelated (QueuedPlan #{plan30_id}9)"))
     s.commit()
 per = stmt(account_id=ids["pre"], since=iso(now - timedelta(days=40)))["periods"]
 check("periods: a late charge naming the package (QueuedPlan #id) is matched as its bill, the #id9 one is not",
       per[2]["billed"] == 150_000 and per[2]["billed_gb"] == 30.0, per[2])
+# A SECOND charge matching the same period (e.g. a correction posted after
+# the first) must be SUMMED into billed/billed_gb, not have billed_gb take
+# only the first match's GB while billed sums both amounts (the two fields
+# would then describe different sets of charges).
+with Session(engine) as s:
+    s.add(LedgerEntry(type=LedgerType.charge, amount=20_000, account_id=ids["pre"], customer_id=ids["cust"],
+                      date=now - timedelta(days=1), gb_amount=4.0, note=f"Correction (QueuedPlan #{plan30_id}, ...)"))
+    s.commit()
+per = stmt(account_id=ids["pre"], since=iso(now - timedelta(days=40)))["periods"]
+check("periods: billed_gb SUMS every matching charge's GB, same as billed sums their amounts",
+      per[2]["billed"] == 150_000 + 20_000 and per[2]["billed_gb"] == 30.0 + 4.0, per[2])
 FAIL.add("st_pre")
 u = stmt(account_id=ids["pre"], since=iso(now - timedelta(days=5)))["volume"]
 check("usage: per-node history down -> falls back to a prorated estimate, never silent",
@@ -384,7 +396,7 @@ check("errors: missing since -> 422", client.get("/api/ledger/statement", params
 
 # ---- 7) read-only -----------------------------------------------------------------
 with Session(engine) as s:
-    ledger_after = s.exec(select(func.count()).select_from(LedgerEntry)).one() - 4  # minus the 2 month-edge + 2 plan-ref rows added above
+    ledger_after = s.exec(select(func.count()).select_from(LedgerEntry)).one() - 5  # minus the 2 month-edge + 2 plan-ref + 1 billed_gb-sum rows added above
 check("read-only: no ledger row written by any statement call", ledger_after == ledger_before, (ledger_before, ledger_after))
 
 print()

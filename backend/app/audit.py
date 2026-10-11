@@ -86,6 +86,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import timedelta
+from typing import Optional
 
 from sqlmodel import Session, select
 
@@ -107,32 +108,50 @@ STALE_OPEN_PERIOD_DAYS = 40
 EXTERNAL_CHANGE_ACTIONS = ("external_data_limit_increase", "external_usage_reset", "external_expire_extend")
 
 
-def _rate_at(rate_changes: list[RateChange], current_rate: float, default_rate: float, when) -> float:
-    """The account's own effective rate as it stood at `when`, reconstructed
-    from this account's RateChange rows (newest-not-after-`when` wins).
+def _scope_rate_at(changes: list[RateChange], current_value: Optional[float], lower_fallback: float, when) -> float:
+    """Point-in-time reconstruction at ONE scope level (account, group or
+    default) from that level's own RateChange rows (newest-not-after-`when`
+    wins).
 
-    Two different fallbacks, not one, because they answer different
-    questions — collapsing them was the bug caught in live testing
-    (Erfan_yazdi: rate explicitly zeroed out 2 days AFTER a charge that was
-    correctly billed at the then-current default; falling back to today's
-    CURRENT rate made that charge look wrong when it never was):
-      - no RateChange rows at all for this account -> the rate has never
-        changed -> `current_rate` (today's effective_rate) IS what it always
-        was.
-      - `when` predates every recorded change (this account's rate DID
-        change, just not yet at `when`) -> a change's old/new_rate of None
-        means "inherited" at that moment, not "zero" — the best read of
-        what it was inherited AS is `default_rate` (today's dashboard-wide
-        default; there are no group/default-scope RateChange rows in this
-        panel's history to reconstruct a truer point-in-time value from)."""
-    if not rate_changes:
-        return current_rate
-    applicable = [c for c in rate_changes if c.created_at <= when]
+    Two separate unknowns, not one `fallback` — collapsing them into a
+    single parameter was a real bug caught on LIVE data, not guessed (group
+    "seyed", rate_per_gb=50, zero RateChange rows ever — its member
+    accounts' charges were flagged as wrong because the reconstruction
+    skipped straight past the group's own configured 50 straight to the
+    dashboard default of 5000):
+      - `current_value`: this level's OWN right-now configured value
+        (account.rate_per_gb / group.rate_per_gb — None if inheriting).
+        When this level has NEVER logged a RateChange, that silence means
+        "never touched", and the most defensible read of "what was it
+        before" is "the same thing it is now" — not a jump straight to the
+        level below.
+      - `lower_fallback`: the level BELOW's own already-point-in-time value
+        (so the chain stays point-in-time all the way down) — used only
+        when THIS level has no opinion at `when`: no RateChange rows at all
+        AND no current value (inheriting), or `when` predates every
+        RateChange and that earliest row's `old_rate` is None (a logged
+        "cleared to inherit" captured no prior value to recover)."""
+    if not changes:
+        return current_value if current_value is not None else lower_fallback
+    applicable = [c for c in changes if c.created_at <= when]
     if applicable:
         latest = max(applicable, key=lambda c: c.created_at)
-        return latest.new_rate if latest.new_rate is not None else default_rate
-    earliest = min(rate_changes, key=lambda c: c.created_at)
-    return earliest.old_rate if earliest.old_rate is not None else default_rate
+        return latest.new_rate if latest.new_rate is not None else lower_fallback
+    earliest = min(changes, key=lambda c: c.created_at)
+    return earliest.old_rate if earliest.old_rate is not None else lower_fallback
+
+
+def _rate_at(account: Account, group: Optional[Group], account_changes: list[RateChange],
+            group_changes: list[RateChange], default_changes: list[RateChange], default_rate_now: float, when) -> float:
+    """The rate actually in effect for `account` at `when`, walking the same
+    account -> group -> default fallback chain effective_rate() uses for
+    TODAY, reconstructed at `when` from RateChange history AND each level's
+    own current value (see _scope_rate_at) — not just today's resolved
+    number, which a 6-model test council (2026-10-11) correctly flagged as
+    wrong the moment any level's rate changes after a charge was posted."""
+    default_then = _scope_rate_at(default_changes, default_rate_now, default_rate_now, when)
+    group_then = _scope_rate_at(group_changes, group.rate_per_gb if group else None, default_then, when) if group else default_then
+    return _scope_rate_at(account_changes, account.rate_per_gb, group_then, when)
 
 
 def build_anomalies(session: Session, *, lookback_days: int = 60) -> dict:
@@ -178,12 +197,19 @@ def build_anomalies(session: Session, *, lookback_days: int = 60) -> dict:
         select(AccountEvent).where(AccountEvent.account_id.in_(list(by_id)), AccountEvent.date >= since)
     ).all() if by_id else []
 
-    rate_changes = session.exec(
-        select(RateChange).where(RateChange.scope == "account", RateChange.account_id.in_(list(by_id)))
-    ).all() if by_id else []
-    rate_changes_by_acc: dict[int, list[RateChange]] = defaultdict(list)
-    for c in rate_changes:
-        rate_changes_by_acc[c.account_id].append(c)
+    # Unfiltered: the whole RateChange table is tiny (every rate edit ever
+    # made, across the whole panel) — far cheaper to read in full once and
+    # bucket in Python than to build a 3-way scope/account/group SQL filter.
+    account_changes_by_acc: dict[int, list[RateChange]] = defaultdict(list)
+    group_changes_by_group: dict[int, list[RateChange]] = defaultdict(list)
+    default_changes: list[RateChange] = []
+    for c in session.exec(select(RateChange)).all():
+        if c.scope == "account":
+            account_changes_by_acc[c.account_id].append(c)
+        elif c.scope == "group":
+            group_changes_by_group[c.group_id].append(c)
+        else:
+            default_changes.append(c)
 
     findings: list[dict] = []
 
@@ -191,11 +217,16 @@ def build_anomalies(session: Session, *, lookback_days: int = 60) -> dict:
     for aid in prepay_ids:
         a = by_id[aid]
         current_rate = effective_rate(session, a, groups.get(a.group_id))
-        history = rate_changes_by_acc.get(aid, [])
+        account_history = account_changes_by_acc.get(aid, [])
+        group_history = group_changes_by_group.get(a.group_id, []) if a.group_id else []
         for e in charges_by_acc.get(aid, []):
-            if e.gb_amount is None or e.gb_amount <= 0:
+            # == 0, not <= 0: a NEGATIVE gb_amount is a real correction/
+            # clawback row (seen live, e.g. a -2 GB adjustment) and must
+            # still be checked against the rate — only an unknown (None) or
+            # exactly-zero GB charge has nothing to compare against a rate.
+            if e.gb_amount is None or e.gb_amount == 0:
                 continue
-            rate_then = _rate_at(history, current_rate, default_rate, e.date)
+            rate_then = _rate_at(a, groups.get(a.group_id), account_history, group_history, default_changes, default_rate, e.date)
             expected = round(e.gb_amount * rate_then, 2)
             gap = round(e.amount - expected, 2)
             if abs(gap) >= RATE_MISMATCH_MIN_TOMAN:
