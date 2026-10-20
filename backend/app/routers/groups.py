@@ -14,12 +14,15 @@ from app.services import (
     account_posted_balance,
     attributable_consumed_gb,
     billable_bytes,
+    cancel_pending_queued_plan,
     effective_rate,
     enrich_accounts,
     group_only_posted_balance,
     neutralize_billed_baseline,
     roll_payg_baseline_after_reset,
+    roll_usage_baseline_on_payg_entry,
     serialise_billing,
+    shop_linked_customer_blocks_payg,
     sync_marzban_fields,
 )
 
@@ -170,7 +173,8 @@ def get_group(group_id: int, session: Session = Depends(get_session)):
 
 
 @router.patch("/{group_id}", response_model=GroupRead)
-def update_group(group_id: int, body: GroupUpdate, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
+@serialise_billing
+async def update_group(group_id: int, body: GroupUpdate, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     group = session.get(Group, group_id)
     if not group:
         raise HTTPException(404, "Group not found")
@@ -200,9 +204,12 @@ def update_group(group_id: int, body: GroupUpdate, session: Session = Depends(ge
         # that payg never kept current — on payg-standard-shaped members that
         # is a stale prepay leftover under a 300GB Marzban cap, i.e. hundreds
         # of GB of phantom "sold but uninvoiced" package debt per member.
-        # Only the payg→prepay direction is guarded: prepay→payg changes
-        # nothing (payg never reads billed_data_limit, so a stale value there
-        # is inert again). Soft-deleted members are excluded, same as
+        # billed_data_limit itself is only dangerous in the payg→prepay
+        # direction (prepay→payg leaves it inert). usage_baseline is the
+        # OTHER half, live the moment a flip lands on payg -- guarded in the
+        # elif branch below (2026-10-20; this comment used to say the
+        # reverse direction "changes nothing", which missed that field
+        # entirely). Soft-deleted members are excluded, same as
         # settle_group / get_group_accounts.
         if "billing_mode" in changes and old_mode == BillingMode.payg and group.billing_mode == BillingMode.prepay:
             members = session.exec(
@@ -215,6 +222,36 @@ def update_group(group_id: int, body: GroupUpdate, session: Session = Depends(ge
                     reason=f"group {group.id} ({group.name}) billing_mode flipped payg->prepay",
                     created_by=operator,
                 )
+        # 2026-10-20 fix: the comment above used to claim "prepay->payg
+        # changes nothing" -- true for billed_data_limit, but every member's
+        # usage_baseline stays wherever it was (0 by default, untouched
+        # while prepay), so the next payg settle for the group reads each
+        # member's used_traffic - usage_baseline as brand-new debt for
+        # usage already paid for under their prepay package. Also cancel
+        # any pending QueuedPlan per member -- a plan auto-queued while a
+        # member was still prepay must not survive into the group's new
+        # payg life (same cleanup update_billing/update_relationship do).
+        elif "billing_mode" in changes and old_mode == BillingMode.prepay and group.billing_mode == BillingMode.payg:
+            # N1 (2026-10-20): same shop-link re-check as the account-level
+            # flips in accounts.py — a group's shop exposure runs through
+            # its representative_customer_id, not any one member.
+            if shop_linked_customer_blocks_payg(session, group.representative_customer_id):
+                raise HTTPException(
+                    409,
+                    "مشتری نمایندهٔ این گروه به فروشگاه (شاپ‌بات) متصل است — نمی‌توان این گروه را payg کرد، "
+                    "چون خریدهای فروشگاه و بیلینگ مصرفی روی یک شمارنده تداخل پیدا می‌کنند.",
+                )
+            members = session.exec(
+                select(Account).where(Account.group_id == group.id, Account.deleted_at.is_(None))
+            ).all()
+            for member in members:
+                roll_usage_baseline_on_payg_entry(
+                    session,
+                    member,
+                    reason=f"group {group.id} ({group.name}) billing_mode flipped prepay->payg",
+                    created_by=operator,
+                )
+                cancel_pending_queued_plan(session, member.id)
         session.commit()
         session.refresh(group)
     except Exception:
@@ -521,7 +558,7 @@ async def settle_group_member(
     if not group:
         raise HTTPException(404, "Group not found")
     account = session.get(Account, account_id)
-    if not account or account.group_id != group_id:
+    if not account or account.group_id != group_id or account.deleted_at is not None:
         raise HTTPException(404, "This account is not a member of this group")
 
     line = _invoice_lines(session, [account], group)[0]

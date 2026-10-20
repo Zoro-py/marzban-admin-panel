@@ -31,16 +31,18 @@ class BackendClient:
         self._token_expires_at = time.monotonic() + 12 * 60 * 60
         return self._token
 
-    async def _request(self, method: str, path: str, timeout: float = 20, **kwargs: Any) -> httpx.Response:
+    async def _request(self, method: str, path: str, timeout: float = 20,
+                        headers: Optional[dict] = None, **kwargs: Any) -> httpx.Response:
         # `timeout` is per call, not a constant: 20s is right for the reads and
         # single-row writes every other command makes, but bulk account
         # creation is one Marzban round-trip PER ACCOUNT, so a 40-account batch
         # legitimately runs for minutes. Timing that out client-side wouldn't
         # cancel it — the backend keeps creating accounts either way — it would
         # only throw away the response that says which ones were made.
+        extra_headers = headers or {}
         async with httpx.AsyncClient(timeout=timeout) as client:
             token = await self._get_token(client)
-            headers = {"Authorization": f"Bearer {token}"}
+            headers = {**extra_headers, "Authorization": f"Bearer {token}"}
             resp = await client.request(method, f"{self._base_url}{path}", headers=headers, **kwargs)
             if resp.status_code == 401:
                 self._token = None
@@ -54,8 +56,10 @@ class BackendClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def post(self, path: str, json: Optional[dict] = None, timeout: float = 20) -> Any:
-        resp = await self._request("POST", path, json=json, timeout=timeout)
+    async def post(self, path: str, json: Optional[dict] = None, timeout: float = 20,
+                    idempotency_key: Optional[str] = None) -> Any:
+        headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+        resp = await self._request("POST", path, json=json, timeout=timeout, headers=headers)
         if resp.status_code >= 400:
             # A 422 from FastAPI carries a LIST under "detail", not a string —
             # str()ing it here keeps the caller's `except ValueError as exc`

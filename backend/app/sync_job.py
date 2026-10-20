@@ -358,6 +358,36 @@ async def _maybe_settle_payg_cap_hit(session: Session, account: Account, now: da
         return  # no hard cap set -- nothing to hit
     remaining_gb = (account.data_limit - account.used_traffic) / GB
     if remaining_gb > PAYG_CAP_HIT_REMAINING_GB:
+        # 2026-10-20 fix: a PREVIOUS cap-hit may have reset usage but then
+        # failed to reactivate the account (Marzban's modify_user call
+        # below can fail independently of reset_user) — that left
+        # remaining_gb healthy forever after, so this function returned
+        # here on every later cycle and never tried re-activating again.
+        # The customer stayed charged-and-blocked permanently, with the
+        # admin already told "reconnected" by the one-shot notify further
+        # down. If the meter looks fine but Marzban still reports the
+        # account blocked, retry ONLY the reactivation here — no new
+        # reset, no new charge, this account was already settled.
+        if account.status not in ("active", None):
+            try:
+                marzban_user = await marzban_client.modify_user(account.marzban_username, {"status": "active"})
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Retry: still could not re-activate %s after an earlier cap-hit reset",
+                    account.marzban_username)
+                return
+            account.status = marzban_user.get("status", account.status)
+            account.last_synced_at = now
+            session.add(account)
+            session.commit()
+            if account.status == "active":
+                try:
+                    await _notify_admin(
+                        f"✅ اکانت «{account.marzban_username}» که قبلاً بعد از رسیدن به سقف ریست شده بود ولی "
+                        "دوباره وصل نشده بود، حالا فعال شد."
+                    )
+                except Exception:
+                    pass
         return
 
     # D8 (2026-09-29, design in docs/proposals/2026-09-28_sync_settle_lock_design.md):
@@ -385,19 +415,32 @@ async def _maybe_settle_payg_cap_hit(session: Session, account: Account, now: da
         # Marzban leaves a capped user 'limited' after a reset: the meter reads 0
         # but the customer is still cut off, which is the opposite of what both
         # the message below and the charge above promise. Only if it needs it.
+        reactivate_failed = False
         if marzban_user.get("status") != "active":
             try:
                 marzban_user = await marzban_client.modify_user(
                     account.marzban_username, {"status": "active"}
                 ) or marzban_user
             except Exception:
+                reactivate_failed = True
                 logging.getLogger(__name__).exception(
                     "Reset %s after its cap but could not re-activate it", account.marzban_username)
 
-        await _notify_admin(
-            f"🚫 اکانت «{account.marzban_username}» به سقف حجمش ({account.data_limit / GB:g} گیگ) رسید و بلاک شده بود"
-            f"{charge_note} — مصرفش تو Marzban صفر شد تا دوباره وصل بشه."
-        )
+        # 2026-10-20 fix: this used to send the "reconnected" message below
+        # unconditionally, even when reactivation above just failed — the
+        # admin was told the customer was unblocked while they were still
+        # blocked, with no distinct error anywhere but a server log line.
+        if reactivate_failed:
+            await _notify_admin(
+                f"⚠️ اکانت «{account.marzban_username}» به سقف حجمش ({account.data_limit / GB:g} گیگ) رسید"
+                f"{charge_note} — مصرفش صفر شد، ولی فعال‌سازی دوباره‌اش شکست خورد. "
+                "همچنان بلاک است؛ دورهٔ بعدی sync دوباره امتحان می‌کند."
+            )
+        else:
+            await _notify_admin(
+                f"🚫 اکانت «{account.marzban_username}» به سقف حجمش ({account.data_limit / GB:g} گیگ) رسید و بلاک شده بود"
+                f"{charge_note} — مصرفش تو Marzban صفر شد تا دوباره وصل بشه."
+            )
 
         if amount > 0:
             session.add(LedgerEntry(

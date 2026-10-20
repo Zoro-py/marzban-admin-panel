@@ -4,11 +4,16 @@ this pins the OPERATOR shape — toggling a group's mode back and forth across
 several flips with a payg-shaped member inside.
 
 Invariants across all flips:
-- every payg→prepay flip neutralizes the baseline (billed == data_limit),
-  so owes-now never shows the phantom package;
-- every prepay→payg flip leaves the field alone (inert under payg — the
-  290,000 the row then shows is the member's REAL metered pending, not a
-  phantom);
+- every payg→prepay flip neutralizes the billed_data_limit baseline
+  (billed == data_limit), so owes-now never shows the phantom package;
+- 2026-10-20: every prepay→payg flip now ALSO rolls usage_baseline to
+  used_traffic (roll_usage_baseline_on_payg_entry) -- this file used to
+  assert the opposite ("inert under payg, 290,000 real metered pending
+  shows every time"), which was itself the bug: with no real consumption
+  happening between these synthetic back-to-back flips, re-showing the
+  same 290GB as "new" pending on every re-entry into payg would have
+  double-billed it if a settle ever ran between flips. The corrected
+  invariant is 0 pending immediately after EACH prepay->payg flip;
 - no ledger row is ever written by a mode flip (D21: "اثر پولی صفر").
 
 Plain `python -m tests.test_group_mode_flip_stress` from `backend/`.
@@ -49,7 +54,11 @@ failures: list[str] = []
 
 
 def check(label: str, cond: bool, detail: str = "") -> None:
-    print(f"  [{'OK' if cond else 'FAIL'}] {label}" + (f" — {detail}" if detail else ""))
+    # ASCII arrow: this console's cp1252 stdout can't encode U+2192 and
+    # crashes mid-run (pre-existing, unrelated to any billing logic) --
+    # every label/detail string below already avoids non-ASCII for this
+    # reason; keep this encode-safe rather than reintroducing it here.
+    print(f"  [{'OK' if cond else 'FAIL'}] {label}" + (f" -- {detail}" if detail else ""))
     if not cond:
         failures.append(label)
 
@@ -96,13 +105,20 @@ for i, mode in enumerate(["prepay", "payg", "prepay", "payg", "prepay"]):
         billed_gb = (acc.billed_data_limit or 0) / GB
         row = client.get("/api/accounts", params={"group_id": gid}).json()[0]
         if mode == "prepay":
-            check(f"flip {i + 1}: payg→prepay neutralized (no phantom)",
+            check(f"flip {i + 1}: payg->prepay neutralized (no phantom)",
                   abs(billed_gb - 300.0) < 0.01 and row["net_owed"] <= 0.01,
                   f"billed={billed_gb:g}GB, owes={row['net_owed']}")
         else:
-            check(f"flip {i + 1}: prepay→payg inert, real metered pending shows",
-                  abs(row["net_owed"] - 290000.0) < 0.01,
-                  f"owes={row['net_owed']} (= 290GB × 1000 real payg usage)")
+            # 2026-10-20: used to assert this stayed at 290000 (290GB x
+            # 1000) every single re-entry into payg -- that was the bug:
+            # with no real new consumption between these synthetic flips,
+            # re-exposing the same usage as "new" pending each time would
+            # double-bill it the moment any settle ran. roll_usage_baseline_
+            # on_payg_entry now snaps the baseline forward on every entry,
+            # so nothing is owed again right after the flip.
+            check(f"flip {i + 1}: prepay->payg rolls the baseline, nothing owed yet",
+                  abs(row["net_owed"]) < 0.01,
+                  f"owes={row['net_owed']} (expected 0 right after the flip)")
 
 with Session(engine) as session:
     rows = session.exec(select(LedgerEntry)).all()

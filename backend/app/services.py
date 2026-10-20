@@ -523,9 +523,11 @@ def neutralize_billed_baseline(session: Session, account: Account, reason: str, 
     keeps the baseline honest: a REAL package sale still bills normally via
     adjust+bill_added_gb or the next settle.
 
-    The dangerous direction is ONLY payg→prepay. prepay→payg changes nothing:
-    payg's billable_bytes never reads billed_data_limit, so a stale value
-    there is inert again the moment the mode flips back.
+    billed_data_limit itself is only dangerous in the payg→prepay direction
+    (prepay→payg leaves it inert — payg's billable_bytes never reads it).
+    2026-10-20: that's a separate field from usage_baseline, which IS live
+    the moment a flip lands on payg, and was NOT being neutralized anywhere —
+    see roll_usage_baseline_on_payg_entry below for that half of the guard.
 
     NOT money: writes no LedgerEntry and touches nothing else — just this
     one internal baseline field that only the prepay branch reads, plus an
@@ -544,6 +546,45 @@ def neutralize_billed_baseline(session: Session, account: Account, reason: str, 
         detail=(
             f"billed_data_limit {old_value} -> {target} bytes "
             f"({old_value / GB:.3f} -> {target / GB:.3f} GB): {reason}"
+        ),
+        created_by=created_by,
+    ))
+    return True
+
+
+def roll_usage_baseline_on_payg_entry(session: Session, account: Account, reason: str, created_by: Optional[str] = None) -> bool:
+    """Snap usage_baseline to the account's CURRENT used_traffic the moment
+    its effective billing mode flips TO payg — the prepay->payg counterpart
+    of neutralize_billed_baseline above.
+
+    2026-10-20: confirmed this guard never existed. usage_baseline defaults
+    to 0 and, per its own docstring in models.py, is NEVER touched while an
+    account bills as prepay (deliberately: conflating it with
+    billed_data_limit would let an unrelated usage event corrupt package
+    billing). So a prepay account mid-package with, say, 40 GB of its own
+    40GB-of-60GB PAID-FOR package already consumed flips to payg with
+    usage_baseline still 0 — billable_bytes(payg) = used_traffic -
+    usage_baseline immediately reads 40 GB of brand-new "pending" debt for
+    usage the customer already paid for under the prepay package, which the
+    very next settle (manual or payg_monthly_job's automatic one) posts as a
+    real charge. Three call sites flip an account's effective mode to payg:
+    update_billing's own billing_mode field, update_relationship's group_id
+    re-pointing, and update_group's group-wide flip -- all three need this.
+
+    NOT money by itself: writes no LedgerEntry and touches nothing else —
+    just this one internal baseline field, plus an audit row when (and only
+    when) the value actually changed. Returns True when it wrote something."""
+    if account.usage_baseline == account.used_traffic:
+        return False
+    old_value = account.usage_baseline
+    account.usage_baseline = account.used_traffic
+    account.usage_baseline_at = utcnow()
+    session.add(AccountEvent(
+        account_id=account.id,
+        action="usage_baseline_rolled_on_payg_entry",
+        detail=(
+            f"usage_baseline {old_value} -> {account.usage_baseline} bytes "
+            f"({old_value / GB:.3f} -> {account.usage_baseline / GB:.3f} GB): {reason}"
         ),
         created_by=created_by,
     ))
@@ -626,6 +667,25 @@ def effective_billing_mode(session: Session, account: Account, group: Optional[G
         if group is not None:
             return group.billing_mode
     return account.billing_mode
+
+
+def shop_linked_customer_blocks_payg(session: Session, customer_id: Optional[int]) -> bool:
+    """Would flipping this customer's billing to payg reopen the two-economies
+    hole routers/shop.py's _customer_has_payg_billing already refuses at LINK
+    time? That check only runs once, when the shop link is created — nothing
+    re-checks it when an operator later flips an already-linked customer's
+    account (or the group it belongs to) to payg. On a shop-linked customer,
+    a shop purchase debits the wallet and extends the account directly, while
+    a payg settle charges the reseller ledger from the SAME usage meter — the
+    shop payment never appears in the settle and the settle never knows the
+    service was renewed, so the customer pays twice for the same GB. Call
+    this with the customer_id the flip would apply to (the account's own, or
+    the group's representative_customer_id) right before applying any
+    prepay->payg flip, and refuse the flip if it returns True."""
+    if customer_id is None:
+        return False
+    customer = session.get(Customer, customer_id)
+    return customer is not None and customer.shop_user_id is not None
 
 
 def attributable_consumed_gb(session: Session, account: Account) -> float:

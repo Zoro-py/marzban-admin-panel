@@ -312,7 +312,7 @@ async def _render_amount(edit: Editor, chat_id: int, kind: str, bucket_id: int, 
     rows = [
         [InlineKeyboardButton(
             f"کامل ({format_toman(outstanding)})",
-            callback_data=f"debtdo:confirm:{outstanding:g}:{kind}:{bucket_id}:{customer_id}",
+            callback_data=f"debtdo:confirm:{outstanding:.2f}:{kind}:{bucket_id}:{customer_id}",
         )],
         *_nav_row(f"debtnudge:{customer_id}"),
     ]
@@ -358,7 +358,7 @@ async def _render_confirm(edit: Editor, amount: Optional[float], kind: str, buck
     rows = [
         [InlineKeyboardButton(
             f"✅ ثبت پرداخت {format_toman(resolved)}",
-            callback_data=f"debtdo:post:{resolved:g}:{kind}:{bucket_id}:{customer_id}",
+            callback_data=f"debtdo:post:{resolved:.2f}:{kind}:{bucket_id}:{customer_id}",
         )],
         *_nav_row(f"debtpay:{kind}:{bucket_id}:{customer_id}"),
     ]

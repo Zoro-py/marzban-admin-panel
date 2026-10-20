@@ -110,6 +110,15 @@ async def _ledger_command(update: Update, context: ContextTypes.DEFAULT_TYPE, le
         entry = await backend.post(
             "/api/ledger",
             json={"type": ledger_type, "amount": amount, "customer_id": customer["id"], "note": note},
+            # CLAIM 7 (2026-10-20): ties this POST to the exact Telegram
+            # update that triggered it. A timeout that hid a real 200 used
+            # to mean "retype the command, maybe get charged/credited
+            # twice" — the backend's own Idempotency-Key handling
+            # (routers/ledger.py) now returns the SAME entry on a retry of
+            # this same update instead of writing a second one. A genuinely
+            # new /charge or /credit command is a new Telegram update, so it
+            # always gets its own key and is never blocked.
+            idempotency_key=f"tg-ledger-{update.update_id}",
         )
     except Exception as exc:  # noqa: BLE001 — the operator has to know whether the money was recorded
         await update.message.reply_text(f"Nothing was recorded — {exc}")

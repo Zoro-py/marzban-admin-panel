@@ -22,6 +22,7 @@ from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_cli
 from app.models import (
     Account,
     AccountEvent,
+    BillingMode,
     Customer,
     Delegate,
     Group,
@@ -31,7 +32,7 @@ from app.models import (
     utcnow,
 )
 from app.notify import notify_admin
-from app.services import MoneyBook, attributable_consumed_gb, bytes_from_gb, cancel_pending_queued_plan, close_out_payg_usage_before_delete, effective_rate
+from app.services import MoneyBook, attributable_consumed_gb, bytes_from_gb, cancel_pending_queued_plan, close_out_payg_usage_before_delete, effective_billing_mode, effective_rate
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +174,19 @@ async def create_delegate_account(session: Session, delegate: Delegate, data_lim
     _check_credit_limit(session, delegate)
     _check_daily_cap(session, delegate)
 
+    # The delegate economy is prepay-shaped end to end: a flat package charge
+    # up front, billed_data_limit tracking it so nothing re-bills on settle.
+    # That has nothing honest to charge on a payg-effective scope, where
+    # capacity is free and only metered consumption bills — a flat charge
+    # here would just silently pre-pay future metered usage. A customer-
+    # scoped delegate's new account always starts prepay (Account's own
+    # model default), so only a group-scoped delegate pointed at a payg
+    # group can hit this; refuse it outright rather than mis-bill it.
+    if delegate.group_id is not None:
+        group = session.get(Group, delegate.group_id)
+        if group is not None and group.billing_mode == BillingMode.payg:
+            raise DelegateError("این گروه به‌صورت مصرفی (payg) تنظیم شده — ساخت اکانت از این مسیر برای آن فعال نیست.")
+
     username = await _next_username(session, delegate)
     now = utcnow()
     expire = int(now.timestamp()) + delegate.default_duration_days * SECONDS_IN_DAY
@@ -266,6 +280,14 @@ async def renew_delegate_account(
         raise DelegateError("دسترسی شما غیرفعال شده — با تیم فروش تماس بگیرید.")
     _check_credit_limit(session, delegate)
     account = _get_owned_account(session, delegate, account_id)
+
+    # Same reasoning as the create-side gate above: a flat +GB charge is
+    # only coherent under prepay. Checked here (not just at create) because
+    # an account's effective mode can change AFTER it was created — an
+    # operator flipping the group/account to payg later must not leave this
+    # renew path still charging the old, now-wrong way.
+    if effective_billing_mode(session, account) == BillingMode.payg:
+        raise DelegateError("این اکانت به‌صورت مصرفی (payg) تنظیم شده — تمدید حجمی از این مسیر برای آن فعال نیست.")
 
     days = extend_days if extend_days is not None else delegate.default_duration_days
     # max(), not "account.expire if account.expire else now": account.expire

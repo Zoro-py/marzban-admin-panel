@@ -268,8 +268,29 @@ with Session(engine) as session:
     check("3b. effective mode is payg (group wins)", mode == BillingMode.payg)
     check("3c. its REAL pending package (10GB billed of 40GB) was NOT neutralized",
           a.billed_data_limit == 10 * GB and pre == 10 * GB)
-    check("3d. payg billable is usage-based (1GB)", billable_bytes(a, mode) == 1 * GB)
+    # 2026-10-20: this used to assert billable_bytes == 1*GB here, treating
+    # that 1GB as a harmless, "usage-based" number. It isn't -- usage_baseline
+    # was still 0 (its value from before this account ever touched payg), so
+    # that 1GB was real consumption already accrued under the PREPAY package
+    # (prepay bills by package size, not by consumption, so this 1GB was
+    # never "free" -- it's accounted for by billed_data_limit catching up to
+    # data_limit at the next prepay settle, whenever that happens). Reading
+    # it again as brand-new payg debt the moment the account joins a payg
+    # group double-counts it. roll_usage_baseline_on_payg_entry (added
+    # today) snaps usage_baseline to used_traffic on this exact flip, so the
+    # correct billable right after is 0, not 1GB.
+    check("3d. payg billable is ZERO right after the flip (was: 1GB phantom debt)",
+          billable_bytes(a, mode) == 0)
+    check("3d2. usage_baseline was rolled to used_traffic on the flip", a.usage_baseline == a.used_traffic)
 check("3e. no neutralize event on the safe direction", len(neutralize_events(ids["safe"])) == 0)
+with Session(engine) as session:
+    usage_roll_events = session.exec(
+        select(AccountEvent).where(
+            AccountEvent.account_id == ids["safe"],
+            AccountEvent.action == "usage_baseline_rolled_on_payg_entry",
+        )
+    ).all()
+    check("3f. exactly one usage_baseline-roll audit event", len(usage_roll_events) == 1)
 
 # ── 4) No regression in the paths that already wrote this pattern ─────────
 # 4a. settle_account (routers/accounts.py — `billed_data_limit = data_limit or 0`).

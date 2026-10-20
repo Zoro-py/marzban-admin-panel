@@ -107,6 +107,7 @@ def _fmt_gb(v) -> str:
     return "—" if v is None else f"{v:g} GB"
 
 
+@admin_only
 async def since_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = [a for a in (context.args or []) if a.strip()]
     if not args:

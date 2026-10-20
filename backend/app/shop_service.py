@@ -27,6 +27,7 @@ from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_cli
 from app.models import (
     Account,
     AccountEvent,
+    BillingMode,
     Customer,
     ShopOrder,
     ShopOrderStatus,
@@ -38,7 +39,7 @@ from app.models import (
     ShopWalletEntryType,
     utcnow,
 )
-from app.services import bytes_from_gb, sync_marzban_fields
+from app.services import bytes_from_gb, effective_billing_mode, sync_marzban_fields
 
 logger = logging.getLogger(__name__)
 
@@ -661,6 +662,27 @@ def create_topup(
             # the operator approves both — and the second is usually the same
             # photo sent again by someone who thinks the first didn't arrive.
             raise ShopConflict("A payment for this plan is already waiting to be checked.")
+    else:
+        # CLAIM 8 (2026-10-20): the guard above only covered order-bound
+        # top-ups. A plain wallet top-up had NO such guard — a customer who
+        # resends the same transfer's receipt (normal behaviour when the bot
+        # gives no visible confirmation, or restarts) opens a second pending
+        # row with its own reference code, and nothing flags the two as
+        # duplicates of one transfer. The per-row conditional UPDATE in
+        # approve_topup correctly stops one row from being approved twice,
+        # but not two different rows for the same money — an operator who
+        # approves both credits the wallet twice for one transfer. One
+        # pending order-less top-up at a time per shop user closes that,
+        # the same way order_id already limits it to one per order.
+        pending_already = session.exec(
+            select(ShopTopup).where(
+                ShopTopup.shop_user_id == shop_user.id,
+                ShopTopup.order_id.is_(None),
+                ShopTopup.status == ShopTopupStatus.pending,
+            )
+        ).first()
+        if pending_already is not None:
+            raise ShopConflict("A top-up for this account is already waiting to be checked.")
 
     topup = ShopTopup(
         shop_user_id=shop_user.id,
@@ -1483,6 +1505,20 @@ def _record_extended(session: Session, order: ShopOrder, account: Account, marzb
     now = utcnow()
     sync_marzban_fields(account, marzban_user)
     account.last_synced_at = now
+    # 2026-10-20 fix: renewable_account() (the caller several frames up)
+    # extends in place whatever account the customer already has, with no
+    # billing-mode filter -- including a PREPAY account reached via the
+    # linked-customer fallback (an operator-linked existing customer, not
+    # one the shop itself created). For a prepay account, billable_bytes is
+    # data_limit - billed_data_limit; sync_marzban_fields above just raised
+    # data_limit by this order's GB without raising billed_data_limit to
+    # match, so the next prepay settle would bill this same GB a second
+    # time (the customer already paid for it here, through the shop
+    # wallet). Mirrors the one line delegate_service.renew_delegate_account
+    # already does for the exact same reason. payg accounts don't read
+    # billed_data_limit at all, so this is a no-op for them.
+    if effective_billing_mode(session, account) == BillingMode.prepay:
+        account.billed_data_limit = (account.billed_data_limit or 0) + bytes_from_gb(order.data_limit_gb)
     session.add(account)
     session.add(AccountEvent(
         account_id=account.id,

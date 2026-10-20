@@ -52,8 +52,10 @@ from app.services import (
     effective_rate,
     enrich_accounts,
     neutralize_billed_baseline,
+    roll_usage_baseline_on_payg_entry,
     roll_payg_baseline_after_reset,
     serialise_billing,
+    shop_linked_customer_blocks_payg,
     sync_marzban_fields,
 )
 
@@ -542,9 +544,10 @@ async def create_bulk_accounts(
 
 
 @router.patch("/{account_id}/relationship", response_model=AccountRead)
-def update_relationship(account_id: int, body: AccountRelationshipUpdate, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
+@serialise_billing
+async def update_relationship(account_id: int, body: AccountRelationshipUpdate, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     account = session.get(Account, account_id)
-    if not account:
+    if not account or account.deleted_at is not None:
         raise HTTPException(404, "Account not found")
 
     changes = body.model_dump(exclude_unset=True)
@@ -581,6 +584,42 @@ def update_relationship(account_id: int, body: AccountRelationshipUpdate, sessio
                 reason=f"effective billing mode flipped payg->prepay on relationship change (group_id {old_group_id} -> {account.group_id})",
                 created_by=operator,
             )
+        # 2026-10-20 fix: the OTHER direction was entirely unguarded here —
+        # moving this account into a payg group (or a standalone account's
+        # group_id being cleared into a payg default) leaves usage_baseline
+        # wherever it was, so the next payg settle reads used_traffic -
+        # usage_baseline as brand-new debt for usage already paid for under
+        # whatever prepay package this account/group had. See
+        # roll_usage_baseline_on_payg_entry's own docstring for the full
+        # mechanism -- same gap neutralize_billed_baseline above closes for
+        # the opposite direction.
+        elif mode_before == BillingMode.prepay and mode_after == BillingMode.payg:
+            # N1 (2026-10-20): the shop's own link-time guard
+            # (_customer_has_payg_billing) only runs once, when the link is
+            # created — it never re-checks a LATER flip like this one. The
+            # relevant customer is whichever one this account now bills
+            # through: its own customer_id standalone, or the group's
+            # representative once grouped.
+            shop_customer_id = account.customer_id
+            if account.group_id is not None:
+                flip_group = session.get(Group, account.group_id)
+                shop_customer_id = flip_group.representative_customer_id if flip_group else None
+            if shop_linked_customer_blocks_payg(session, shop_customer_id):
+                raise HTTPException(
+                    409,
+                    "این مشتری به فروشگاه (شاپ‌بات) متصل است — نمی‌توان این اکانت/گروه را payg کرد، "
+                    "چون خریدهای فروشگاه و بیلینگ مصرفی روی یک شمارنده تداخل پیدا می‌کنند.",
+                )
+            roll_usage_baseline_on_payg_entry(
+                session,
+                account,
+                reason=f"effective billing mode flipped prepay->payg on relationship change (group_id {old_group_id} -> {account.group_id})",
+                created_by=operator,
+            )
+            # Same QueuedPlan cleanup update_billing's direct flip already
+            # does (2026-10-20) -- a plan auto-queued while this account was
+            # prepay must not survive into its new payg life.
+            cancel_pending_queued_plan(session, account.id)
 
         session.add(account)
 
@@ -601,9 +640,10 @@ def update_relationship(account_id: int, body: AccountRelationshipUpdate, sessio
 
 
 @router.patch("/{account_id}/billing", response_model=AccountRead)
+@serialise_billing
 async def update_billing(account_id: int, body: AccountBillingUpdate, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
     account = session.get(Account, account_id)
-    if not account:
+    if not account or account.deleted_at is not None:
         raise HTTPException(404, "Account not found")
 
     old_rate = account.rate_per_gb
@@ -658,6 +698,15 @@ async def update_billing(account_id: int, body: AccountBillingUpdate, session: S
         and old_billing_mode != BillingMode.payg
         and not account.group_id
     ):
+        # N1 (2026-10-20): same shop-link check as update_relationship —
+        # refuse BEFORE touching Marzban, not after, so a refused flip never
+        # mutates the remote account.
+        if shop_linked_customer_blocks_payg(session, account.customer_id):
+            raise HTTPException(
+                409,
+                "این مشتری به فروشگاه (شاپ‌بات) متصل است — نمی‌توان این اکانت را payg کرد، "
+                "چون خریدهای فروشگاه و بیلینگ مصرفی روی یک شمارنده تداخل پیدا می‌کنند.",
+            )
         try:
             marzban_user = await marzban_client.modify_user(
                 account.marzban_username,
@@ -672,6 +721,27 @@ async def update_billing(account_id: int, body: AccountBillingUpdate, session: S
         account.expire = None
         account.data_limit = int(PAYG_DEFAULT_DATA_LIMIT_GB * GB)
         payg_shape_applied = True
+        # 2026-10-20 fix: usage_baseline stays wherever it was (0 by default,
+        # never touched while prepay) across this flip -- the very next payg
+        # settle then reads used_traffic - usage_baseline as brand-new
+        # billable usage, i.e. a phantom charge for whatever this account
+        # had already consumed under the prepay package it was just billed
+        # for. Roll it to used_traffic now, same moment the payg shape lands.
+        roll_usage_baseline_on_payg_entry(
+            session, account,
+            reason="effective billing mode flipped prepay->payg on a direct billing-mode change",
+            created_by=operator,
+        )
+        # 2026-10-20 fix: a QueuedPlan auto-queued while this account was
+        # still prepay survives a mode flip untouched. Once this account
+        # (now payg-shaped) later hits its 300GB soft cap, sync_job's
+        # limited/expired branch doesn't check billing_mode at all — it
+        # would find this stale plan and activate it, silently overwriting
+        # the payg shape just applied here with the old prepay package's
+        # small data_limit and a real expire date, with no notification
+        # explaining why. Same cleanup create/delete already do via
+        # cancel_pending_queued_plan — this mode flip needs it too.
+        cancel_pending_queued_plan(session, account.id)
 
     try:
         session.add(account)
@@ -730,7 +800,7 @@ async def adjust_account(account_id: int, body: AccountAdjustRequest, session: S
         AccountRead: The updated account record.
     """
     account = session.get(Account, account_id)
-    if not account:
+    if not account or account.deleted_at is not None:
         raise HTTPException(404, "Account not found")
 
     payload: dict = {}
@@ -871,7 +941,7 @@ async def settle_account(account_id: int, body: AccountSettleRequest = AccountSe
             "settle_account called directly without an explicit operator — "
             "pass operator='system:<job>' (the Depends() default is HTTP-only)")
     account = session.exec(select(Account).with_for_update().where(Account.id == account_id)).first()
-    if not account:
+    if not account or account.deleted_at is not None:
         raise HTTPException(404, "Account not found")
     if account.group_id is not None:
         raise HTTPException(400, "This account is billed through its group — use /api/groups/{group_id}/settle")
