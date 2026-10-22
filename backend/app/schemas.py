@@ -603,6 +603,8 @@ class ShopSettingsRead(BaseModel):
     trial_enabled: bool = False
     trial_gb: float = 1.0
     trial_hours: int = 24
+    payg_enabled: bool = False
+    payg_rate_per_gb: Optional[int] = None
 
 
 class ShopSettingsUpdate(BaseModel):
@@ -637,6 +639,8 @@ class ShopSettingsUpdate(BaseModel):
     trial_enabled: Optional[bool] = None
     trial_gb: Optional[float] = Field(default=None, gt=0, le=100)
     trial_hours: Optional[int] = Field(default=None, ge=1, le=720)
+    payg_enabled: Optional[bool] = None
+    payg_rate_per_gb: Optional[int] = Field(default=None, ge=0)
 
 
 class ShopUserRead(BaseModel):
@@ -779,6 +783,15 @@ class ShopBotSession(BaseModel):
     trial_gb: float = 0.0
     trial_hours: int = 0
 
+    # Whether to show the "📊 سرویس مصرفی" button — off whenever the operator
+    # hasn't set a payg rate, same convention as trial_enabled above.
+    payg_enabled: bool = False
+    # The real configured rate, so the bot's own intro text can state it
+    # honestly instead of omitting it or guessing (standing rule: no
+    # fabricated numbers in user-facing copy). 0 whenever payg_enabled is
+    # False — never read in that case.
+    payg_rate_per_gb: int = 0
+
     # Whether we already have their phone number — lets the bot ask exactly
     # once (after they've actually bought something, never on /start; see
     # take_trial/_confirm_wallet_purchase in handlers/shop.py) instead of
@@ -840,6 +853,16 @@ class ShopAutoRenewResult(BaseModel):
     # shop_service.DEBT_SUSPEND_AFTER_DAYS, echoed back so the bot's copy
     # never has to hardcode a number that only the backend owns.
     grace_days: int
+
+
+class ShopPaygStartResult(BaseModel):
+    """Response for the "📊 سرویس مصرفی" button — no data_limit_gb/
+    duration_days to report, since a payg service has neither."""
+
+    order_id: int
+    marzban_username: Optional[str]
+    subscription_url: Optional[str]
+    status: ShopOrderStatus
 
 
 class ShopBotTopupRequest(BaseModel):

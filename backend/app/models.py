@@ -134,6 +134,13 @@ class Account(SQLModel, table=True):
     # together with debt_since.
     debt_reminder_sent_at: Optional[datetime] = None
 
+    # Retail payg's own one-shot heads-up before a suspension that CAN
+    # happen on the very next daily meter tick (payg has no grace window —
+    # owner decision 2026-10-22, distinct from the auto-renew debt above,
+    # which does). Cleared whenever the balance recovers above the warning
+    # line, so a later dip warns again.
+    payg_low_balance_warned_at: Optional[datetime] = None
+
     # `used_traffic` value as of the last pay-as-you-go settlement (individual
     # or as part of a group). Billable usage for the current cycle = used_traffic
     # - baseline. Matches Marzban's own "current usage" figure directly — what
@@ -732,6 +739,20 @@ class ShopSettings(SQLModel, table=True):
     provisional_hours: int = 24
     trial_gb: float = 1.0
     trial_hours: int = 24
+
+    # ── Retail pay-as-you-go ("📊 سرویس مصرفی") ───────────────────────────
+    # Owner decision 2026-10-22 (council-reviewed): metered, never invoiced
+    # after the fact — a daily job bills exactly what was used since the
+    # last tick and debits the wallet immediately, so no debt ever
+    # accumulates across a billing period the way a monthly statement would.
+    # Off by default, like is_open/trial_enabled.
+    payg_enabled: bool = False
+    # Separate from price_per_gb on purpose, same reasoning as price_per_gb's
+    # own separation from AppSettings.default_rate_per_gb: a prepay price
+    # change must not silently re-price every payg customer's ongoing meter.
+    # None until the operator sets it — payg stays refused until they do,
+    # same convention as price_per_gb == 0 blocking prepay in quote_price.
+    payg_rate_per_gb: Optional[int] = None
 
 
 # ══════════════════════════════════════════════════ delegated self-service

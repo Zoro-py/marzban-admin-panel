@@ -127,6 +127,24 @@ async def _scheduled_payg_monthly_settlement() -> None:
         logger.exception("Monthly payg settlement failed (will retry tomorrow)")
 
 
+async def _scheduled_payg_retail_meter() -> None:
+    """Retail pay-as-you-go's own daily meter (distinct from the B2B
+    monthly settlement above) — see shop_service._sweep_payg_accounts."""
+    from app.db import get_session
+    from app.shop_service import _sweep_payg_accounts
+    try:
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            result = await _sweep_payg_accounts(session)
+            if any(result.values()):
+                logger.info("Payg retail meter: %s", result)
+        finally:
+            session_gen.close()
+    except Exception:
+        logger.exception("Payg retail meter failed (will retry tomorrow)")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
@@ -166,6 +184,11 @@ async def lifespan(app: FastAPI):
         _scheduled_payg_monthly_settlement, "cron",
         hour=settings.payg_monthly_settle_hour, minute=settings.payg_monthly_settle_minute,
         id="payg_monthly_settlement",
+    )
+    scheduler.add_job(
+        _scheduled_payg_retail_meter, "cron",
+        hour=settings.payg_retail_meter_hour, minute=settings.payg_retail_meter_minute,
+        id="payg_retail_meter",
     )
     # Fires daily at the configured hour; the job itself skips every other
     # calendar day (see _scheduled_debt_nudge) — the operator asked for

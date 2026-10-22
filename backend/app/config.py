@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     payg_monthly_settle_hour: int = 23
     payg_monthly_settle_minute: int = 30
 
+    # Retail pay-as-you-go's own DAILY meter (distinct from the B2B monthly
+    # settlement above) — bills exactly what was used since the last tick,
+    # every day, so no debt accumulates across a billing period. No
+    # customer-facing reason to pick a specific hour (unlike the monthly
+    # job's "night" requirement); this default just avoids piling onto the
+    # same minute as the other night jobs above.
+    payg_retail_meter_hour: int = 0
+    payg_retail_meter_minute: int = 45
+
     # debt_nudge_job's weekly overdue-debt summary (see its own docstring for
     # why once-a-week is the whole noise-control mechanism). "mon" = Monday,
     # a normal start-of-week check-in time; APScheduler's own day_of_week

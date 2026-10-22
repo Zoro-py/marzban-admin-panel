@@ -88,6 +88,9 @@ def _run_lightweight_migrations() -> None:
             # Account.deleted_at docstring) — NULL for every existing account.
             conn.execute(text("ALTER TABLE account ADD COLUMN deleted_at DATETIME"))
 
+        if existing and "payg_low_balance_warned_at" not in existing:
+            conn.execute(text("ALTER TABLE account ADD COLUMN payg_low_balance_warned_at DATETIME"))
+
         if existing and "debt_since" not in existing:
             # Shop bot's bounded-debt auto-renew (owner decision 2026-10-22) —
             # NULL for every existing account, which is correct: nobody has an
@@ -527,6 +530,10 @@ def _run_shop_migrations() -> None:
                 ("trial_enabled", "ALTER TABLE shopsettings ADD COLUMN trial_enabled BOOLEAN NOT NULL DEFAULT 0"),
                 ("trial_gb", "ALTER TABLE shopsettings ADD COLUMN trial_gb FLOAT NOT NULL DEFAULT 1.0"),
                 ("trial_hours", "ALTER TABLE shopsettings ADD COLUMN trial_hours INTEGER NOT NULL DEFAULT 24"),
+                # Same reasoning as trial_enabled above: off by default on an
+                # existing shop, and no rate until the operator sets one.
+                ("payg_enabled", "ALTER TABLE shopsettings ADD COLUMN payg_enabled BOOLEAN NOT NULL DEFAULT 0"),
+                ("payg_rate_per_gb", "ALTER TABLE shopsettings ADD COLUMN payg_rate_per_gb INTEGER"),
             ]:
                 if column not in settings_cols:
                     conn.execute(text(ddl))

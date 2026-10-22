@@ -58,6 +58,7 @@ QUICK_VOLUMES = [10, 20, 30, 50, 100]
 _STATE = "shop_state"
 _STATE_CHOOSING_VOLUME = "choosing_volume"
 _STATE_CONFIRMING_WALLET_BUY = "confirming_wallet_buy"
+_STATE_CONFIRMING_PAYG_START = "confirming_payg_start"
 _STATE_CHOOSING_TOPUP = "choosing_topup"
 _STATE_AWAITING_RECEIPT = "awaiting_receipt"
 _ORDER_ID = "order_id"
@@ -162,6 +163,8 @@ def main_menu(session: dict | None = None) -> ReplyKeyboardMarkup:
     # Its own row, below the common actions - deliberately not next to
     # MENU_BUY so it never reads as "the normal way to buy" (see texts.py).
     rows.append([KeyboardButton(texts.MENU_NEW_SERVICE)])
+    if session and session.get("payg_enabled"):
+        rows.append([KeyboardButton(texts.MENU_PAYG)])
     rows.append([KeyboardButton(texts.MENU_HELP), KeyboardButton(texts.MENU_SUPPORT)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
@@ -350,6 +353,58 @@ async def take_trial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # No success message: the backend's delivery lands within a second and
     # says it better. A "done!" from the bot first would just be noise above
     # the thing the customer actually wants.
+    await _maybe_offer_phone_share(update, context, session)
+
+
+# ── pay-as-you-go ("📊 سرویس مصرفی") ───────────────────────────────────────
+
+
+async def start_payg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """A real, ongoing billing relationship (even though no money moves on
+    this tap), so it gets its own confirm step like a purchase — unlike the
+    free, one-time trial above."""
+    context.user_data.clear()
+    session = await _session(update)
+    if session["is_blocked"]:
+        await _reply(update, texts.blocked(_handle(session)), session)
+        return
+    if not session.get("payg_enabled"):
+        await _reply(update, texts.PAYG_UNAVAILABLE, session)
+        return
+
+    context.user_data[_STATE] = _STATE_CONFIRMING_PAYG_START
+    await update.effective_message.reply_text(
+        texts.payg_intro(session["payg_rate_per_gb"]),
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton(texts.CONFIRM_BUY)], [KeyboardButton(texts.CANCEL)]],
+            resize_keyboard=True,
+        ),
+    )
+
+
+async def _confirm_payg_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data.clear()
+    session = await _session(update)
+    await _reply(update, texts.BUY_WORKING, session)
+    user = update.effective_user
+    try:
+        await backend.post("/api/shop/bot/payg/start", json={
+            "telegram_id": user.id,
+            "telegram_username": user.username,
+            "display_name": " ".join(filter(None, [user.first_name, user.last_name])) or None,
+        }, timeout=90)
+    except ShopApiError as exc:
+        text = str(exc)
+        if "ALREADY_HAS_SERVICE" in text:
+            await _reply(update, texts.PAYG_ALREADY_HAS_SERVICE, session)
+        elif "PAYG_NOT_AVAILABLE" in text:
+            await _reply(update, texts.PAYG_UNAVAILABLE, session)
+        else:
+            logger.exception("Payg start failed for %s", user.id)
+            await _reply(update, texts.generic_error(_handle(session)), session)
+        return
+    # No success message here either — the backend's delivery push says it
+    # better, same reasoning as take_trial above.
     await _maybe_offer_phone_share(update, context, session)
 
 
@@ -881,6 +936,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return await start_buy(update, context)
     if text == texts.MENU_NEW_SERVICE:
         return await start_new_service(update, context)
+    if text == texts.MENU_PAYG:
+        return await start_payg(update, context)
     if text == texts.MENU_TRIAL:
         return await take_trial(update, context)
     if text == texts.MENU_ACCOUNTS:
@@ -909,6 +966,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if state == _STATE_CONFIRMING_WALLET_BUY and text == texts.CONFIRM_BUY:
         return await _confirm_wallet_purchase(update, context)
+
+    if state == _STATE_CONFIRMING_PAYG_START and text == texts.CONFIRM_BUY:
+        return await _confirm_payg_start(update, context)
 
     if state == _STATE_CHOOSING_VOLUME:
         if text == texts.CUSTOM_VOLUME:

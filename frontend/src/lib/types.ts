@@ -612,6 +612,8 @@ export interface ShopSettings {
   trial_enabled: boolean
   trial_gb: number
   trial_hours: number
+  payg_enabled: boolean
+  payg_rate_per_gb: number | null
 }
 
 export interface ShopUser {

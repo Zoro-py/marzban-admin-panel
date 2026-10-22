@@ -79,6 +79,10 @@ MENU_BUY = "🛒 خرید سرویس"
 # customers never need it, so it says so in its own label rather than
 # looking like the default choice.
 MENU_NEW_SERVICE = "✨ ساخت سرویس جدید (جدا از فعلی)"
+# Only shown when the operator has set a payg rate (owner decision
+# 2026-10-22) — a second billing relationship, not a plan: no fixed volume,
+# billed daily from the wallet for exactly what was used.
+MENU_PAYG = "📊 سرویس مصرفی"
 MENU_TRIAL = "🎁 تست رایگان"
 MENU_ACCOUNTS = "📱 سرویس‌های من"
 MENU_WALLET = "💰 کیف پول"
@@ -208,6 +212,27 @@ AUTO_RENEW_ALREADY_IN_DEBT = (
 AUTO_RENEW_NO_HISTORY = (
     "برای این سرویس هنوز سابقه‌ی خریدی نیست که میانگینش را بگیرم.\n"
     "«🔧 تمدید حجم دلخواه» را بزنید."
+)
+
+
+# ── pay-as-you-go ("📊 سرویس مصرفی") ───────────────────────────────────────
+
+def payg_intro(rate_per_gb: int) -> str:
+    return (
+        "سرویس مصرفی یعنی هیچ حجم یا مدت ثابتی نمی‌خرید — هر روز فقط برای "
+        f"همان مقداری که واقعاً مصرف کرده‌اید، {money(rate_per_gb)} به ازای هر گیگ، "
+        "از کیف پولتان کم می‌شود.\n\n"
+        "اگر موجودی کیف پول کافی نباشد، سرویس موقتاً متوقف می‌شود و با شارژ کردن "
+        "خودش دوباره فعال می‌شود — نیازی به تماس با پشتیبانی نیست.\n\n"
+        "برای شروع، همین الان سرویس ساخته می‌شود؛ تا موقعی که مصرفی نداشته باشید چیزی کم نمی‌شود."
+    )
+
+
+PAYG_UNAVAILABLE = "سرویس مصرفی الان فعال نیست."
+
+PAYG_ALREADY_HAS_SERVICE = (
+    "شما همین الان یک سرویس فعال دارید.\n"
+    "سرویس مصرفی برای کسی است که هنوز هیچ سرویسی نگرفته."
 )
 
 

@@ -39,7 +39,7 @@ from app.models import (
     ShopWalletEntryType,
     utcnow,
 )
-from app.services import bytes_from_gb, effective_billing_mode, sync_marzban_fields
+from app.services import GB, bytes_from_gb, effective_billing_mode, sync_marzban_fields
 
 logger = logging.getLogger(__name__)
 
@@ -1845,6 +1845,217 @@ async def _sweep_debt_accounts(session: Session) -> dict:
             reminded += 1
 
     return {"reminded": reminded, "suspended": suspended, "reactivated": reactivated}
+
+
+# ── retail pay-as-you-go ("📊 سرویس مصرفی") ───────────────────────────────
+#
+# A SECOND billing relationship, distinct from every prepay purchase above:
+# no volume or expiry is sold up front. A daily meter (_sweep_payg_accounts)
+# bills exactly what was used since the last tick and debits the wallet
+# immediately — never a monthly statement the customer could let slide into
+# real debt (owner decision 2026-10-22, council-reviewed: "کسر لحظه‌ای/
+# روزانه از کیف پول"). No grace window on a negative balance here, unlike
+# the bounded-debt auto-renew above — that is a deliberate, separate owner
+# decision for a different customer relationship.
+
+# Long enough to read as "no expiry" to the customer while still being a
+# real, bounded value Marzban stores — the wallet governs reachability, not
+# this date.
+PAYG_START_DURATION_DAYS = 3650
+# How many days' worth of the LAST charged amount counts as "getting low" —
+# a heads-up before the suspension that can happen on the very next tick.
+PAYG_LOW_BALANCE_DAYS_WARNING = 2
+
+
+async def start_payg_service(session: Session, shop_user: ShopUser) -> ShopOrder:
+    """The "📊 سرویس مصرفی" button: creates a metered account with no fixed
+    volume. Takes no money up front — the first charge happens on the next
+    meter tick, for whatever gets used between now and then.
+
+    Refuses a shop user who already has an active service (either kind):
+    this is a second billing relationship, not a top-up, and starting one
+    alongside an existing prepay/payg service would leave two meters running
+    on what the customer experiences as one relationship with the shop.
+    """
+    settings = get_shop_settings(session)
+    if not settings.payg_enabled or not settings.payg_rate_per_gb:
+        raise ShopError("PAYG_NOT_AVAILABLE: pay-as-you-go isn't offered right now")
+    if shop_user.is_blocked:
+        raise ShopError("This account can't make purchases. Contact support.")
+    if renewable_account(session, shop_user.id) is not None:
+        raise ShopError("ALREADY_HAS_SERVICE: you already have an active service")
+
+    from app.config import settings as app_settings
+
+    order = ShopOrder(
+        shop_user_id=shop_user.id,
+        data_limit_gb=0,
+        duration_days=PAYG_START_DURATION_DAYS,
+        price=0,
+        status=ShopOrderStatus.provisioning,
+    )
+    session.add(order)
+    session.commit()
+    session.refresh(order)
+
+    username = f"{settings.username_prefix}{order.id}"
+    payload = {
+        "username": username,
+        "proxies": app_settings.marzban_default_proxies,
+        "inbounds": app_settings.marzban_default_inbounds,
+        "expire": int(utcnow().timestamp()) + PAYG_START_DURATION_DAYS * SECONDS_IN_DAY,
+        "data_limit": 0,  # unlimited — the wallet, not Marzban, governs reachability
+        "data_limit_reset_strategy": "no_reset",
+        "status": "active",
+        "note": f"shop order #{order.id} (payg)",
+    }
+    try:
+        marzban_user = await marzban_client.create_user(payload)
+    except (ValueError, MarzbanUnavailable, MarzbanAuthError) as exc:
+        logger.exception("Payg start #%s: Marzban rejected it or was unreachable", order.id)
+        created = await _find_our_marzban_user(username, order.id)
+        if created is None:
+            order.status = ShopOrderStatus.failed
+            order.error = str(exc)
+            session.add(order)
+            session.commit()
+            raise ShopError("Could not start the service — try again in a moment")
+        marzban_user = created
+
+    now = utcnow()
+    account = Account(
+        marzban_username=username,
+        used_traffic=marzban_user.get("used_traffic", 0),
+        lifetime_used_traffic=marzban_user.get("lifetime_used_traffic", 0),
+        data_limit=marzban_user.get("data_limit"),
+        expire=marzban_user.get("expire"),
+        status=marzban_user.get("status"),
+        subscription_url=marzban_user.get("subscription_url"),
+        last_synced_at=now,
+        billing_mode=BillingMode.payg,
+        usage_baseline=marzban_user.get("used_traffic", 0),
+        usage_baseline_at=now,
+    )
+    session.add(account)
+    session.flush()
+    session.add(AccountEvent(
+        account_id=account.id, action="create", detail=f"Started payg via shop order #{order.id}",
+    ))
+    order.account_id = account.id
+    order.marzban_username = username
+    order.status = ShopOrderStatus.delivered
+    order.delivered_at = now
+    session.add(order)
+    session.commit()
+    session.refresh(order)
+    return order
+
+
+async def _sweep_payg_accounts(session: Session) -> dict:
+    """Runs once a day (see main.py's scheduler): bills every retail payg
+    account for what it used since the last tick, debits the wallet even
+    past zero for that ONE tick's charge, and immediately suspends if that
+    leaves the balance negative — no grace, reactivating the moment a
+    top-up clears it. B2B payg (groups/representatives) is untouched; this
+    only ever looks at accounts with no customer_id, i.e. shop-only."""
+    from app import shop_texts
+    from app.notify import send_to_shop_user
+
+    settings = get_shop_settings(session)
+    now = utcnow()
+    result = {"charged": 0, "suspended": 0, "reactivated": 0, "warned": 0}
+
+    accounts = session.exec(
+        select(Account).where(
+            Account.billing_mode == BillingMode.payg,
+            Account.customer_id.is_(None),
+            Account.status != "deleted_from_marzban",
+        )
+    ).all()
+    for account in accounts:
+        owning_order = session.exec(
+            select(ShopOrder).where(
+                ShopOrder.account_id == account.id,
+                ShopOrder.status == ShopOrderStatus.delivered,
+            ).order_by(ShopOrder.id.desc())
+        ).first()
+        if owning_order is None:
+            continue
+        user = session.get(ShopUser, owning_order.shop_user_id)
+        if user is None:
+            continue
+
+        rate = account.rate_per_gb or settings.payg_rate_per_gb
+        billable_gb = max(0, account.used_traffic - account.usage_baseline) / GB
+        amount = int(-(-billable_gb * rate // 1)) if rate else 0  # ceil, same convention as quote_price
+
+        if amount > 0:
+            post_wallet_entry(
+                session, user.id, entry_type=ShopWalletEntryType.purchase,
+                amount=-amount, note=f"Payg meter: {billable_gb:.3f} GB", order_id=owning_order.id,
+            )
+            account.usage_baseline = account.used_traffic
+            account.usage_baseline_at = now
+            session.add(account)
+            session.commit()
+            result["charged"] += 1
+
+        balance = wallet_balance(session, user.id)
+
+        if balance < 0:
+            if not account.auto_suspended:
+                try:
+                    await marzban_client.modify_user(account.marzban_username, {"status": "disabled"})
+                except Exception:
+                    logger.exception("Could not suspend payg account %s", account.marzban_username)
+                    continue
+                account.status = "disabled"
+                account.auto_suspended = True
+                account.payg_low_balance_warned_at = None
+                session.add(account)
+                session.commit()
+                try:
+                    await send_to_shop_user(user.telegram_id, shop_texts.payg_suspended(-balance))
+                except Exception:
+                    logger.exception("Could not tell %s their payg service was suspended", user.telegram_id)
+                result["suspended"] += 1
+            continue
+
+        if account.auto_suspended:
+            try:
+                await marzban_client.modify_user(account.marzban_username, {"status": "active"})
+            except Exception:
+                logger.exception("Could not re-enable payg account %s", account.marzban_username)
+                continue
+            account.status = "active"
+            account.auto_suspended = False
+            account.payg_low_balance_warned_at = None
+            session.add(account)
+            session.commit()
+            try:
+                await send_to_shop_user(user.telegram_id, shop_texts.payg_reactivated())
+            except Exception:
+                logger.exception("Could not tell %s their payg service is back", user.telegram_id)
+            result["reactivated"] += 1
+            continue
+
+        warn_line = (rate or 0) * PAYG_LOW_BALANCE_DAYS_WARNING
+        if amount > 0 and warn_line and balance < warn_line and account.payg_low_balance_warned_at is None:
+            account.payg_low_balance_warned_at = now
+            session.add(account)
+            session.commit()
+            try:
+                await send_to_shop_user(user.telegram_id, shop_texts.payg_low_balance(balance))
+            except Exception:
+                logger.exception("Could not warn %s about low payg balance", user.telegram_id)
+            result["warned"] += 1
+        elif warn_line and balance >= warn_line * 2 and account.payg_low_balance_warned_at is not None:
+            # Recovered well past the line — a future dip can warn again.
+            account.payg_low_balance_warned_at = None
+            session.add(account)
+            session.commit()
+
+    return result
 
 
 # ── keeping the promise about the wait ────────────────────────────────────

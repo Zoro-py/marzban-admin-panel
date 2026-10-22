@@ -81,6 +81,7 @@ from app.schemas import (
     ShopAutoRenewResult,
     ShopOrderIntent,
     ShopOrderRead,
+    ShopPaygStartResult,
     ShopPurchaseResult,
     ShopSettingsRead,
     ShopSettingsUpdate,
@@ -115,6 +116,7 @@ from app.shop_service import (
     refuse_unlimited_renewal,
     reject_topup,
     revoke_provisional,
+    start_payg_service,
     validate_purchase_request,
     wallet_balance,
 )
@@ -197,6 +199,11 @@ def update_settings(body: ShopSettingsUpdate, session: Session = Depends(get_ses
             raise HTTPException(400, "Set a price per GB before opening the shop")
         if not (merged_card or "").strip():
             raise HTTPException(400, "Set a card number before opening the shop — customers need somewhere to pay")
+
+    merged_payg_on = updates.get("payg_enabled", settings.payg_enabled)
+    merged_payg_rate = updates.get("payg_rate_per_gb", settings.payg_rate_per_gb)
+    if merged_payg_on and not (merged_payg_rate and merged_payg_rate > 0):
+        raise HTTPException(400, "Set a payg rate per GB before enabling pay-as-you-go")
 
     merged_min = updates.get("min_gb", settings.min_gb)
     merged_max = updates.get("max_gb", settings.max_gb)
@@ -687,6 +694,8 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
         trial_gb=settings.trial_gb,
         trial_hours=settings.trial_hours,
         phone=user.phone,
+        payg_enabled=bool(settings.payg_enabled and settings.payg_rate_per_gb),
+        payg_rate_per_gb=settings.payg_rate_per_gb or 0,
     )
 
 
@@ -993,6 +1002,39 @@ async def bot_grant_trial(body: ShopBotSessionRequest, session: Session = Depend
         duration_days=order.duration_days,
         price=0,
         balance=wallet_balance(session, user.id),
+        subscription_url=resolve_subscription_url(account.subscription_url) if account else None,
+        status=order.status,
+    )
+
+
+@bot_router.post("/payg/start", response_model=ShopPaygStartResult)
+async def bot_start_payg(body: ShopBotSessionRequest, session: Session = Depends(get_session)):
+    """The "📊 سرویس مصرفی" button: starts a metered account with no fixed
+    volume, no money up front. See shop_service.start_payg_service's
+    docstring for the billing design.
+    """
+    user = get_or_create_shop_user(
+        session,
+        body.telegram_id,
+        telegram_username=body.telegram_username,
+        display_name=body.display_name,
+    )
+    try:
+        order = await start_payg_service(session, user)
+    except ShopError as exc:
+        raise HTTPException(
+            409 if str(exc).startswith(("PAYG_NOT_AVAILABLE", "ALREADY_HAS_SERVICE")) else 400, str(exc),
+        )
+
+    if order.status == ShopOrderStatus.failed:
+        raise HTTPException(502, order.error or "Could not start the service")
+
+    await deliver_order_to_customer(session, order)
+
+    account = session.get(Account, order.account_id) if order.account_id else None
+    return ShopPaygStartResult(
+        order_id=order.id,
+        marzban_username=order.marzban_username,
         subscription_url=resolve_subscription_url(account.subscription_url) if account else None,
         status=order.status,
     )

@@ -509,7 +509,8 @@ function ShopSettingsForm() {
     !nonNegative(draft.min_topup) ||
     // Only when they are switched on — an off feature's fields are ignored.
     (Boolean(draft.trial_enabled) && ![draft.trial_gb, draft.trial_hours].every(positive)) ||
-    (Boolean(draft.provisional_enabled) && ![draft.provisional_gb, draft.provisional_hours].every(positive))
+    (Boolean(draft.provisional_enabled) && ![draft.provisional_gb, draft.provisional_hours].every(positive)) ||
+    (Boolean(draft.payg_enabled) && !positive(draft.payg_rate_per_gb))
 
   const save = useMutation({
     mutationFn: () =>
@@ -533,6 +534,8 @@ function ShopSettingsForm() {
         trial_enabled: Boolean(draft.trial_enabled),
         trial_gb: Number(draft.trial_gb ?? 1),
         trial_hours: Number(draft.trial_hours ?? 24),
+        payg_enabled: Boolean(draft.payg_enabled),
+        payg_rate_per_gb: draft.payg_rate_per_gb != null ? Number(draft.payg_rate_per_gb) : null,
       }),
     onSuccess: () => {
       toast.success('Shop settings saved')
@@ -718,6 +721,29 @@ function ShopSettingsForm() {
               />
             </Field>
           </div>
+        </div>
+
+        <div className="flex flex-col gap-3 rounded-md border p-3">
+          <label className="flex items-center gap-2">
+            <Checkbox
+              checked={Boolean(draft.payg_enabled)}
+              onCheckedChange={(c) => set('payg_enabled', Boolean(c))}
+            />
+            <span className="text-sm">Offer pay-as-you-go (metered, billed daily from the wallet)</span>
+          </label>
+          <p className="text-xs text-muted-foreground">
+            No fixed volume or expiry. A daily job bills exactly what was used since the last tick and debits the
+            wallet immediately — never a monthly statement that could let debt build up. The service pauses itself
+            if the balance goes negative, and reactivates the moment it's topped up.
+          </p>
+          <Field label="Rate per GB (Toman)">
+            <Input
+              type="number"
+              value={draft.payg_rate_per_gb ?? ''}
+              onChange={(e) => set('payg_rate_per_gb', Number(e.target.value))}
+              disabled={!draft.payg_enabled}
+            />
+          </Field>
         </div>
 
         <div>

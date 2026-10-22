@@ -360,6 +360,27 @@ def debt_cleared_reactivated() -> str:
     return "✅ کیف پولتان شارژ شد و سرویستان دوباره فعال است."
 
 
+# ── retail pay-as-you-go ("📊 سرویس مصرفی") daily meter ────────────────────
+
+def payg_low_balance(balance: int) -> str:
+    return (
+        f"⏳ موجودی کیف پولتان {money_fa(balance)} است و رو به اتمام.\n"
+        "برای اینکه سرویستان قطع نشود، شارژ کنید."
+    )
+
+
+def payg_suspended(owed: int) -> str:
+    return (
+        f"⛔ موجودی کیف پولتان کافی نبود و سرویس مصرفی‌تان موقتاً متوقف شد "
+        f"({money_fa(owed)} کم آمد).\n"
+        "به محض شارژ کیف پول، خودش دوباره فعال می‌شود."
+    )
+
+
+def payg_reactivated() -> str:
+    return "✅ کیف پولتان شارژ شد و سرویس مصرفی‌تان دوباره فعال است."
+
+
 def trial_ending(hours_left: int, handle: Optional[str]) -> str:
     """The moment a trial pays for itself. The customer has just spent a day
     finding out the service works; this is the one message that asks for the

@@ -47,6 +47,7 @@ from app.main import app  # noqa: E402
 from app.models import (  # noqa: E402
     Account,
     AccountEvent,
+    BillingMode,
     ShopOrder,
     ShopOrderStatus,
     ShopSettings,
@@ -195,6 +196,7 @@ def test_auth_boundary() -> None:
         ("post", "/api/shop/bot/orders", {"json": {"telegram_id": 1, "data_limit_gb": 10}}),
         ("post", "/api/shop/bot/orders/1/pay", {"json": {"telegram_id": 1}}),
         ("post", "/api/shop/bot/accounts/1/auto-renew", {"json": {"telegram_id": 1}}),
+        ("post", "/api/shop/bot/payg/start", {"json": {"telegram_id": 1}}),
         ("post", "/api/shop/bot/trial", {"json": {"telegram_id": 1}}),
         ("get", "/api/shop/bot/orders/pending", {"params": {"telegram_id": 1}}),
         ("get", "/api/shop/bot/topups/status", {"params": {"telegram_id": 1, "code": "ABCD"}}),
@@ -563,6 +565,9 @@ def main() -> int:
         test_auto_renew_sufficient_balance,
         test_auto_renew_insufficient_balance_goes_into_debt,
         test_debt_sweep_reminds_suspends_and_reactivates,
+        test_payg_not_offered_until_enabled,
+        test_payg_start_creates_unlimited_metered_account,
+        test_payg_daily_meter_charges_suspends_and_reactivates,
         test_renewal_extends_in_place,
         test_trial_is_upgraded_in_place,
         test_extension_that_landed_is_not_refunded,
@@ -1042,6 +1047,134 @@ def test_debt_sweep_reminds_suspends_and_reactivates() -> None:
     with Session(engine) as session:
         account = session.get(Account, account_id)
         check("debt_since cleared", account.debt_since, None)
+        check("auto_suspended cleared", account.auto_suspended, False)
+
+
+def _enable_payg(rate_per_gb: int) -> None:
+    with Session(engine) as session:
+        settings = session.get(ShopSettings, 1)
+        settings.payg_enabled = True
+        settings.payg_rate_per_gb = rate_per_gb
+        session.add(settings)
+        session.commit()
+
+
+def test_payg_not_offered_until_enabled() -> None:
+    print("\n[36] payg refused until the operator sets a rate and turns it on")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+
+    r = client.post("/api/shop/bot/payg/start", headers=BOT_HEADERS, json={"telegram_id": 555})
+    check("refused: not available", r.status_code, 409)
+    check("stable prefix", "PAYG_NOT_AVAILABLE" in r.json()["detail"], True)
+    check("nothing created", fake.created, [])
+
+    # Also the session the bot reads for its menu: button must be hidden.
+    session_info = client.post("/api/shop/bot/session", headers=BOT_HEADERS, json={"telegram_id": 555}).json()
+    check("not advertised in the menu session either", session_info["payg_enabled"], False)
+
+
+def test_payg_start_creates_unlimited_metered_account() -> None:
+    print("\n[37] starting payg: no money up front, unlimited Marzban cap, billing_mode=payg")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+    _enable_payg(500)
+
+    r = client.post("/api/shop/bot/payg/start", headers=BOT_HEADERS, json={"telegram_id": 555})
+    check("200 OK", r.status_code, 200)
+    body = r.json()
+    check("delivered", body["status"], "delivered")
+    check("one account created", len(fake.created), 1)
+    username = fake.created[0]
+    check("Marzban sees it as unlimited (data_limit falsy)", bool(fake.panel[username]["data_limit"]), False)
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        check("billing_mode is payg", account.billing_mode, BillingMode.payg)
+        check("wallet untouched — no money moves on start", wallet_balance(session, _shop_user_id(session)), 0)
+
+    # A second start is refused — this is a second billing relationship,
+    # not something you get twice.
+    r2 = client.post("/api/shop/bot/payg/start", headers=BOT_HEADERS, json={"telegram_id": 555})
+    check("refused: already has a service", r2.status_code, 409)
+    check("stable prefix", "ALREADY_HAS_SERVICE" in r2.json()["detail"], True)
+    check("still only one account", len(fake.created), 1)
+
+
+def _shop_user_id(session) -> int:
+    return session.exec(select(ShopUser)).first().id
+
+
+def test_payg_daily_meter_charges_suspends_and_reactivates() -> None:
+    print("\n[38] payg daily meter: charges real usage, suspends with no grace, reactivates on top-up")
+    import asyncio
+    from app.shop_service import _sweep_payg_accounts
+
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+    _enable_payg(500)  # 500 T/GB
+    client.post("/api/shop/bot/payg/start", headers=BOT_HEADERS, json={"telegram_id": 555})
+    username = fake.created[0]
+    with Session(engine) as session:
+        shop_user_id = _shop_user_id(session)
+    _credit(shop_user_id, 1000)  # covers exactly 2 GB
+
+    # Simulate 1 GB of real usage since baseline.
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        account.used_traffic = GB_BYTES
+        session.add(account)
+        session.commit()
+
+    with Session(engine) as session:
+        result = asyncio.run(_sweep_payg_accounts(session))
+    check("one account charged", result["charged"], 1)
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        check("baseline advanced to used_traffic", account.usage_baseline, GB_BYTES)
+        check("not suspended — balance still positive (1000-500=500)", account.auto_suspended, False)
+    check("Marzban account untouched (still active)", fake.panel[username]["status"], "active")
+
+    # Another 1 GB of usage — this charge (500) takes the balance to 0, not
+    # negative, so it must NOT suspend (only a NEGATIVE balance does).
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        account.used_traffic = GB_BYTES * 2
+        session.add(account)
+        session.commit()
+    with Session(engine) as session:
+        result = asyncio.run(_sweep_payg_accounts(session))
+    check("charged again", result["charged"], 1)
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        check("still not suspended at exactly 0", account.auto_suspended, False)
+
+    # A third GB — now the charge takes it negative: immediate suspend, no
+    # grace window (unlike the bounded-debt auto-renew feature).
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        account.used_traffic = GB_BYTES * 3
+        session.add(account)
+        session.commit()
+    with Session(engine) as session:
+        result = asyncio.run(_sweep_payg_accounts(session))
+    check("suspended immediately, no grace", result["suspended"], 1)
+    check("Marzban account actually disabled", fake.panel[username]["status"], "disabled")
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        check("auto_suspended flag set", account.auto_suspended, True)
+
+    # Top up enough to clear the negative balance — must reactivate on the
+    # very next tick, with NO further usage needed.
+    _credit(shop_user_id, 1000)
+    with Session(engine) as session:
+        result = asyncio.run(_sweep_payg_accounts(session))
+    check("reactivated", result["reactivated"], 1)
+    check("Marzban account active again", fake.panel[username]["status"], "active")
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
         check("auto_suspended cleared", account.auto_suspended, False)
 
 
