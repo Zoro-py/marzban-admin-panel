@@ -237,7 +237,7 @@ def renewed_in_place(added_gb: float, total_before_gb: Optional[float], total_af
     new total never reads like a brand-new service they didn't buy), and
     that they do not have to do anything — their app already holds this link
     and it simply has more on it now."""
-    lines = [f"✅ {fa_num(added_gb)} گیگ به سرویس‌تان اضافه شد."]
+    lines = [f"🎉 {fa_num(added_gb)} گیگ به سرویس‌تان اضافه شد — همین الان فعال است."]
     if total_before_gb is not None and total_after_gb is not None:
         lines.append(f"حجم سرویس‌تان: {fa_num(round(total_before_gb, 2))} گیگ ← {fa_num(round(total_after_gb, 2))} گیگ")
     tail = []
@@ -301,11 +301,11 @@ def payment_request(
     )
     return (
         f"🛒 {fa_num(volume_gb)} گیگ — {fa_num(days)} روزه\n"
-        f"مبلغ قابل پرداخت: {money_latin(price)}{wallet_line}\n\n"
+        f"سفارشتان ثبت شد؛ برای تکمیل {money_latin(price)} باقی مانده.{wallet_line}\n\n"
         f"این مبلغ را به این کارت واریز کنید:\n"
         f"`{card_number}`{holder}\n\n"
-        f"بعد عکس رسید را همینجا بفرستید.\n"
-        f"معمولاً تا {fa_num(eta_minutes)} دقیقه بررسی می‌شود و سرویس‌تان خودکار ساخته می‌شود."
+        f"بعد عکس رسید را همینجا بفرستید؛ "
+        f"معمولاً تا {fa_num(eta_minutes)} دقیقه بررسی و سرویستان خودکار ساخته می‌شود."
     )
 
 

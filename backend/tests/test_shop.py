@@ -558,6 +558,7 @@ def main() -> int:
         test_quote_refuses_unbuyable_plans,
         test_renewal_warnings,
         test_accounts_list_has_no_duplicate_after_topup,
+        test_force_new_service_does_not_extend,
         test_renewal_extends_in_place,
         test_trial_is_upgraded_in_place,
         test_extension_that_landed_is_not_refunded,
@@ -878,6 +879,36 @@ def test_accounts_list_has_no_duplicate_after_topup() -> None:
     check("one row for the one account, not one per order", len(rows), 1)
     check("it shows the live stacked total (10 + 20 GB), not either order alone",
           rows[0]["data_limit"], 30 * GB_BYTES)
+
+
+def test_force_new_service_does_not_extend() -> None:
+    print("\n[21c] MENU_NEW_SERVICE (force_new_service) always mints a second, independent account")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 200_000)
+
+    first_oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                            json={"telegram_id": 555, "data_limit_gb": 10}).json()["order_id"]
+    client.post(f"/api/shop/bot/orders/{first_oid}/pay", headers=BOT_HEADERS, json={"telegram_id": 555})
+    first_username = fake.created[0]
+
+    second_oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                             json={"telegram_id": 555, "data_limit_gb": 20, "force_new_service": True}
+                             ).json()["order_id"]
+    client.post(f"/api/shop/bot/orders/{second_oid}/pay", headers=BOT_HEADERS, json={"telegram_id": 555})
+
+    check("a SECOND account was created, not an extension", len(fake.created), 2)
+    check("the first account was never modified", fake.modified, [])
+    with Session(engine) as session:
+        o1 = session.get(ShopOrder, first_oid)
+        o2 = session.get(ShopOrder, second_oid)
+        check("second order did not extend the first account", o2.extends_account_id, None)
+        check("second order's own account differs from the first", o2.account_id != o1.account_id, True)
+        check("two local account rows, not one", len(session.exec(select(Account)).all()), 2)
+
+    rows = client.get("/api/shop/bot/accounts", headers=BOT_HEADERS, params={"telegram_id": 555}).json()
+    check("the bot's list shows both as separate services", len(rows), 2)
 
 
 def test_renewal_extends_in_place() -> None:

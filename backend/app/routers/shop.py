@@ -848,11 +848,11 @@ def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depends(ge
     # Same unlimited refusal as /purchase — here it stops the RECEIPT flow
     # from ever starting for a service that needs nothing.
     try:
-        refuse_unlimited_renewal(session, user.id)
+        refuse_unlimited_renewal(session, user.id, force_new_service=body.force_new_service)
     except ShopError as exc:
         raise HTTPException(409, str(exc))
     try:
-        order = create_awaiting_order(session, user, body.data_limit_gb)
+        order = create_awaiting_order(session, user, body.data_limit_gb, force_new_service=body.force_new_service)
     except ShopError as exc:
         raise HTTPException(409 if str(exc).startswith("SERVICE_IS_UNLIMITED") else 400, str(exc))
 

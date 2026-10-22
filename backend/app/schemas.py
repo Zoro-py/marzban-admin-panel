@@ -805,6 +805,10 @@ class ShopBotPurchaseRequest(BaseModel):
     # all, while the service-level check enforces the operator's own,
     # narrower min/max that can change at runtime.
     data_limit_gb: float = Field(gt=0, le=10240)
+    # "ساخت سرویس جدید (جدا از فعلی)" in the bot: skip the renewal-in-place
+    # lookup so this purchase always mints a brand-new account, even for a
+    # customer who already has one (owner decision 2026-10-22).
+    force_new_service: bool = False
 
 
 class ShopPurchaseResult(BaseModel):

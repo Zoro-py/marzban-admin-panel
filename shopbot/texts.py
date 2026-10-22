@@ -73,6 +73,12 @@ def support(handle: Optional[str]) -> str:
 # ── menu ──────────────────────────────────────────────────────────────────
 
 MENU_BUY = "🛒 خرید سرویس"
+# Separate from MENU_BUY on purpose (owner decision 2026-10-22): MENU_BUY
+# always extends whatever account the customer already has (renewal-in-
+# place). This is the only path to a second, INDEPENDENT service — most
+# customers never need it, so it says so in its own label rather than
+# looking like the default choice.
+MENU_NEW_SERVICE = "✨ ساخت سرویس جدید (جدا از فعلی)"
 MENU_TRIAL = "🎁 تست رایگان"
 MENU_ACCOUNTS = "📱 سرویس‌های من"
 MENU_WALLET = "💰 کیف پول"
@@ -136,11 +142,24 @@ def help_text(price_per_gb: int, days: int, eta_minutes: int, handle: Optional[s
 
 # ── buying ────────────────────────────────────────────────────────────────
 
+# Shown once, above buy_prompt, only for MENU_NEW_SERVICE - says plainly
+# what this button does differently from the normal "🛒 خرید سرویس" (which
+# just adds to the existing service), so nobody taps it by mistake expecting
+# a top-up and nobody taps MENU_BUY expecting a second, separate service.
+NEW_SERVICE_INTRO = (
+    "این گزینه یک سرویس کاملاً جدید و جداگانه می‌سازد — سرویس فعلی‌تان "
+    "دست‌نخورده می‌ماند و لینک آن هم همچنان کار می‌کند."
+)
+
+
 def buy_prompt(price_per_gb: int, min_gb: float, max_gb: float, days: int) -> str:
+    # Leads with the choice itself (price-first reads as a bill before any
+    # sense of what's on offer); the rate is still stated plainly right
+    # after, nothing hidden - this is reframing, not a discount.
     return (
-        f"هر گیگابایت {money(price_per_gb)} — همه‌ی سرویس‌ها {fa(days)} روزه\n"
-        f"از {gb(min_gb)} تا {gb(max_gb)}\n\n"
-        "یکی را انتخاب کنید، یا عدد حجم دلخواهتان را بفرستید (مثلاً ۳۵)."
+        f"حجم سرویستان را به دلخواه انتخاب کنید — از {gb(min_gb)} تا {gb(max_gb)}، همه {fa(days)} روزه.\n"
+        f"هر گیگابایت {money(price_per_gb)}.\n\n"
+        "یکی از گزینه‌ها را بزنید، یا عدد حجم دلخواهتان را بفرستید (مثلاً ۳۵)."
     )
 
 
@@ -260,14 +279,20 @@ def topup_instructions(amount: int, card_number: str, card_holder: Optional[str]
     newcomer reasonably assumes it doesn't.
     """
     holder = f"\nبه نام: {md_escape(card_holder)}" if card_holder else ""
+    # Reassurance first (the order is recorded, nothing is lost), THEN the
+    # logistics, THEN the wait time — framed around what happens
+    # automatically once it's reviewed, not as a standalone delay. The
+    # bank-app/VPN tip stays (a real failure mode, cutting it creates real
+    # support tickets) but moves out of the closing line, so the message
+    # doesn't end on a potential problem.
     return (
-        f"مبلغ {money(amount)} را به این کارت واریز کنید:\n\n"
+        f"سفارشتان ثبت شد و محفوظ می‌ماند.\n\n"
+        f"برای تکمیل، مبلغ {money(amount)} را به این کارت واریز کنید:\n\n"
         f"`{plain_digits(card_number)}`{holder}\n"
         f"مبلغ برای کپی: `{amount}`\n\n"
-        "بعد عکس رسید را همینجا بفرستید، یا کد پیگیری تراکنش را تایپ کنید.\n"
-        f"معمولاً تا {fa(eta_minutes)} دقیقه بررسی می‌شود.\n\n"
-        "اگر برنامه‌ی بانک با VPN باز نمی‌شود، برای پرداخت خاموشش کنید — "
-        "سفارشتان محفوظ است؛ بعد فقط عکس رسید یا کد پیگیری را اینجا بفرستید."
+        "اگر برنامه‌ی بانک با VPN باز نمی‌شود، برای پرداخت خاموشش کنید — سفارشتان همچنان محفوظ است.\n\n"
+        "بعد عکس رسید را همینجا بفرستید، یا کد پیگیری تراکنش را تایپ کنید؛ "
+        f"معمولاً تا {fa(eta_minutes)} دقیقه بررسی و سرویستان خودکار آماده می‌شود."
     )
 
 

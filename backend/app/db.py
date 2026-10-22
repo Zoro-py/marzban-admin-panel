@@ -496,6 +496,8 @@ def _run_shop_migrations() -> None:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN target_data_limit INTEGER"))
         if order_cols and "target_expire" not in order_cols:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN target_expire INTEGER"))
+        if order_cols and "force_new_service" not in order_cols:
+            conn.execute(text("ALTER TABLE shoporder ADD COLUMN force_new_service BOOLEAN NOT NULL DEFAULT 0"))
         if topup_cols and "overdue_notified_at" not in topup_cols:
             conn.execute(text("ALTER TABLE shoptopup ADD COLUMN overdue_notified_at DATETIME"))
         if topup_cols and "receipt_text" not in topup_cols:

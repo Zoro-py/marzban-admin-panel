@@ -428,7 +428,10 @@ async def _provision_order(
     # A returning customer's plan is added to the account they already have,
     # so the link in their VPN app keeps working. Trials never extend — they
     # are only for people without an account (see is_existing_customer).
-    if order.price > 0 and duration_hours is None:
+    # force_new_service (the bot's "ساخت سرویس جدید" button) skips this on
+    # purpose: the customer explicitly asked for a second, independent
+    # service, not a bigger version of the one they already have.
+    if order.price > 0 and duration_hours is None and not order.force_new_service:
         existing = renewable_account(session, order.shop_user_id)
         if existing is not None and await _extend_order(session, order, existing):
             return
@@ -1012,7 +1015,9 @@ async def grant_trial(session: Session, shop_user: ShopUser) -> ShopOrder:
     return order
 
 
-def create_awaiting_order(session: Session, shop_user: ShopUser, data_limit_gb: float) -> ShopOrder:
+def create_awaiting_order(
+    session: Session, shop_user: ShopUser, data_limit_gb: float, *, force_new_service: bool = False,
+) -> ShopOrder:
     """Records what the customer chose, before asking them for any money.
 
     This is the whole point of the order-first flow: the customer commits to a
@@ -1036,6 +1041,7 @@ def create_awaiting_order(session: Session, shop_user: ShopUser, data_limit_gb: 
         duration_days=settings.plan_duration_days,
         price=price,
         status=ShopOrderStatus.awaiting_payment,
+        force_new_service=force_new_service,
     )
     session.add(order)
     session.commit()
@@ -1095,7 +1101,12 @@ def provisional_reason_to_refuse(session: Session, shop_user: ShopUser, order: O
     if recent is not None:
         return "they had one within the last 30 days"
 
-    if renewable_account(session, shop_user.id) is not None:
+    # Not force_new_service: a normal order extends whatever they already
+    # have, so a bridge service would be a pure gift on top of that. A
+    # force_new_service order explicitly does NOT extend it - the customer
+    # is waiting on a second, independent service that doesn't exist yet,
+    # so this guard does not apply to them.
+    if not (order is not None and order.force_new_service) and renewable_account(session, shop_user.id) is not None:
         return "they already have a working service to extend"
     return None
 
@@ -1431,7 +1442,7 @@ def is_existing_customer(session: Session, shop_user_id: int) -> bool:
     ).first() is not None
 
 
-def refuse_unlimited_renewal(session: Session, shop_user_id: int) -> None:
+def refuse_unlimited_renewal(session: Session, shop_user_id: int, *, force_new_service: bool = False) -> None:
     """Raises ShopError (stable prefix "SERVICE_IS_UNLIMITED") when the
     account this customer's next purchase would extend has NO data cap.
 
@@ -1441,7 +1452,12 @@ def refuse_unlimited_renewal(session: Session, shop_user_id: int) -> None:
     (last sync); _extend_order re-checks against the LIVE panel as defence
     in depth, because a same-day top-up elsewhere in the panel could have
     capped the account after this mirror last synced.
+
+    force_new_service skips this entirely: that purchase won't extend the
+    existing (possibly unlimited) account at all, so its cap is irrelevant.
     """
+    if force_new_service:
+        return
     existing = renewable_account(session, shop_user_id)
     if existing is not None and existing.data_limit is None:
         raise ShopError(

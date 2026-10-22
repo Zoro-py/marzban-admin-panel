@@ -625,6 +625,13 @@ class ShopOrder(SQLModel, table=True):
     # trial, so this flag is what tells the two apart in the operator's list.
     is_provisional: bool = Field(default=False, index=True)
 
+    # When set, this order must NEVER extend an existing account even if the
+    # customer has one — the bot's "ساخت سرویس جدید (جدا از فعلی)" button,
+    # for someone who deliberately wants a second, independent service
+    # (owner decision 2026-10-22). Everything else about delivery is
+    # unchanged; this only turns off the renewal-in-place lookup.
+    force_new_service: bool = Field(default=False)
+
 
 class ShopSettings(SQLModel, table=True):
     """Single-row table (id is always 1), same pattern as AppSettings — the

@@ -62,6 +62,10 @@ _STATE_CHOOSING_TOPUP = "choosing_topup"
 _STATE_AWAITING_RECEIPT = "awaiting_receipt"
 _ORDER_ID = "order_id"
 _PENDING_AMOUNT = "pending_amount"
+# Set while choosing a volume via MENU_NEW_SERVICE instead of MENU_BUY -
+# read once, in _handle_volume, to tell the backend not to extend whatever
+# account the customer already has.
+_FORCE_NEW_SERVICE = "force_new_service"
 _PENDING_VOLUME = "pending_volume"
 # Per-process, not persisted: worst case a bot restart offers the phone
 # prompt one more time than intended, which is a fully dismissible, harmless
@@ -155,6 +159,9 @@ def main_menu(session: dict | None = None) -> ReplyKeyboardMarkup:
     rows.append([KeyboardButton(texts.MENU_BUY), KeyboardButton(texts.MENU_ACCOUNTS)])
     if has_wallet or (session is not None and not trial):
         rows.append([KeyboardButton(texts.MENU_WALLET), KeyboardButton(texts.MENU_TOPUP)])
+    # Its own row, below the common actions - deliberately not next to
+    # MENU_BUY so it never reads as "the normal way to buy" (see texts.py).
+    rows.append([KeyboardButton(texts.MENU_NEW_SERVICE)])
     rows.append([KeyboardButton(texts.MENU_HELP), KeyboardButton(texts.MENU_SUPPORT)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
@@ -349,7 +356,7 @@ async def take_trial(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # ── buying, order first ───────────────────────────────────────────────────
 
 
-async def start_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, *, force_new: bool = False) -> None:
     context.user_data.clear()
     session = await _session(update)
     if session["is_blocked"]:
@@ -360,17 +367,26 @@ async def start_buy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     context.user_data[_STATE] = _STATE_CHOOSING_VOLUME
+    if force_new:
+        context.user_data[_FORCE_NEW_SERVICE] = True
     quick = [v for v in QUICK_VOLUMES if session["min_gb"] <= v <= session["max_gb"]]
     keyboard = [[KeyboardButton(texts.gb(v)) for v in quick[i:i + 3]] for i in range(0, len(quick), 3)]
     keyboard.append([KeyboardButton(texts.CUSTOM_VOLUME)])
     keyboard.append([KeyboardButton(texts.CANCEL)])
+    prompt = texts.buy_prompt(
+        session["price_per_gb"], session["min_gb"], session["max_gb"],
+        session["plan_duration_days"],
+    )
+    if force_new:
+        prompt = texts.NEW_SERVICE_INTRO + "\n\n" + prompt
     await update.effective_message.reply_text(
-        texts.buy_prompt(
-            session["price_per_gb"], session["min_gb"], session["max_gb"],
-            session["plan_duration_days"],
-        ),
+        prompt,
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
     )
+
+
+async def start_new_service(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await start_buy(update, context, force_new=True)
 
 
 async def on_renew(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -436,6 +452,7 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
         intent = await backend.post("/api/shop/bot/orders", json={
             "telegram_id": update.effective_user.id,
             "data_limit_gb": volume,
+            "force_new_service": bool(context.user_data.get(_FORCE_NEW_SERVICE)),
         })
     except ShopApiError as exc:
         if getattr(exc, "status", 0) == 409 and "SERVICE_IS_UNLIMITED" in str(exc):
@@ -567,11 +584,11 @@ def _topup_submitted_text(reference, eta: int, handle, has_order: bool,
     # the moment the promise is missed (shop_service.notify_overdue_payments),
     # so this message only has to make the promise, not hedge it.
     what = f" — برای سرویس {texts.gb(volume_gb)}" if (has_order and volume_gb) else ""
-    lines = [f"✅ رسیدتان رسید{what}."]
+    lines = [f"✅ رسیدتان با موفقیت دریافت شد{what}."]
     if has_order:
-        lines.append(f"تا {texts.fa(eta)} دقیقه بررسی می‌شود و سرویس‌تان خودکار آماده می‌شود.")
+        lines.append(f"معمولاً تا {texts.fa(eta)} دقیقه بررسی و سرویس‌تان خودکار آماده می‌شود.")
     else:
-        lines.append(f"تا {texts.fa(eta)} دقیقه بررسی می‌شود و کیف پولتان شارژ می‌شود.")
+        lines.append(f"معمولاً تا {texts.fa(eta)} دقیقه بررسی و کیف پولتان خودکار شارژ می‌شود.")
     lines.append("لازم نیست ربات را باز نگه دارید — خبرش همینجا می‌آید.")
     if reference:
         # Says what the code is FOR. A code with no use reads as decoration;
@@ -811,6 +828,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if text == texts.MENU_BUY:
         return await start_buy(update, context)
+    if text == texts.MENU_NEW_SERVICE:
+        return await start_new_service(update, context)
     if text == texts.MENU_TRIAL:
         return await take_trial(update, context)
     if text == texts.MENU_ACCOUNTS:
