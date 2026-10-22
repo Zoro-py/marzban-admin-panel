@@ -35,6 +35,7 @@ from telegram.ext import (  # noqa: E402
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest  # noqa: E402
 
 from handlers.shop import (  # noqa: E402
     handle_contact,
@@ -91,7 +92,15 @@ def main() -> None:
         threading.Event().wait()
         return
 
-    app = Application.builder().token(token).post_init(_register_shop_commands).build()
+    # 2026-10-22: PTB's default HTTPXRequest (5s connect/read/write, 1s pool
+    # timeout) was too tight for this host's path to Telegram - logs showed
+    # bursts of TimedOut/ReadError on exactly this bot's "🛒 خرید سرویس" reply,
+    # and when the SAME blip hit the on_error fallback too, the customer got
+    # no reply at all (looked like "the button does nothing"). Wider timeouts
+    # don't fix a real outage, but they cover the transient blips that were
+    # actually happening while Telegram itself was reachable.
+    request = HTTPXRequest(connect_timeout=10.0, read_timeout=20.0, write_timeout=20.0, pool_timeout=10.0)
+    app = Application.builder().token(token).request(request).post_init(_register_shop_commands).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))

@@ -14,6 +14,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stderr.reconfigure(encoding="utf-8")
 
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters  # noqa: E402
+from telegram.request import HTTPXRequest  # noqa: E402
 
 from handlers.account import delete_account_callback, delete_account_command, extend_command  # noqa: E402
 from handlers.backup import backup_command  # noqa: E402
@@ -88,7 +89,10 @@ async def _register_bot_commands(app) -> None:
 
 def main() -> None:
     token = os.environ["BOT_TOKEN"]
-    app = Application.builder().token(token).post_init(_register_bot_commands).build()
+    # 2026-10-22: see shopbot/bot.py for why - same host, same tight PTB
+    # defaults (5s/1s), same transient TimedOut/ReadError bursts in the logs.
+    request = HTTPXRequest(connect_timeout=10.0, read_timeout=20.0, write_timeout=20.0, pool_timeout=10.0)
+    app = Application.builder().token(token).request(request).post_init(_register_bot_commands).build()
 
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))

@@ -33,6 +33,7 @@ from telegram.ext import (  # noqa: E402
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest  # noqa: E402
 
 from handlers.delegate import handle_callback, handle_text, help_command, start  # noqa: E402
 
@@ -64,7 +65,10 @@ def main() -> None:
         threading.Event().wait()
         return
 
-    app = Application.builder().token(token).build()
+    # 2026-10-22: see shopbot/bot.py for why - same host, same tight PTB
+    # defaults (5s/1s), same transient TimedOut/ReadError bursts in the logs.
+    request = HTTPXRequest(connect_timeout=10.0, read_timeout=20.0, write_timeout=20.0, pool_timeout=10.0)
+    app = Application.builder().token(token).request(request).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
