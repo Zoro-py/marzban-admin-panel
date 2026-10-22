@@ -15,7 +15,7 @@ from app.config import settings
 from app.db import init_db
 from app.debt_nudge_job import run_debt_nudge
 from app.payg_monthly_job import maybe_run_monthly_payg_settlement
-from app.routers import accounts, auth, backup, customers, delegate, groups, history, ledger, monitor, notifications, payg_monthly, reports, settings as settings_router, shop, sync
+from app.routers import accounts, auth, backup, customers, delegate, groups, history, ledger, monitor, notifications, payg_monthly, reports, settings as settings_router, shop, sub_stats, sync
 from app.sync_job import run_sync
 
 logging.basicConfig(
@@ -222,6 +222,7 @@ app.include_router(delegate.router)
 app.include_router(monitor.router)
 app.include_router(monitor.ingest_router)
 app.include_router(delegate.bot_router)
+app.include_router(sub_stats.router)
 
 
 @app.get("/api/health")
