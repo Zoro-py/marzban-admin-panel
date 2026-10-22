@@ -194,6 +194,7 @@ def test_auth_boundary() -> None:
         ("get", "/api/shop/bot/wallet", {"params": {"telegram_id": 1}}),
         ("post", "/api/shop/bot/orders", {"json": {"telegram_id": 1, "data_limit_gb": 10}}),
         ("post", "/api/shop/bot/orders/1/pay", {"json": {"telegram_id": 1}}),
+        ("post", "/api/shop/bot/accounts/1/auto-renew", {"json": {"telegram_id": 1}}),
         ("post", "/api/shop/bot/trial", {"json": {"telegram_id": 1}}),
         ("get", "/api/shop/bot/orders/pending", {"params": {"telegram_id": 1}}),
         ("get", "/api/shop/bot/topups/status", {"params": {"telegram_id": 1, "code": "ABCD"}}),
@@ -559,6 +560,9 @@ def main() -> int:
         test_renewal_warnings,
         test_accounts_list_has_no_duplicate_after_topup,
         test_force_new_service_does_not_extend,
+        test_auto_renew_sufficient_balance,
+        test_auto_renew_insufficient_balance_goes_into_debt,
+        test_debt_sweep_reminds_suspends_and_reactivates,
         test_renewal_extends_in_place,
         test_trial_is_upgraded_in_place,
         test_extension_that_landed_is_not_refunded,
@@ -911,6 +915,136 @@ def test_force_new_service_does_not_extend() -> None:
     check("the bot's list shows both as separate services", len(rows), 2)
 
 
+def _setup_account_for_auto_renew(client, fake, *, gbs=(10, 20)) -> tuple[int, str]:
+    """A shop user with `len(gbs)` real paid orders on ONE account — the
+    average-volume history the auto-renew button reads. Credited EXACTLY
+    enough to pay for those orders (price_per_gb=3000, see _reset), so the
+    wallet lands at precisely 0 afterward — deterministic ground for both
+    the "enough balance" test (which tops up more on top of this) and the
+    "goes into debt" test (which doesn't). Returns (account_id, username)."""
+    uid = _make_user(client)
+    _credit(uid, sum(int(-(-gb * 3000 // 1)) for gb in gbs))
+    for gb in gbs:
+        oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                          json={"telegram_id": 555, "data_limit_gb": gb}).json()["order_id"]
+        client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS, json={"telegram_id": 555})
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        return account.id, account.marzban_username
+
+
+def test_auto_renew_sufficient_balance() -> None:
+    print("\n[33] auto-renew with enough balance: average volume, no debt framing")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    account_id, username = _setup_account_for_auto_renew(client, fake, gbs=(10, 20))
+    # Average of 10 and 20 is 15 GB at 3000/GB = 45,000 T — leave plenty.
+    with Session(engine) as session:
+        shop_user_id = session.exec(select(ShopUser)).first().id
+    _credit(shop_user_id, 500_000)
+
+    r = client.post(f"/api/shop/bot/accounts/{account_id}/auto-renew", headers=BOT_HEADERS,
+                    json={"telegram_id": 555})
+    check("200 OK", r.status_code, 200)
+    body = r.json()
+    check("average of 10 and 20 GB is 15", body["data_limit_gb"], 15.0)
+    check("stayed non-negative", body["went_negative"], False)
+    check("owed is 0", body["owed"], 0)
+    with Session(engine) as session:
+        account = session.get(Account, account_id)
+        check("no debt recorded", account.debt_since, None)
+    # Setup's own 2nd purchase already extended this account once; the
+    # auto-renew call must be a SECOND extend of the SAME account, not a
+    # new one.
+    check("every modify call was on the same account, no new one created", set(fake.modified), {username})
+    check("still only one account ever created", fake.created, [username])
+
+
+def test_auto_renew_insufficient_balance_goes_into_debt() -> None:
+    print("\n[34] auto-renew with insufficient balance: still renews, wallet goes negative, bounded")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    account_id, username = _setup_account_for_auto_renew(client, fake, gbs=(10, 20))
+    # The two setup purchases already spent the wallet down near zero —
+    # average renewal price (15 GB * 3000 = 45,000) should push it negative.
+
+    r = client.post(f"/api/shop/bot/accounts/{account_id}/auto-renew", headers=BOT_HEADERS,
+                    json={"telegram_id": 555})
+    check("200 OK even though balance went negative", r.status_code, 200)
+    body = r.json()
+    check("renewed anyway", body["went_negative"], True)
+    check("owed matches the negative balance", body["owed"], -body["balance"])
+    check("the account really was extended (modified), not refused", username in fake.modified, True)
+    with Session(engine) as session:
+        account = session.get(Account, account_id)
+        check("debt_since recorded", account.debt_since is not None, True)
+
+    # A second auto-renew is refused while the first debt is unpaid.
+    r2 = client.post(f"/api/shop/bot/accounts/{account_id}/auto-renew", headers=BOT_HEADERS,
+                     json={"telegram_id": 555})
+    check("refused: already in debt", r2.status_code, 409)
+    check("no second auto-renew order got created", "ALREADY_IN_DEBT" in r2.json()["detail"], True)
+
+
+def test_debt_sweep_reminds_suspends_and_reactivates() -> None:
+    print("\n[35] debt sweep: reminder at day 3, suspend at day 5, reactivate once paid off")
+    import asyncio
+    from datetime import timedelta
+    from app.shop_service import _sweep_debt_accounts
+
+    fake = FakeMarzban()
+    client = _reset(fake)
+    account_id, username = _setup_account_for_auto_renew(client, fake, gbs=(10, 20))
+    client.post(f"/api/shop/bot/accounts/{account_id}/auto-renew", headers=BOT_HEADERS,
+               json={"telegram_id": 555})
+
+    with Session(engine) as session:
+        account = session.get(Account, account_id)
+        assert account.debt_since is not None
+        account.debt_since = utcnow() - timedelta(days=3, minutes=1)
+        session.add(account)
+        session.commit()
+
+    with Session(engine) as session:
+        result = asyncio.run(_sweep_debt_accounts(session))
+    check("one reminder sent at day 3", result["reminded"], 1)
+    check("not suspended yet at day 3", result["suspended"], 0)
+    with Session(engine) as session:
+        account = session.get(Account, account_id)
+        check("reminder timestamp recorded", account.debt_reminder_sent_at is not None, True)
+
+    with Session(engine) as session:
+        result = asyncio.run(_sweep_debt_accounts(session))
+    check("no second reminder on the same episode", result["reminded"], 0)
+
+    with Session(engine) as session:
+        account = session.get(Account, account_id)
+        account.debt_since = utcnow() - timedelta(days=5, minutes=1)
+        session.add(account)
+        session.commit()
+    with Session(engine) as session:
+        result = asyncio.run(_sweep_debt_accounts(session))
+    check("suspended at day 5", result["suspended"], 1)
+    check("the account was actually disabled in Marzban", fake.panel[username]["status"], "disabled")
+    with Session(engine) as session:
+        account = session.get(Account, account_id)
+        check("auto_suspended flag set", account.auto_suspended, True)
+
+    # Top up enough to clear the debt — should auto-reactivate.
+    with Session(engine) as session:
+        shop_user_id = session.exec(select(ShopUser)).first().id
+    _credit(shop_user_id, 500_000)
+
+    with Session(engine) as session:
+        result = asyncio.run(_sweep_debt_accounts(session))
+    check("reactivated once paid off", result["reactivated"], 1)
+    check("Marzban account is active again", fake.panel[username]["status"], "active")
+    with Session(engine) as session:
+        account = session.get(Account, account_id)
+        check("debt_since cleared", account.debt_since, None)
+        check("auto_suspended cleared", account.auto_suspended, False)
+
+
 def test_renewal_extends_in_place() -> None:
     print("\n[21] a second purchase EXTENDS the existing account: same link, stacked volume and days")
     fake = FakeMarzban()
@@ -1017,7 +1151,7 @@ def test_overdue_payment_is_announced_once() -> None:
     async def capture(chat_id, text, reply_markup=None):
         sent.append((chat_id, text))
 
-    async def admin_capture(text):
+    async def admin_capture(text, reply_markup=None, *, thread_id=None):
         sent.append(("admin", text))
 
     fake = FakeMarzban()

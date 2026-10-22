@@ -182,6 +182,35 @@ def confirm_from_wallet(volume: float, days: int, price: int, balance: int) -> s
 BUY_WORKING = "دارم سرویس‌تان را می‌سازم… چند لحظه."
 
 
+# ── "⚡ تمدید خودکار (میانگین مصرفم)" — the bounded-debt auto-renew button ──
+
+def auto_renew_ok(volume_gb: float) -> str:
+    """Balance stayed non-negative — reads like any other successful
+    renewal, no debt framing at all."""
+    return f"🎉 سرویستان با {gb(volume_gb)} (میانگین مصرفتان) تمدید شد — همین الان فعال است."
+
+
+def auto_renew_in_debt(volume_gb: float, owed: int, grace_days: int) -> str:
+    """Balance went negative. States the real number and the real deadline —
+    never a vague "حتماً شارژ کنید"."""
+    return (
+        f"🎉 سرویستان با {gb(volume_gb)} (میانگین مصرفتان) تمدید شد — همین الان فعال است.\n\n"
+        f"کیف پولتان {money(owed)} بدهکار شد. تا {fa(grace_days)} روز دیگر برای شارژ وقت دارید؛ "
+        "وگرنه سرویس موقتاً متوقف می‌شود (با شارژ کردن، خودش دوباره فعال می‌شود)."
+    )
+
+
+AUTO_RENEW_ALREADY_IN_DEBT = (
+    "یک تمدید خودکار قبلی هنوز تسویه نشده.\n"
+    "برای ادامه، یا کیف پولتان را شارژ کنید، یا «🔧 تمدید حجم دلخواه» را بزنید."
+)
+
+AUTO_RENEW_NO_HISTORY = (
+    "برای این سرویس هنوز سابقه‌ی خریدی نیست که میانگینش را بگیرم.\n"
+    "«🔧 تمدید حجم دلخواه» را بزنید."
+)
+
+
 def not_a_number(example: str) -> str:
     return f"لطفاً فقط عدد بفرستید، مثلاً {example}."
 

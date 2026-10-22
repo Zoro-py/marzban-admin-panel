@@ -1,6 +1,7 @@
 import os
 import secrets
 from pathlib import Path
+from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -40,6 +41,14 @@ class Settings(BaseSettings):
     bot_token: str = ""
     bot_admin_chat_id: str = ""
     bot_api_base_url: str = "http://127.0.0.1:8000"
+    # Optional: a Forum Topic (thread) inside bot_admin_chat_id, dedicated to
+    # shop receipt approvals — so they don't get buried under sync-job
+    # alerts, settlement summaries and debt nudges in the same chat. Blank =
+    # receipts post to the chat's General topic, exactly like today; set
+    # this to the numeric thread id once the operator has actually created
+    # that topic in Telegram (chat must be a supergroup with Topics enabled
+    # for the id to mean anything — a non-topic chat ignores it silently).
+    bot_receipts_thread_id: Optional[int] = None
 
     # How often the sync job runs — also how long a customer whose plan just
     # ran out stays disconnected before the next-plan feature can react, so

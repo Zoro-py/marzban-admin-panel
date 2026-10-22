@@ -822,6 +822,26 @@ class ShopPurchaseResult(BaseModel):
     status: ShopOrderStatus
 
 
+class ShopAutoRenewResult(BaseModel):
+    """Response for the "⚡ تمدید خودکار" button — same purchase-result shape
+    as ShopPurchaseResult plus what the bot needs to decide which of the two
+    reply texts to show (plain success, or the negative-balance framing)."""
+
+    order_id: int
+    marzban_username: Optional[str]
+    data_limit_gb: float
+    duration_days: int
+    price: int
+    subscription_url: Optional[str]
+    balance: int
+    status: ShopOrderStatus
+    went_negative: bool
+    owed: int  # max(0, -balance) — 0 when went_negative is False
+    # shop_service.DEBT_SUSPEND_AFTER_DAYS, echoed back so the bot's copy
+    # never has to hardcode a number that only the backend owns.
+    grace_days: int
+
+
 class ShopBotTopupRequest(BaseModel):
     telegram_id: int
     claimed_amount: int = Field(gt=0, le=1_000_000_000)

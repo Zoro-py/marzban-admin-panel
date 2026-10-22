@@ -1320,11 +1320,24 @@ async def warn_customers_before_service_ends(session: Session) -> int:
         # finding the menu again. A trial has no volume worth repeating, so it
         # offers the smallest real plan instead.
         renew_gb = settings.min_gb if is_trial else order.data_limit_gb
-        keyboard = {"inline_keyboard": [[{
-            "text": "🛒 خرید سرویس" if is_trial
-                    else "🔄 تمدید همین سرویس",
+        manual_button = {
+            "text": "🛒 خرید سرویس" if is_trial else "🔧 تمدید حجم دلخواه",
             "callback_data": f"renew:{renew_gb:g}",
-        }]]}
+        }
+        # The auto-renew-by-average option only makes sense at the USAGE
+        # warning for a real paid account (not a trial, which has no usage
+        # history to average), and only while no earlier auto-renew's debt is
+        # still outstanding — stacking a second automatic charge on top of an
+        # unpaid one would let the negative balance grow unbounded every
+        # cycle with nobody deciding that on purpose (owner decision
+        # 2026-10-22: wallet may go negative from ONE auto-renew, never two).
+        if mark == "usage" and not is_trial and account.debt_since is None:
+            keyboard = {"inline_keyboard": [
+                [{"text": "⚡ تمدید خودکار (میانگین مصرفم)", "callback_data": f"autorenew:{account.id}"}],
+                [manual_button],
+            ]}
+        else:
+            keyboard = {"inline_keyboard": [[manual_button]]}
         try:
             await send_to_shop_user(user.telegram_id, message, keyboard)
         except Exception:
@@ -1636,6 +1649,204 @@ async def _extend_order(session: Session, order: ShopOrder, account: Account) ->
         return True
 
 
+# ── bounded-debt auto-renew ────────────────────────────────────────────────
+#
+# "⚡ تمدید خودکار (میانگین مصرفم)" on the usage warning (owner decision
+# 2026-10-22, from a council review of the owner's own draft): the ONE path
+# in the whole shop allowed to debit the wallet past zero — every other
+# purchase keeps pay_awaiting_order's hard balance check. The debt is bounded
+# on purpose: at most one outstanding auto-renew at a time (see the usage-
+# warning keyboard above, which stops offering this button while
+# account.debt_since is set) and it self-heals (_sweep_debt_accounts below
+# reminds at day 3, suspends at day 5, and reactivates the moment the wallet
+# is topped back up) — nobody can ride a growing negative balance forever.
+
+AUTO_RENEW_AVERAGE_WINDOW = 3
+DEBT_REMINDER_AFTER_DAYS = 3
+DEBT_SUSPEND_AFTER_DAYS = 5
+
+
+def _average_renewal_gb(session: Session, account_id: int) -> Optional[float]:
+    """Average data_limit_gb of this account's last few genuinely
+    customer-chosen paid orders — newest first, excludes trials (price==0)
+    and any order THIS mechanism already auto-renewed, so one guessed volume
+    never compounds into the next guess."""
+    orders = session.exec(
+        select(ShopOrder).where(
+            ShopOrder.account_id == account_id,
+            ShopOrder.status == ShopOrderStatus.delivered,
+            ShopOrder.price > 0,
+            ShopOrder.auto_renewed == False,  # noqa: E712
+        ).order_by(ShopOrder.id.desc()).limit(AUTO_RENEW_AVERAGE_WINDOW)
+    ).all()
+    if not orders:
+        return None
+    return sum(o.data_limit_gb for o in orders) / len(orders)
+
+
+async def auto_renew_account(session: Session, account_id: int, shop_user: ShopUser) -> dict:
+    """The auto-renew button's action: renews this account by its own
+    average volume, debiting the wallet even past zero. Returns a dict the
+    router turns into the customer-facing message — never raises ShopError
+    for "insufficient balance" (that's the whole point of this path), but
+    does for every other refusal (wrong owner, already in debt, no history).
+    """
+    account = session.get(Account, account_id)
+    if account is None or account.customer_id is not None:
+        # A customer_id means this is an operator-managed (non-shop) account
+        # reached via the linked-customer fallback — auto-renew is a shop
+        # wallet feature only, never for a customer the operator bills by
+        # hand some other way.
+        raise ShopError("This service can't be auto-renewed.")
+    if account.status in ("disabled", "deleted_from_marzban"):
+        raise ShopError("This service is no longer active.")
+
+    # Ownership: the account must actually be this shop user's, found the
+    # same way the usage warning found it in the first place — the latest
+    # delivered order on this account must belong to the caller.
+    owning_order = session.exec(
+        select(ShopOrder).where(
+            ShopOrder.account_id == account_id,
+            ShopOrder.status == ShopOrderStatus.delivered,
+        ).order_by(ShopOrder.id.desc())
+    ).first()
+    if owning_order is None or owning_order.shop_user_id != shop_user.id:
+        raise ShopError("This service can't be auto-renewed.")
+
+    if account.debt_since is not None:
+        # Stable "ALREADY_IN_DEBT" prefix, same convention as
+        # "SERVICE_IS_UNLIMITED" above — the bot matches on this to show its
+        # own Persian copy rather than this English fallback.
+        raise ShopError("ALREADY_IN_DEBT: an earlier auto-renew's debt is still unpaid")
+
+    avg_gb = _average_renewal_gb(session, account_id)
+    if avg_gb is None:
+        raise ShopError("NO_HISTORY: no purchase history to average — pick a custom volume instead")
+
+    settings = get_shop_settings(session)
+    validate_purchase_request(settings, avg_gb)
+    order = create_awaiting_order(session, shop_user, avg_gb, force_new_service=False)
+
+    async with _lock_for(shop_user.id):
+        session.refresh(order)
+        order.status = ShopOrderStatus.provisioning
+        order.auto_renewed = True
+        session.add(order)
+        post_wallet_entry(
+            session,
+            shop_user.id,
+            entry_type=ShopWalletEntryType.purchase,
+            amount=-order.price,
+            note=f"Auto-renew (avg {avg_gb:g} GB) / {order.duration_days} days",
+            order_id=order.id,
+            commit=False,
+        )
+        session.commit()
+        session.refresh(order)
+
+    await _provision_order(session, order, settings)
+    session.refresh(order)
+    session.refresh(account)
+
+    new_balance = wallet_balance(session, shop_user.id)
+    if new_balance < 0 and account.debt_since is None:
+        account.debt_since = utcnow()
+        session.add(account)
+        session.commit()
+
+    return {
+        "order": order,
+        "gb": avg_gb,
+        "price": order.price,
+        "balance": new_balance,
+        "went_negative": new_balance < 0,
+    }
+
+
+async def _sweep_debt_accounts(session: Session) -> dict:
+    """Runs every 15 minutes (see main.py's scheduler): clears debt the
+    moment a wallet is topped back up (reactivating anything THIS mechanism
+    suspended), reminds once at day 3, suspends once at day 5. Never touches
+    an account its own auto-renew didn't put into debt."""
+    from app import shop_texts
+    from app.notify import send_to_shop_user
+
+    now = utcnow()
+    reminded = 0
+    suspended = 0
+    reactivated = 0
+
+    accounts = session.exec(select(Account).where(Account.debt_since.is_not(None))).all()
+    for account in accounts:
+        owning_order = session.exec(
+            select(ShopOrder).where(
+                ShopOrder.account_id == account.id,
+                ShopOrder.status == ShopOrderStatus.delivered,
+            ).order_by(ShopOrder.id.desc())
+        ).first()
+        if owning_order is None:
+            continue
+        user = session.get(ShopUser, owning_order.shop_user_id)
+        if user is None:
+            continue
+
+        balance = wallet_balance(session, user.id)
+        if balance >= 0:
+            was_suspended = account.auto_suspended
+            if was_suspended:
+                try:
+                    await marzban_client.modify_user(account.marzban_username, {"status": "active"})
+                except Exception:
+                    logger.exception("Could not re-enable %s after its debt was paid off", account.marzban_username)
+                    continue
+                account.status = "active"
+                account.auto_suspended = False
+            account.debt_since = None
+            account.debt_reminder_sent_at = None
+            session.add(account)
+            session.commit()
+            if was_suspended:
+                try:
+                    await send_to_shop_user(user.telegram_id, shop_texts.debt_cleared_reactivated())
+                except Exception:
+                    logger.exception("Could not tell %s their service is back", user.telegram_id)
+                reactivated += 1
+            continue
+
+        debt_since = account.debt_since.replace(tzinfo=None) if account.debt_since.tzinfo else account.debt_since
+        days = (now.replace(tzinfo=None) - debt_since).total_seconds() / 86400
+
+        if days >= DEBT_SUSPEND_AFTER_DAYS and not account.auto_suspended:
+            try:
+                await marzban_client.modify_user(account.marzban_username, {"status": "disabled"})
+            except Exception:
+                logger.exception("Could not suspend %s for unpaid auto-renew debt", account.marzban_username)
+                continue
+            account.status = "disabled"
+            account.auto_suspended = True
+            session.add(account)
+            session.commit()
+            try:
+                await send_to_shop_user(user.telegram_id, shop_texts.debt_suspended(-balance))
+            except Exception:
+                logger.exception("Could not tell %s their service was suspended", user.telegram_id)
+            suspended += 1
+        elif days >= DEBT_REMINDER_AFTER_DAYS and account.debt_reminder_sent_at is None:
+            account.debt_reminder_sent_at = now
+            session.add(account)
+            session.commit()
+            try:
+                await send_to_shop_user(
+                    user.telegram_id,
+                    shop_texts.debt_reminder(-balance, DEBT_SUSPEND_AFTER_DAYS - int(days)),
+                )
+            except Exception:
+                logger.exception("Could not remind %s about unpaid auto-renew debt", user.telegram_id)
+            reminded += 1
+
+    return {"reminded": reminded, "suspended": suspended, "reactivated": reactivated}
+
+
 # ── keeping the promise about the wait ────────────────────────────────────
 
 
@@ -1650,6 +1861,7 @@ async def notify_overdue_payments(session: Session) -> int:
     turns a broken promise into evidence that someone is actually there.
     """
     from app import shop_texts
+    from app.config import settings as app_settings
     from app.notify import notify_admin, send_to_shop_user
 
     settings = get_shop_settings(session)
@@ -1682,7 +1894,8 @@ async def notify_overdue_payments(session: Session) -> int:
         try:
             await notify_admin(
                 f"⏰ Payment #{topup.id} ({topup.reference_code or 'no code'}) has waited past your "
-                f"{settings.approval_eta_minutes}-minute promise. The customer has been told it is late."
+                f"{settings.approval_eta_minutes}-minute promise. The customer has been told it is late.",
+                thread_id=app_settings.bot_receipts_thread_id,
             )
         except Exception:
             logger.exception("Could not alert the operator that payment #%s is late", topup.id)

@@ -421,6 +421,57 @@ async def on_renew(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _handle_volume(update, context, volume)
 
 
+async def on_auto_renew(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The "⚡ تمدید خودکار (میانگین مصرفم)" button on the usage warning —
+    one tap, no volume to pick: the backend renews by this account's own
+    average and may take the wallet negative (bounded, see
+    shop_service.auto_renew_account). This is a direct backend call, not
+    _handle_volume — there is no order to create-then-confirm, the backend
+    does everything in one step."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        account_id = int(query.data.split(":", 1)[1])
+    except (AttributeError, IndexError, ValueError):
+        return
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        logger.debug("Could not clear the auto-renew button", exc_info=True)
+
+    context.user_data.clear()
+    session = await _session(update)
+    if session["is_blocked"]:
+        await _reply(update, texts.blocked(_handle(session)), session)
+        return
+
+    await _reply(update, texts.BUY_WORKING, session)
+    try:
+        result = await backend.post(
+            f"/api/shop/bot/accounts/{account_id}/auto-renew",
+            json={"telegram_id": update.effective_user.id},
+        )
+    except ShopApiError as exc:
+        text = str(exc)
+        if "ALREADY_IN_DEBT" in text:
+            await _reply(update, texts.AUTO_RENEW_ALREADY_IN_DEBT, session)
+        elif "NO_HISTORY" in text:
+            await _reply(update, texts.AUTO_RENEW_NO_HISTORY, session)
+        else:
+            logger.exception("Auto-renew failed for account %s", account_id)
+            await _reply(update, texts.generic_error(_handle(session)), session)
+        return
+
+    if result.get("went_negative"):
+        await _reply(
+            update,
+            texts.auto_renew_in_debt(result["data_limit_gb"], result["owed"], result["grace_days"]),
+            session,
+        )
+    else:
+        await _reply(update, texts.auto_renew_ok(result["data_limit_gb"]), session)
+
+
 def _payment_request_text(intent: dict) -> str:
     """The plan, then the one number to transfer.
 

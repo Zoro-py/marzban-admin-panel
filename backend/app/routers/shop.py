@@ -78,6 +78,7 @@ from app.schemas import (
     ShopLinkInviteRead,
     ShopLinkInviteRequest,
     ShopLinkState,
+    ShopAutoRenewResult,
     ShopOrderIntent,
     ShopOrderRead,
     ShopPurchaseResult,
@@ -91,9 +92,11 @@ from app.schemas import (
     ShopWalletEntryRead,
 )
 from app.shop_service import (
+    DEBT_SUSPEND_AFTER_DAYS,
     ShopConflict,
     ShopError,
     approve_topup,
+    auto_renew_account,
     create_awaiting_order,
     create_topup,
     deliver_order_to_customer,
@@ -908,6 +911,44 @@ async def bot_pay_order(order_id: int, body: ShopBotOrderAction, session: Sessio
         balance=wallet_balance(session, order.shop_user_id),
         subscription_url=resolve_subscription_url(account.subscription_url) if account else None,
         status=order.status,
+    )
+
+
+@bot_router.post("/accounts/{account_id}/auto-renew", response_model=ShopAutoRenewResult)
+async def bot_auto_renew_account(account_id: int, body: ShopBotOrderAction, session: Session = Depends(get_session)):
+    """The "⚡ تمدید خودکار (میانگین مصرفم)" button on the usage warning —
+    renews this account by its own average volume, debiting the wallet even
+    past zero (the one purchase path allowed to do that; see
+    shop_service.auto_renew_account's docstring for the bounded-debt design).
+    """
+    user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
+    if user is None:
+        raise HTTPException(404, "Unknown shop user — call /session first")
+    try:
+        result = await auto_renew_account(session, account_id, user)
+    except ShopError as exc:
+        raise HTTPException(409 if str(exc).startswith(("ALREADY_IN_DEBT", "NO_HISTORY")) else 400, str(exc))
+
+    order = result["order"]
+    if order.status == ShopOrderStatus.failed:
+        raise HTTPException(502, order.error or "Could not renew the account")
+
+    await deliver_order_to_customer(session, order)
+
+    account = session.get(Account, order.account_id) if order.account_id else None
+    owed = max(0, -result["balance"])
+    return ShopAutoRenewResult(
+        order_id=order.id,
+        marzban_username=order.marzban_username,
+        data_limit_gb=order.data_limit_gb,
+        duration_days=order.duration_days,
+        price=order.price,
+        balance=result["balance"],
+        subscription_url=resolve_subscription_url(account.subscription_url) if account else None,
+        status=order.status,
+        went_negative=result["went_negative"],
+        owed=owed,
+        grace_days=DEBT_SUSPEND_AFTER_DAYS,
     )
 
 

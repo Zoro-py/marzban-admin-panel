@@ -64,7 +64,7 @@ def last_notify_success() -> datetime | None:
         return None
 
 
-async def notify_admin(text: str, reply_markup: dict | None = None) -> None:
+async def notify_admin(text: str, reply_markup: dict | None = None, *, thread_id: int | None = None) -> None:
     """Raises on any failure to send — deliberately NOT best-effort, because
     some callers gate a real state change on this succeeding (queuing a next
     plan, or settling+resetting a payg account/group): an operator who never
@@ -82,6 +82,11 @@ async def notify_admin(text: str, reply_markup: dict | None = None) -> None:
         # Inline keyboards (e.g. the debt nudge's per-debtor action buttons) —
         # the payload is the Telegram Bot API shape, built by the caller.
         payload["reply_markup"] = json.dumps(reply_markup)
+    if thread_id is not None:
+        # Routes into a Forum Topic (e.g. settings.bot_receipts_thread_id) —
+        # ignored harmlessly by Telegram if the chat isn't a topic-enabled
+        # supergroup, so callers don't need to guard this themselves.
+        payload["message_thread_id"] = thread_id
     async with httpx.AsyncClient(timeout=20) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{settings.bot_token}/sendMessage",
@@ -223,6 +228,8 @@ async def relay_shop_photo_to_admin(file_id: str, caption: str, reply_markup: di
     if reply_markup is not None:
         # multipart, so the markup travels as a JSON string rather than a dict.
         data["reply_markup"] = json.dumps(reply_markup)
+    if settings.bot_receipts_thread_id is not None:
+        data["message_thread_id"] = settings.bot_receipts_thread_id
     filename = file_path.rsplit("/", 1)[-1] or "receipt.jpg"
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(

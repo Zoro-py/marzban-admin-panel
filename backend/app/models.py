@@ -117,6 +117,23 @@ class Account(SQLModel, table=True):
     status: Optional[str] = None
     last_synced_at: Optional[datetime] = None
 
+    # Shop bot's bounded-debt auto-renew (owner decision 2026-10-22): when an
+    # "auto-renew by average usage" tap drives the shop wallet negative, this
+    # is set to when that happened — never pushed later by a SECOND auto-
+    # renew (see shop_service.py's usage-warning keyboard, which refuses to
+    # offer auto-renew again while this is set). Cleared the moment the
+    # wallet balance is back to >= 0.
+    debt_since: Optional[datetime] = None
+    # Set only by the debt sweep job below, never by anything else that can
+    # disable an account — so the sweep only ever re-enables accounts IT
+    # suspended, not one the operator disabled for an unrelated reason.
+    auto_suspended: bool = Field(default=False)
+    # One reminder per debt episode, not one per sweep tick (the sweep runs
+    # every 15 minutes; a duration-based reminder needs its own "already
+    # sent" flag the same way debt_nudge_job's overdue check does). Cleared
+    # together with debt_since.
+    debt_reminder_sent_at: Optional[datetime] = None
+
     # `used_traffic` value as of the last pay-as-you-go settlement (individual
     # or as part of a group). Billable usage for the current cycle = used_traffic
     # - baseline. Matches Marzban's own "current usage" figure directly — what
@@ -605,6 +622,12 @@ class ShopOrder(SQLModel, table=True):
     # blocked by the very customer it is trying to keep.
     expiry_warned_at: Optional[datetime] = None
     usage_warned_at: Optional[datetime] = None
+
+    # Set only by the usage warning's "⚡ تمدید خودکار" button (owner decision
+    # 2026-10-22) — excluded from the average-volume calculation the NEXT
+    # auto-renew bases itself on, so one guessed number never compounds into
+    # the next guess; only genuinely customer-chosen volumes feed the average.
+    auto_renewed: bool = Field(default=False)
 
     # RENEWAL IN PLACE. When set, this order ADDS its volume and days to an
     # account the customer already has, instead of minting a new one — so the

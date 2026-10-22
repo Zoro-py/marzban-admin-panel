@@ -332,6 +332,34 @@ def data_almost_gone(volume_gb: float, percent_used: int, handle: Optional[str])
     )
 
 
+# ── bounded-debt auto-renew ("⚡ تمدید خودکار") ─────────────────────────────
+#
+# The TAP's own reply (success / already-in-debt / no-history) is rendered
+# by shopbot itself (shopbot/texts.py) from the backend's structured JSON —
+# same pattern as every other synchronous button action in this shop. Only
+# the ASYNC pushes below (no live conversation to reply into — the debt
+# sweep runs server-side, minutes to days after the tap) go through this
+# module and send_to_shop_user, same as the usage/expiry warnings above.
+
+
+def debt_reminder(owed: int, days_left: int) -> str:
+    return (
+        f"⏳ یادآوری: کیف پولتان {money_fa(owed)} بدهکار است.\n"
+        f"تا {fa_num(max(days_left, 0))} روز دیگر برای شارژ وقت دارید، وگرنه سرویس موقتاً متوقف می‌شود."
+    )
+
+
+def debt_suspended(owed: int) -> str:
+    return (
+        f"⛔ سرویستان به‌دلیل {money_fa(owed)} بدهی تسویه‌نشده موقتاً متوقف شد.\n"
+        "به محض شارژ کیف پول، خودش دوباره فعال می‌شود — لازم نیست با پشتیبانی تماس بگیرید."
+    )
+
+
+def debt_cleared_reactivated() -> str:
+    return "✅ کیف پولتان شارژ شد و سرویستان دوباره فعال است."
+
+
 def trial_ending(hours_left: int, handle: Optional[str]) -> str:
     """The moment a trial pays for itself. The customer has just spent a day
     finding out the service works; this is the one message that asks for the

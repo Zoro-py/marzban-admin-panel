@@ -88,6 +88,14 @@ def _run_lightweight_migrations() -> None:
             # Account.deleted_at docstring) — NULL for every existing account.
             conn.execute(text("ALTER TABLE account ADD COLUMN deleted_at DATETIME"))
 
+        if existing and "debt_since" not in existing:
+            # Shop bot's bounded-debt auto-renew (owner decision 2026-10-22) —
+            # NULL for every existing account, which is correct: nobody has an
+            # outstanding auto-renew debt before this feature existed.
+            conn.execute(text("ALTER TABLE account ADD COLUMN debt_since DATETIME"))
+            conn.execute(text("ALTER TABLE account ADD COLUMN auto_suspended BOOLEAN NOT NULL DEFAULT 0"))
+            conn.execute(text("ALTER TABLE account ADD COLUMN debt_reminder_sent_at DATETIME"))
+
         if existing and "first_seen_traffic" not in existing:
             conn.execute(text("ALTER TABLE account ADD COLUMN first_seen_traffic INTEGER NOT NULL DEFAULT 0"))
             conn.execute(text("ALTER TABLE account ADD COLUMN first_seen_traffic_at DATETIME"))
@@ -498,6 +506,8 @@ def _run_shop_migrations() -> None:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN target_expire INTEGER"))
         if order_cols and "force_new_service" not in order_cols:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN force_new_service BOOLEAN NOT NULL DEFAULT 0"))
+        if order_cols and "auto_renewed" not in order_cols:
+            conn.execute(text("ALTER TABLE shoporder ADD COLUMN auto_renewed BOOLEAN NOT NULL DEFAULT 0"))
         if topup_cols and "overdue_notified_at" not in topup_cols:
             conn.execute(text("ALTER TABLE shoptopup ADD COLUMN overdue_notified_at DATETIME"))
         if topup_cols and "receipt_text" not in topup_cols:

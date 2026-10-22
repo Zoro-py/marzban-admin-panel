@@ -41,6 +41,7 @@ from handlers.shop import (  # noqa: E402
     handle_contact,
     handle_document,
     handle_other,
+    on_auto_renew,
     on_renew,
     handle_photo,
     handle_text,
@@ -105,6 +106,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(on_renew, pattern=r"^renew:"))
+    app.add_handler(CallbackQueryHandler(on_auto_renew, pattern=r"^autorenew:"))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     # A receipt sent as a file is still a receipt; anything else at least gets
     # an answer instead of silence.
