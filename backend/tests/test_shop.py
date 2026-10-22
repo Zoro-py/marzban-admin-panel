@@ -557,6 +557,7 @@ def main() -> int:
         test_trial,
         test_quote_refuses_unbuyable_plans,
         test_renewal_warnings,
+        test_accounts_list_has_no_duplicate_after_topup,
         test_renewal_extends_in_place,
         test_trial_is_upgraded_in_place,
         test_extension_that_landed_is_not_refunded,
@@ -861,6 +862,22 @@ def _buy_from_wallet(client, gb: float) -> int:
                       json={"telegram_id": 555, "data_limit_gb": gb}).json()["order_id"]
     client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS, json={"telegram_id": 555})
     return oid
+
+
+def test_accounts_list_has_no_duplicate_after_topup() -> None:
+    print("\n[21b] two delivered orders on the same account -> ONE row in the bot's account list, not two")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 200_000)
+
+    _buy_from_wallet(client, 10)
+    _buy_from_wallet(client, 20)  # extends the same account - this is the top-up from the live screenshot
+
+    rows = client.get("/api/shop/bot/accounts", headers=BOT_HEADERS, params={"telegram_id": 555}).json()
+    check("one row for the one account, not one per order", len(rows), 1)
+    check("it shows the live stacked total (10 + 20 GB), not either order alone",
+          rows[0]["data_limit"], 30 * GB_BYTES)
 
 
 def test_renewal_extends_in_place() -> None:

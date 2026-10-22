@@ -1257,6 +1257,13 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
     for order in orders:
         account = session.get(Account, order.account_id) if order.account_id else None
         if account is not None:
+            # orders are newest-first, so the first order that reaches a given
+            # account IS its most recent one - every later (older) order for
+            # the same account is a prior purchase/top-up on the SAME service,
+            # not a second service, and must not get its own duplicate row
+            # (live 2026-10-22: a top-up order showed the account twice).
+            if account.id in seen_account_ids:
+                continue
             seen_account_ids.add(account.id)
         rows.append(ShopBotAccountRow(
             order_id=order.id,
