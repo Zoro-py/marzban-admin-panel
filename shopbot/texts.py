@@ -350,6 +350,35 @@ def topup_instructions(amount: int, card_number: str, card_holder: Optional[str]
     )
 
 
+def topup_instructions_with_minimum(amount: int, owed: int, card_number: str,
+                                    card_holder: Optional[str], eta_minutes: int) -> str:
+    """The payment request when the order's debt is UNDER the shop's own
+    minimum top-up: the customer is asked for the minimum instead, never the
+    bare shortfall. Two reasons, one per side:
+
+    The shop's side: card-to-card under a few thousand Toman is exactly the
+    transfer Iranian banking apps make painful (some refuse it outright) —
+    asking for it manufactures a failed payment and a support conversation.
+
+    The customer's side: the surplus is not a tip, it is CREDIT — the
+    approval pays the order in full and puts the remainder back in the
+    wallet, so the promise below is literal. The backend accepts an
+    order-bound receipt at any amount, so a customer who transfers only the
+    debt anyway is still fine; the minimum is the polite ask, not a gate.
+    """
+    holder = f"\nبه نام: {md_escape(card_holder)}" if card_holder else ""
+    return (
+        f"سفارشتان ثبت شد و محفوظ می‌ماند.\n\n"
+        f"بدهی این سفارش {money(owed)} است؛ لطفاً حداقل {money(amount)} به این کارت واریز کنید:\n\n"
+        f"`{plain_digits(card_number)}`{holder}\n"
+        f"مبلغ برای کپی: `{amount}`\n\n"
+        "مازاد بر بدهی به کیف پولتان برمی‌گردد و برای خرید بعدی‌تان می‌ماند.\n\n"
+        "اگر برنامه‌ی بانک با VPN باز نمی‌شود، برای پرداخت خاموشش کنید — سفارشتان همچنان محفوظ است.\n\n"
+        "بعد عکس رسید را همینجا بفرستید، یا کد پیگیری تراکنش را تایپ کنید؛ "
+        f"معمولاً تا {fa(eta_minutes)} دقیقه بررسی و سرویستان خودکار آماده می‌شود."
+    )
+
+
 NO_CARD = "هنوز شماره کارت ثبت نکرده‌ام. یک لحظه پیام بدهید تا درستش کنم."
 
 
@@ -416,7 +445,17 @@ def usage_bar(used_gb: float, total_gb: float, width: int = 10) -> str:
     return "▰" * filled + "▱" * (width - filled)
 
 
-def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional[int]) -> str:
+# Shown under a service whose account row is "disabled" — the status both
+# auto-suspensions (wallet debt, payg low balance) and an operator's manual
+# stop produce, indistinguishable from here because the backend sends only
+# the status string. Honest and blame-free: states that the service IS
+# stopped — without it the row still renders "active, X GB left" and reads
+# as a broken promise the day the customer notices nothing connects.
+STATUS_SUSPENDED_BADGE = "⚪️ موقتاً متوقف — با شارژ کیف پول یا پس از رفع بدهی دوباره وصل می‌شود"
+
+
+def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional[int],
+                 status: Optional[str] = None) -> str:
     """One subscription, named by what it IS rather than by its panel username.
 
     The previous version printed the raw Marzban username — a Latin identifier
@@ -431,6 +470,12 @@ def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional
                               a fabricated cap is how a name-unlimited
                               service got shown as "94% used" (live
                               2026-10-01). Usage is a plain "so far" figure.
+
+    `status` is optional (the backend's accounts list always carries it; the
+    default None keeps every rendering byte-identical for callers that don't
+    pass it). Only a suspended row changes the output — an active, limited
+    or expired service already says its state through the bar / «تمام شد»
+    lines above, and those stay exactly as they were.
     """
     if days_left is None:
         life = "بدون انقضا"
@@ -439,13 +484,18 @@ def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional
     else:
         life = f"{fa(days_left)} روز مانده"
     if volume_gb is None:
-        return f"🔑 سرویس نامحدود\nمصرف تا امروز: {fa(round(used_gb, 2))} گیگ\n{life}"
-    remaining = max(0.0, volume_gb - used_gb)
-    if remaining <= 0:
-        return f"🔑 سرویس {gb(volume_gb)}\n🔴 حجم سرویس تمام شد\n{life}"
-    pct = int(used_gb * 100 / volume_gb) if volume_gb else 0
-    bar = f"{usage_bar(used_gb, volume_gb)} {fa(round(remaining, 2))} گیگ باقی مانده ({fa(pct)}٪ مصرف شده)"
-    return f"🔑 سرویس {gb(volume_gb)}\n{bar}\n{life}"
+        text = f"🔑 سرویس نامحدود\nمصرف تا امروز: {fa(round(used_gb, 2))} گیگ\n{life}"
+    else:
+        remaining = max(0.0, volume_gb - used_gb)
+        if remaining <= 0:
+            text = f"🔑 سرویس {gb(volume_gb)}\n🔴 حجم سرویس تمام شد\n{life}"
+        else:
+            pct = int(used_gb * 100 / volume_gb) if volume_gb else 0
+            bar = f"{usage_bar(used_gb, volume_gb)} {fa(round(remaining, 2))} گیگ باقی مانده ({fa(pct)}٪ مصرف شده)"
+            text = f"🔑 سرویس {gb(volume_gb)}\n{bar}\n{life}"
+    if status == "disabled":
+        text += "\n" + STATUS_SUSPENDED_BADGE
+    return text
 
 
 # ── outcomes & errors ─────────────────────────────────────────────────────
@@ -468,6 +518,18 @@ def generic_error(handle: Optional[str]) -> str:
         "یک مشکل فنی پیش آمد و کاری انجام نشد.\n"
         "چند لحظه بعد دوباره بزنید." + support(handle)
     )
+
+
+# The instant wallet purchase whose account build failed (backend 502 on
+# /orders/{id}/pay). The backend refunds the wallet BEFORE answering, so the
+# honest answer to the customer's real question — "did I just lose my
+# money?" — is no, and this text says so plainly instead of the generic
+# "کاری انجام نشد", which after a wallet debit reads as "my money vanished".
+PURCHASE_FAILED_REFUNDED = (
+    "ساخت سرویس نیمه‌کاره ماند و انجام نشد.\n"
+    "پرداختتان به کیف پولتان برگشت — موجودی‌تان سالم است.\n"
+    f"چند لحظه بعد دوباره از «{MENU_BUY}» شروع کنید."
+)
 
 
 def delivered_but_no_qr(handle: Optional[str]) -> str:
@@ -556,4 +618,15 @@ SERVICE_UNLIMITED = (
     "سرویس فعلی شما نامحدود است و حجم اضافه نمی‌خواهد — برای همین خریدی ثبت نشد "
     "و پولی از کیف پولتان کم نشد.\n"
     "اگر برای دستگاه دیگری سرویس جداگانه می‌خواهید، به پشتیبانی پیام بدهید تا برایتان بسازیم."
+)
+
+# The payg-refusal twin of SERVICE_UNLIMITED (backend 409 "PAYG_TOPUP_INSTEAD"):
+# the customer's current service is metered — it needs wallet credit, not a
+# fixed-volume package, and the backend refuses the order before any money
+# moves. Same shape as its twin: the fact, the way forward, and the
+# no-money-moved reassurance.
+PAYG_TOPUP_INSTEAD = (
+    "سرویس فعلی شما مصرفی است — به‌جای بسته، کیف پولتان را شارژ کنید؛ "
+    "مصرف روزانه از آن کم می‌شود.\n"
+    "این خرید ثبت نشد و پولی از کیف پولتان کم نشد."
 )

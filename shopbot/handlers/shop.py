@@ -89,6 +89,23 @@ _WALLET_LABELS = {
     "adjust": "اصلاح موجودی",
 }
 
+# The daily payg meter debits share entry_type "purchase" with real orders,
+# so the type alone labels them «خرید سرویس» — one line per day, reading as
+# though the customer kept buying a new service daily. They carry the
+# backend's own note instead: English "Payg meter: …" today, «بیل مصرف
+# روزانه…» once the backend's own relabel lands — matched case-insensitively
+# against both so the label is right whichever side deploys first.
+_METER_NOTE_MARKERS = ("payg meter", "بیل مصرف روزانه")
+_WALLET_METER_LABEL = "بیل مصرف روزانه"
+
+
+def _wallet_label(entry: dict) -> str:
+    if entry.get("type") == "purchase":
+        note = (entry.get("note") or "").strip().lower()
+        if any(marker in note for marker in _METER_NOTE_MARKERS):
+            return _WALLET_METER_LABEL
+    return _WALLET_LABELS.get(entry.get("type"), "تراکنش")
+
 # What an Iranian phone keyboard actually produces. Persian (۰-۹) and
 # Arabic-Indic (٠-٩) digits both reach us, often mixed with Latin ones.
 _DIGITS = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
@@ -527,18 +544,31 @@ async def on_auto_renew(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _reply(update, texts.auto_renew_ok(result["data_limit_gb"]), session)
 
 
-def _payment_request_text(intent: dict) -> str:
+def _payment_request_text(intent: dict, ask: int | None = None) -> str:
     """The plan, then the one number to transfer.
 
     When the wallet already holds something, that part is stated separately so
     the figure being asked for is unambiguous — the customer types the
     shortfall into their bank app, not the price.
+
+    `ask` is the figure the customer is actually asked to transfer. It is the
+    shortfall, RAISED to the shop's minimum top-up when the shortfall is
+    smaller (F10): an order-bound receipt is accepted at any amount by the
+    backend, but a card-to-card under the shop's own floor is the transfer
+    Iranian banking apps make painful, so the ask clears the floor and the
+    text promises the surplus back to the wallet — which the approval
+    literally credits. None means "the shortfall as-is" (the old shape).
     """
     head = f"🛒 {texts.gb(intent['data_limit_gb'])} — {texts.fa(intent['duration_days'])} روزه\n"
     if intent["balance"] > 0:
         head += (
             f"قیمت: {texts.money(intent['price'])}\n"
             f"از کیف پولتان کم می‌شود: {texts.money(intent['balance'])}\n"
+        )
+    if ask is not None and ask > intent["shortfall"]:
+        return head + "\n" + texts.topup_instructions_with_minimum(
+            ask, intent["shortfall"], intent["card_number"], intent.get("card_holder"),
+            intent.get("approval_eta_minutes", 30),
         )
     return head + "\n" + texts.topup_instructions(
         intent["shortfall"], intent["card_number"], intent.get("card_holder"),
@@ -568,6 +598,13 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
             context.user_data.clear()
             await _reply(update, texts.SERVICE_UNLIMITED, session)
             return
+        if getattr(exc, "status", 0) == 409 and "PAYG_TOPUP_INSTEAD" in str(exc):
+            # F3(b): their current service is METERED — the backend refuses a
+            # fixed-volume package on it (before any money moves) and wants a
+            # wallet top-up instead. A "buy the other way", not an error.
+            context.user_data.clear()
+            await _reply(update, texts.PAYG_TOPUP_INSTEAD, session)
+            return
         logger.exception("Could not create an order for %s", update.effective_user.id)
         context.user_data.clear()
         await _reply(update, texts.generic_error(_handle(session)), session)
@@ -596,10 +633,16 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
         await _reply(update, texts.NO_CARD, session)
         return
 
+    # F10: never steer a customer into a card-to-card under the shop's own
+    # minimum — ask for the floor instead and let the surplus return to the
+    # wallet (the backend accepts an order-bound receipt at any amount, and
+    # the approval credits the remainder). With min_topup at 0 ("no minimum")
+    # this is the shortfall unchanged.
+    ask = max(int(intent["shortfall"]), int(session.get("min_topup") or 0))
     context.user_data[_STATE] = _STATE_AWAITING_RECEIPT
-    context.user_data[_PENDING_AMOUNT] = intent["shortfall"]
+    context.user_data[_PENDING_AMOUNT] = ask
     await update.effective_message.reply_text(
-        _payment_request_text(intent),
+        _payment_request_text(intent, ask),
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton(texts.CANCEL)]], resize_keyboard=True),
     )
@@ -620,8 +663,15 @@ async def _confirm_wallet_purchase(update: Update, context: ContextTypes.DEFAULT
     try:
         await backend.post(f"/api/shop/bot/orders/{order_id}/pay",
                            json={"telegram_id": update.effective_user.id}, timeout=120)
-    except ShopApiError:
+    except ShopApiError as exc:
         logger.exception("Wallet purchase failed for order %s", order_id)
+        if getattr(exc, "status", 0) == 502:
+            # F12: the backend refunds the wallet BEFORE answering 502 (the
+            # account build failed). The generic "کاری انجام نشد" would leave
+            # someone who just saw a wallet debit assuming the money is gone;
+            # this text answers the question they actually hold.
+            await _reply(update, texts.PURCHASE_FAILED_REFUNDED, session)
+            return
         await _reply(update, texts.generic_error(_handle(session)), session)
         return
     # Delivery is pushed by the backend — the same path an approved card
@@ -867,7 +917,7 @@ async def show_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             # detaches from its digits and can render on the wrong side, which
             # on a money line is a support message. The English enum used as a
             # fallback label leaked through here too.
-            label = _WALLET_LABELS.get(entry.get("type"), "تراکنش")
+            label = _wallet_label(entry)
             lines.append(f"{label}: {texts.money(abs(entry['amount']))}")
     await _reply(update, "\n".join(lines), session)
 
@@ -896,7 +946,11 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             # Rounded UP: .days truncates, so a service with ten hours left
             # came out as 0 and was shown to its owner as finished.
             days_left = -(-int(seconds) // 86400) if seconds > 0 else 0
-        lines = [texts.account_line(limit_gb, used_gb, days_left)]
+        # F11: the backend's row carries the account's live status — a
+        # suspended service must say so instead of rendering as "active, X GB
+        # left" that secretly connects to nothing. Passing it changes nothing
+        # for active/limited/expired rows (see account_line's default).
+        lines = [texts.account_line(limit_gb, used_gb, days_left, status=row.get("status"))]
         keyboard = None
         if row["subscription_url"]:
             # An inline URL BUTTON, not the raw link: subscription URLs churn

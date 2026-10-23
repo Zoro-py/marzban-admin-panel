@@ -16,7 +16,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters  # noqa: E402
 from telegram.request import HTTPXRequest  # noqa: E402
 
-from handlers.account import delete_account_callback, delete_account_command, extend_command  # noqa: E402
+from handlers.account import delete_account_callback, delete_account_command, extend_callback, extend_command  # noqa: E402
 from handlers.backup import backup_command  # noqa: E402
 from handlers.bill import bill_callback, bill_command  # noqa: E402
 from handlers.bulk import bulk_callback, bulk_command  # noqa: E402
@@ -102,6 +102,9 @@ def main() -> None:
     app.add_handler(CommandHandler("charge", charge_command))
     app.add_handler(CommandHandler("credit", credit_command))
     app.add_handler(CommandHandler("extend", extend_command))
+    # F13: /extend's own Confirm/Cancel buttons — pattern-scoped like every
+    # other CallbackQueryHandler here so it only ever sees its own buttons.
+    app.add_handler(CallbackQueryHandler(extend_callback, pattern=r"^extend:"))
     app.add_handler(CommandHandler("delete_account", delete_account_command))
     app.add_handler(CallbackQueryHandler(delete_account_callback, pattern=r"^delacc:"))
     app.add_handler(CommandHandler("bulk", bulk_command))
