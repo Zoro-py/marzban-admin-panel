@@ -1,11 +1,18 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* Self-hosted (no external CDN call, no CSP/privacy concerns). */
+/* Self-hosted (no external CDN call, no CSP/privacy concerns). Vazirmatn
+   carries Persian glyphs (the panel shows Persian customer names, notes and
+   refusals everywhere); Inter has none, so without it Persian fell back to a
+   system font and looked like a different product inside its own panel. */
 @import "@fontsource/inter/400.css";
 @import "@fontsource/inter/500.css";
 @import "@fontsource/inter/600.css";
 @import "@fontsource/inter/700.css";
+@import "@fontsource/vazirmatn/400.css";
+@import "@fontsource/vazirmatn/500.css";
+@import "@fontsource/vazirmatn/600.css";
+@import "@fontsource/vazirmatn/700.css";
 @import "@fontsource/jetbrains-mono/400.css";
 @import "@fontsource/jetbrains-mono/500.css";
 
@@ -14,27 +21,38 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ============================================================================
-   DESIGN TOKENS — "console" system
+   DESIGN TOKENS — "midnight ledger" system (2026-10-23 theme rebuild)
    ----------------------------------------------------------------------------
-   One visual language for the whole app:
+   One visual language for the whole app, and now one BRAND with the customer
+   side: the subscription page lives in deep indigo, so the console that runs
+   it does too. What changed vs the old gray-console theme is the SURFACE
+   story and the type; what deliberately did NOT change is the semantics.
 
-   TYPE     13px UI base, 12px secondary, mono for identifiers & all figures.
-   DENSITY  36px table rows, 32px controls, 20px page gutter.
-   SURFACES background < card < popover; hairline borders, shadows only on
-            overlays (popover/dialog/panel) — never on in-flow cards.
+   TYPE     Latin stays Inter; Persian now renders in Vazirmatn (right after
+            Inter in the stack — the browser picks the first font that has
+            the glyphs). 13px UI base, 12px secondary, mono for identifiers
+            & all figures. Vazirmatn gets a slightly larger optical size for
+            Persian via .fa text runs? No — one size, no per-script fiddling:
+            Vazirmatn was designed for UI text at small sizes.
+   DENSITY  unchanged: 36px table rows, 32px controls, 20px page gutter.
+   SURFACES background < card < popover with a WIDER luminance spread than
+            the old theme (cards visibly float), hairline borders, shadows
+            only on overlays — never on in-flow cards.
    COLOR    neutrals carry the layout; saturated color is reserved for MEANING:
-              danger  (red)    debt, expired, exhausted
-              warning (amber)  expiring soon, near quota, pending/unsettled, due
-              success (green)  active, healthy, all-clear
-              credit  (violet) credit balances — money owed BACK to a customer;
-                               deliberately not green (it's not "good", it's a
-                               liability) and not red (it's not their debt)
+              danger  (red)         debt, expired, exhausted
+              warning (gold)        expiring soon, near quota, pending, due —
+                                    the same gold family as the brand mark
+              success (green)       active, healthy, all-clear
+              credit  (violet)      credit balances — money owed BACK to a
+                                    customer; deliberately not green (it's
+                                    not "good", it's a liability) and not
+                                    red (it's not their debt)
    MONEY    always plain tabular-nums text, colored by sign — never inside a
             filled badge. Badges are for state words, not amounts.
    ========================================================================== */
 
 @theme {
-  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-sans: 'Inter', 'Vazirmatn', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace;
 
   --color-border: hsl(var(--border));
@@ -74,71 +92,76 @@
 }
 
 :root {
-  --background: 220 14% 96.5%;
-  --foreground: 228 14% 13%;
+  /* Light: cool paper, not blue-gray mud. Elevated white cards, hairlines
+     you can actually see on a laptop in daylight. */
+  --background: 222 22% 97.3%;
+  --foreground: 232 22% 13%;
 
   --card: 0 0% 100%;
-  --card-foreground: 228 14% 13%;
+  --card-foreground: 232 22% 13%;
   --popover: 0 0% 100%;
-  --popover-foreground: 228 14% 13%;
+  --popover-foreground: 232 22% 13%;
 
-  --primary: 243 62% 55%;
+  --primary: 245 63% 52%;
   --primary-foreground: 0 0% 100%;
-  --secondary: 220 12% 93%;
-  --secondary-foreground: 228 12% 20%;
+  --secondary: 224 16% 93.5%;
+  --secondary-foreground: 232 16% 22%;
 
-  --muted: 220 12% 93.5%;
-  --muted-foreground: 225 8% 44%;
-  --accent: 220 12% 92%;
-  --accent-foreground: 228 12% 16%;
+  --muted: 224 15% 94%;
+  --muted-foreground: 227 10% 42%;
+  --accent: 226 30% 94%;
+  --accent-foreground: 232 22% 16%;
 
-  --destructive: 0 68% 46%;
+  --destructive: 0 70% 46%;
   --destructive-foreground: 0 0% 100%;
-  --success: 152 58% 32%;
+  --success: 152 60% 31%;
   --success-foreground: 0 0% 100%;
-  --warning: 30 90% 40%;
+  --warning: 35 94% 40%;
   --warning-foreground: 0 0% 100%;
-  --credit: 262 60% 50%;
+  --credit: 262 62% 50%;
   --credit-foreground: 0 0% 100%;
 
-  --border: 220 12% 88%;
-  --input: 220 12% 85%;
-  --ring: 243 62% 55%;
+  --border: 226 14% 89.5%;
+  --input: 226 14% 86%;
+  --ring: 245 63% 52%;
 
-  --radius: 8px;
+  --radius: 10px;
 }
 
 .dark {
-  --background: 228 15% 6.5%;
-  --foreground: 222 14% 92%;
+  /* Dark: ZORO's deep indigo night. The three surfaces now step far enough
+     apart that a card reads as a card without any shadow, and the border
+     sits just above the card so panels stay crisp on OLED-ish screens. */
+  --background: 236 21% 6.5%;
+  --foreground: 228 22% 93%;
 
-  --card: 228 13% 9.5%;
-  --card-foreground: 222 14% 92%;
-  --popover: 228 13% 11%;
-  --popover-foreground: 222 14% 92%;
+  --card: 236 18% 10%;
+  --card-foreground: 228 22% 93%;
+  --popover: 236 19% 12.5%;
+  --popover-foreground: 228 22% 93%;
 
-  --primary: 240 78% 71%;
-  --primary-foreground: 228 15% 8%;
-  --secondary: 228 11% 16%;
-  --secondary-foreground: 222 14% 92%;
+  --primary: 245 88% 73%;
+  --primary-foreground: 236 30% 9%;
+  --secondary: 236 14% 17%;
+  --secondary-foreground: 228 16% 90%;
 
-  --muted: 228 11% 14.5%;
-  --muted-foreground: 226 9% 60%;
-  --accent: 228 11% 17%;
-  --accent-foreground: 222 14% 92%;
+  --muted: 236 13% 15%;
+  --muted-foreground: 229 11% 62%;
+  --accent: 243 30% 19%;
+  --accent-foreground: 228 22% 94%;
 
-  --destructive: 0 74% 64%;
-  --destructive-foreground: 228 15% 8%;
-  --success: 152 48% 52%;
-  --success-foreground: 228 15% 8%;
-  --warning: 36 90% 58%;
-  --warning-foreground: 228 15% 8%;
-  --credit: 262 78% 72%;
-  --credit-foreground: 228 15% 8%;
+  --destructive: 0 74% 65%;
+  --destructive-foreground: 236 25% 9%;
+  --success: 152 50% 54%;
+  --success-foreground: 236 25% 9%;
+  --warning: 39 92% 61%;
+  --warning-foreground: 236 25% 9%;
+  --credit: 262 82% 74%;
+  --credit-foreground: 236 25% 9%;
 
-  --border: 228 10% 17.5%;
-  --input: 228 10% 22%;
-  --ring: 240 78% 71%;
+  --border: 235 13% 19%;
+  --input: 235 13% 23%;
+  --ring: 245 88% 73%;
 }
 
 * {
@@ -157,12 +180,20 @@ body {
   /* 13px base: ops-tool density. Page titles scale UP from here — body copy
      doesn't scale down from a roomy default. */
   font-size: 0.8125rem;
-  line-height: 1.5;
+  line-height: 1.55;
   letter-spacing: -0.004em;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   font-feature-settings: 'cv11', 'ss01', 'tnum' 1;
+}
+
+/* Persian runs (customer names, Persian notes/refusals) get Vazirmatn's
+   metrics via the stack above; the only per-script rule worth enforcing is
+   line-height headroom, which Persian descenders need more of. */
+:lang(fa),
+[dir='rtl'] {
+  line-height: 1.7;
 }
 
 h1, h2, h3, h4 {
@@ -182,12 +213,20 @@ h1, h2, h3, h4 {
 }
 
 ::selection {
-  background: hsl(var(--primary) / 0.22);
+  background: hsl(var(--primary) / 0.25);
 }
 
 * {
   scrollbar-width: thin;
   scrollbar-color: hsl(var(--muted-foreground) / 0.28) transparent;
+}
+
+/* Keyboard focus must be findable at a glance on every surface — the ring
+   sits OUTSIDE the control so it survives filled badges and table rows. */
+:focus-visible {
+  outline: 2px solid hsl(var(--ring) / 0.85);
+  outline-offset: 1.5px;
+  border-radius: 3px;
 }
 
 /* Account inspector slide-in (right edge). */
