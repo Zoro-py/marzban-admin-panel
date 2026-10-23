@@ -316,6 +316,9 @@ function ShopUsers() {
       setAdjusting((a) => ({ ...a, [user.id]: '' }))
       queryClient.invalidateQueries({ queryKey: ['shop'] })
     },
+    // A silent failure here reads as a correction that happened — the
+    // operator walks away believing a stranger's balance was fixed.
+    onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
   if (usersQuery.isLoading) return <Skeleton className="h-40 w-full" />
@@ -541,6 +544,10 @@ function ShopSettingsForm() {
       toast.success('Shop settings saved')
       queryClient.invalidateQueries({ queryKey: ['shop'] })
     },
+    // A refused save (F4: a zero payg rate with live metered accounts, min >
+    // max, …) must be said out loud — a silent one leaves the operator
+    // believing the shop is running on numbers it never accepted.
+    onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
   if (settingsQuery.isLoading) return <Skeleton className="h-64 w-full" />
