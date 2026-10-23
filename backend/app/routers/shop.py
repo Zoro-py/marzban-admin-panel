@@ -113,6 +113,7 @@ from app.shop_service import (
     post_wallet_entry,
     purchase,
     quote_price,
+    reactivate_suspended_payg_accounts,
     refuse_unlimited_renewal,
     reject_topup,
     revoke_provisional,
@@ -204,6 +205,29 @@ def update_settings(body: ShopSettingsUpdate, session: Session = Depends(get_ses
     merged_payg_rate = updates.get("payg_rate_per_gb", settings.payg_rate_per_gb)
     if merged_payg_on and not (merged_payg_rate and merged_payg_rate > 0):
         raise HTTPException(400, "Set a payg rate per GB before enabling pay-as-you-go")
+
+    # F4: zeroing the RATE is refused while any live retail-payg account
+    # exists — REGARDLESS of payg_enabled in this same request, because the
+    # daily meter (shop_service._sweep_payg_accounts) runs on billing_mode,
+    # not on the offer switch: turning the offer off is legal, but those
+    # accounts keep being metered, and with a None/0 rate their charge
+    # computes to zero — the meter silently stops and nobody is told.
+    # (payg_enabled=false alone, leaving the rate as-is, is NOT blocked here.)
+    if not (merged_payg_rate and merged_payg_rate > 0):
+        live_retail_payg = session.exec(
+            select(Account.id).where(
+                Account.billing_mode == BillingMode.payg,
+                Account.customer_id.is_(None),
+                Account.status != "deleted_from_marzban",
+            )
+        ).all()
+        if live_retail_payg:
+            raise HTTPException(
+                400,
+                f"payg_rate_per_gb cannot be cleared while {len(live_retail_payg)} live pay-as-you-go "
+                "account(s) are still metered daily — they need a rate. Suspend or remove those "
+                "accounts first, or keep a rate set.",
+            )
 
     merged_min = updates.get("min_gb", settings.min_gb)
     merged_max = updates.get("max_gb", settings.max_gb)
@@ -380,6 +404,25 @@ async def approve_topup_endpoint(
                 )
         except Exception:
             logger.exception("Top-up #%s approved but the customer could not be notified", topup.id)
+
+    # F7: this approval just funded the wallet, which is exactly the moment a
+    # payg service the meter suspended comes back — "top up and you're back"
+    # must not wait for tomorrow's daily meter. Strictly after the credit
+    # committed (inside approve_topup), and best-effort: the money part of the
+    # approval is done, so a reactivation failure must not fail the request —
+    # the helper logs and tells the operator instead.
+    if user is not None:
+        try:
+            await reactivate_suspended_payg_accounts(session)
+        except Exception:
+            logger.exception("Top-up #%s approved but payg reactivation failed", topup.id)
+
+    # The reactivation pass commits (the account flip), and a commit expires
+    # every instance in the session's identity map — including this topup.
+    # model_dump() on an expired SQLModel table row returns {} (fields live in
+    # __dict__ until reloaded), which used to 500 the approval AFTER the money
+    # had credited. Re-select before serialising.
+    session.refresh(topup)
 
     return ShopTopupRead(**topup.model_dump(), telegram_id=user.telegram_id if user else None,
                          display_name=user.display_name if user else None)
@@ -753,9 +796,13 @@ async def bot_purchase(body: ShopBotPurchaseRequest, session: Session = Depends(
         order = await purchase(session, user, body.data_limit_gb)
     except ShopError as exc:
         # A 400 with the user-facing sentence, which the bot shows verbatim.
-        # The unlimited refusal rides 409 with its stable prefix — shopbot
-        # maps that to the Persian explanation instead of raw English.
-        raise HTTPException(409 if str(exc).startswith("SERVICE_IS_UNLIMITED") else 400, str(exc))
+        # The unlimited refusal AND the payg refusal (F3b) ride 409 with
+        # their stable prefixes — shopbot maps each to its own Persian
+        # explanation instead of raw English.
+        raise HTTPException(
+            409 if str(exc).startswith(("SERVICE_IS_UNLIMITED", "PAYG_TOPUP_INSTEAD")) else 400,
+            str(exc),
+        )
 
     subscription_url = None
     if order.account_id is not None:
@@ -866,7 +913,10 @@ def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depends(ge
     try:
         order = create_awaiting_order(session, user, body.data_limit_gb, force_new_service=body.force_new_service)
     except ShopError as exc:
-        raise HTTPException(409 if str(exc).startswith("SERVICE_IS_UNLIMITED") else 400, str(exc))
+        raise HTTPException(
+            409 if str(exc).startswith(("SERVICE_IS_UNLIMITED", "PAYG_TOPUP_INSTEAD")) else 400,
+            str(exc),
+        )
 
     balance = wallet_balance(session, user.id)
     settings = get_shop_settings(session)

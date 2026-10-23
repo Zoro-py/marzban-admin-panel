@@ -541,6 +541,35 @@ def refund_order(session: Session, order: ShopOrder, *, reason: str) -> None:
     session.commit()
 
 
+async def _push_sweep_notice(session: Session, order: ShopOrder, text: str, *, what: str) -> None:
+    """Best-effort customer push for an order the stuck-order sweep settled
+    (F1). The sweep runs with no live conversation to reply into, so the
+    customer otherwise simply never hears that their money came back — the
+    exact silence that reads as theft from where they sit.
+
+    A Telegram failure must not undo the settlement (the refund already
+    happened), so this swallows the send failure — but tells the operator,
+    naming the customer and the order, so the link/refund notice can be sent
+    by hand. Returns nothing; every failure is logged."""
+    from app.notify import notify_admin, send_to_shop_user
+
+    user = session.get(ShopUser, order.shop_user_id)
+    if user is None:
+        logger.error("Order #%s: no shop user to tell about the %s", order.id, what)
+        return
+    try:
+        await send_to_shop_user(user.telegram_id, text)
+    except Exception:
+        logger.exception("Order #%s: the %s notice could not be sent", order.id, what)
+        try:
+            await notify_admin(
+                f"⚠️ سفارش #{order.id} ({what}) برای مشتری «{user.display_name or user.telegram_username or user.telegram_id}» "
+                f"تسویه شد ولی پیامش ارسال نشد — لطفاً دستی خبرش کنید."
+            )
+        except Exception:
+            logger.exception("Order #%s: could not alert the operator about the unsent %s notice", order.id, what)
+
+
 async def sweep_stuck_orders(session: Session) -> list[ShopOrder]:
     """Resolves orders that took the money and never reached a terminal state.
 
@@ -556,6 +585,21 @@ async def sweep_stuck_orders(session: Session) -> list[ShopOrder]:
     purchase()'s ordering was chosen to prevent. An order whose account does
     exist is delivered late instead; only the ones the panel has never heard
     of are refunded.
+
+    Since F1 the sweep also SPEAKS: a late delivery re-uses
+    deliver_order_to_customer — the exact push the operator-approve path sends
+    — and a refund pushes shop_texts.order_refunded. Both best-effort with an
+    operator fallback (see _push_sweep_notice).
+
+    IDEMPOTENCY OF THE PUSHES: no extra marker is needed — every branch here
+    ends at a status transition committed in this same session (`delivered`
+    via _record_delivered/_mark_delivered_untracked/_record_extended, `failed`
+    via refund_order), and the query above only selects `provisioning`. A
+    swept order has left the sweep's class by the time the push fires, so a
+    re-run can never visit it again and never double-sends. Verified against
+    _record_delivered/_record_extended: the only paths that leave the order
+    in `provisioning` are ones that re-raise (rolled back), which abort the
+    sweep tick itself.
 
     Async for that reason alone: the Marzban lookup is the whole point.
     """
@@ -585,16 +629,35 @@ async def sweep_stuck_orders(session: Session) -> list[ShopOrder]:
                 _record_delivered(session, order, username, created)
             except Exception:
                 session.rollback()
-                logger.exception("Shop order #%s: could not record the late delivery", order.id)
+                logger.exception("Order #%s: could not record the late delivery", order.id)
                 _mark_delivered_untracked(session, order, username, "recovered by the stuck-order sweep")
+            else:
+                # F1: the customer has been holding a paid service they were
+                # never told about. Same push the approve path sends.
+                if not await deliver_order_to_customer(session, order):
+                    await _push_sweep_notice(
+                        session, order,
+                        "سرویستان ساخته شده ولی ارسال خودکار لینکش ناموفق بود — پیام بدهید تا دوباره بفرستیم.",
+                        what="late delivery",
+                    )
         else:
             logger.warning("Shop order #%s stuck since %s with no account in Marzban — refunding",
                            order.id, order.created_at)
-            refund_order(
-                session,
-                order,
-                reason="Provisioning never completed (server restarted?) — refunded automatically",
+            refund_reason = (
+                "Provisioning never completed (server restarted?) — refunded automatically"
             )
+            refund_order(session, order, reason=refund_reason)
+            session.refresh(order)
+            if order.status == ShopOrderStatus.failed:
+                # F1: refund_order is idempotent and can refuse (a racing path
+                # settled the order first) — only speak when THIS call actually
+                # refunded, so a customer is never told "money back" twice.
+                from app import shop_texts
+                await _push_sweep_notice(
+                    session, order,
+                    shop_texts.order_refunded(order.price, refund_reason, settings.support_handle),
+                    what="refund",
+                )
         resolved.append(order)
     return resolved
 
@@ -635,18 +698,26 @@ def create_topup(
 
     `order_id` binds the payment to a plan the customer already chose. That is
     what makes the flow one motion instead of two: approving such a top-up
-    credits the wallet AND delivers the plan, so the customer never has to come
-    back and buy a second time. The old shape — top up, wait, return, buy —
+    credits the wallet AND delivers the plan, so the customer never has to
+    come back and buy a second time. The old shape — top up, wait, return, buy —
     lost people at the "return" step, who reasonably believed that sending the
     receipt WAS the purchase.
+
+    F10: `min_topup` applies ONLY to a plain wallet top-up (order_id None).
+    An order-bound receipt is an exact-amount payment for a real order — the
+    bot asks for the shortfall (floored at min_topup), and enforcing the
+    minimum here too produced a doom loop: the bot asked for e.g. 12,000
+    against a 10,000 minimum, the customer sent 12,000, and the backend
+    refused it. `max_topup` still caps both kinds — it is the anti-fat-finger
+    ceiling, not a floor.
     """
     settings = get_shop_settings(session)
     if shop_user.is_blocked:
         raise ShopError("This account can't top up. Contact support.")
-    if claimed_amount < settings.min_topup:
-        raise ShopError(f"The smallest top-up is {settings.min_topup:,} T.")
     if claimed_amount > settings.max_topup:
         raise ShopError(f"The largest top-up is {settings.max_topup:,} T.")
+    if order_id is None and claimed_amount < settings.min_topup:
+        raise ShopError(f"The smallest top-up is {settings.min_topup:,} T.")
 
     if order_id is not None:
         order = session.get(ShopOrder, order_id)
@@ -883,7 +954,17 @@ async def deliver_order_to_customer(session: Session, order: ShopOrder) -> bool:
     account = session.get(Account, order.account_id) if order.account_id else None
     url = resolve_subscription_url(account.subscription_url) if account else None
     settings = get_shop_settings(session)
-    is_trial = order.price == 0
+    # F2: a retail payg start order is price==0 but is NOT a free trial — its
+    # account row exists and bills daily from the wallet, so promising
+    # "رایگان است و چیزی از شما کم نشد" on it was a lie the first meter tick
+    # corrected expensively. Keyed on the account row (not the order), so a
+    # LEGACY price-0 order with no payg account keeps the trial caption.
+    is_payg_start = (
+        account is not None
+        and account.billing_mode == BillingMode.payg
+        and account.customer_id is None
+    )
+    is_trial = order.price == 0 and not is_payg_start
 
     if order.extends_account_id is not None and account is not None:
         # Renewed in place: the customer already holds this link, so the
@@ -922,15 +1003,19 @@ async def deliver_order_to_customer(session: Session, order: ShopOrder) -> bool:
 
     delivered = False
     try:
-        await send_photo_to_shop_user(
-            user.telegram_id,
-            subscription_qr_png(url),
-            shop_texts.delivery_caption(
+        if is_payg_start:
+            caption = shop_texts.delivery_caption_payg()
+        else:
+            caption = shop_texts.delivery_caption(
                 order.data_limit_gb, order.duration_days,
                 is_trial=is_trial and not order.is_provisional,
                 is_provisional=order.is_provisional,
                 hours=settings.provisional_hours,
-            ),
+            )
+        await send_photo_to_shop_user(
+            user.telegram_id,
+            subscription_qr_png(url),
+            caption,
             filename=f"{order.marzban_username or order.id}.png",
         )
         delivered = True
@@ -1456,8 +1541,19 @@ def is_existing_customer(session: Session, shop_user_id: int) -> bool:
 
 
 def refuse_unlimited_renewal(session: Session, shop_user_id: int, *, force_new_service: bool = False) -> None:
-    """Raises ShopError (stable prefix "SERVICE_IS_UNLIMITED") when the
-    account this customer's next purchase would extend has NO data cap.
+    """Raises ShopError with a stable prefix when the account this customer's
+    next purchase would extend cannot take a volume purchase:
+
+      * "PAYG_TOPUP_INSTEAD" (F3b) — its effective billing mode is payg
+        (services.effective_billing_mode, so both retail customer_id-NULL
+        accounts and any payg-effective linked account): a package buy would
+        extend a metered service; the wallet top-up is the right move instead.
+        Checked FIRST, because a payg account's Marzban cap is 0, which the
+        unlimited guard below would otherwise misreport as "unlimited".
+      * "SERVICE_IS_UNLIMITED" — it has no data cap. Falsy (None OR 0), not
+        just None: 0 is how Marzban itself writes "unlimited", and an
+        is-None-only check here is what let a 0-capped account be "extended"
+        into a 30 GB plan (F3a, same live incident as _extend_order's guard).
 
     Called before money moves — from purchase() ahead of the wallet debit,
     and from the /quote and /orders endpoints so the confirm screen never
@@ -1467,12 +1563,22 @@ def refuse_unlimited_renewal(session: Session, shop_user_id: int, *, force_new_s
     capped the account after this mirror last synced.
 
     force_new_service skips this entirely: that purchase won't extend the
-    existing (possibly unlimited) account at all, so its cap is irrelevant.
+    existing (possibly unlimited/payg) account at all, so its cap is
+    irrelevant.
     """
     if force_new_service:
         return
     existing = renewable_account(session, shop_user_id)
-    if existing is not None and existing.data_limit is None:
+    if existing is None:
+        return
+    if effective_billing_mode(session, existing) == BillingMode.payg:
+        raise ShopError(
+            "PAYG_TOPUP_INSTEAD: this customer's current service is metered pay-as-you-go — "
+            "a package purchase cannot be added to it; top up the wallet instead"
+        )
+    if not existing.data_limit:
+        # None OR 0 — 0 is how Marzban writes "unlimited" (F3a: treat falsy
+        # as unlimited, exactly like _extend_order's live guard below).
         raise ShopError(
             "SERVICE_IS_UNLIMITED: this customer's current service is unlimited — "
             "a volume purchase cannot be added to it"
@@ -1589,14 +1695,16 @@ async def _extend_order(session: Session, order: ShopOrder, account: Account) ->
             return False
 
         limit = current.get("data_limit")
-        if limit is None:
+        if not limit:
             # Defence in depth behind purchase()'s guard: the LIVE panel is
             # the truth, and an unlimited service cannot take a volume
             # top-up — any limit we wrote here would CAP it (live 2026-10-01:
             # an unlimited account came out of a +30 GB purchase as a
-            # used+30 GB plan). The wallet has already moved, so this is a
-            # full refund with a plain-language reason; the customer hears
-            # the Persian wording via the shop's refund notice.
+            # used+30 GB plan). F3a: falsy (None OR 0), not just None — 0 is
+            # how Marzban itself writes "unlimited". The wallet has already
+            # moved, so this is a full refund with a plain-language reason;
+            # the customer hears the Persian wording via the shop's refund
+            # notice.
             refund_order(session, order,
                          reason="The current service is unlimited — a volume top-up cannot be added to it")
             return True
@@ -1883,6 +1991,35 @@ async def start_payg_service(session: Session, shop_user: ShopUser) -> ShopOrder
     if shop_user.is_blocked:
         raise ShopError("This account can't make purchases. Contact support.")
     if renewable_account(session, shop_user.id) is not None:
+        # Still guards the ACTIVE case of either kind (a prepay service can't
+        # have a meter started alongside it either — see the docstring).
+        raise ShopError("ALREADY_HAS_SERVICE: you already have an active service")
+    # F5: renewable_account() skips disabled accounts, which made suspension
+    # a loophole — the meter auto-suspends an empty-wallet payg service, and
+    # the customer could then mint a SECOND service instead of topping up,
+    # leaving two meters running on one relationship with the shop. So: any
+    # non-deleted payg-mode account of theirs blocks, ANY status (disabled,
+    # auto_suspended, limited, expired). The link is order.account_id — the
+    # real one written by _record_delivered/start_payg_service — and only a
+    # DELIVERED order proves a service was actually handed over: orders still
+    # awaiting payment, failed or stuck in provisioning do NOT block (an
+    # abandoned checkout must not lock the customer out). deleted_from_marzban
+    # is excluded: that service no longer exists anywhere, and blocking a new
+    # start on it would lock the customer out with no path back.
+    held_payg = session.exec(
+        select(Account)
+        .select_from(ShopOrder)
+        .join(Account, Account.id == ShopOrder.account_id)
+        .where(
+            ShopOrder.shop_user_id == shop_user.id,
+            ShopOrder.status == ShopOrderStatus.delivered,
+            Account.billing_mode == BillingMode.payg,
+            Account.customer_id.is_(None),
+            Account.deleted_at.is_(None),
+            Account.status != "deleted_from_marzban",
+        )
+    ).first()
+    if held_payg is not None:
         raise ShopError("ALREADY_HAS_SERVICE: you already have an active service")
 
     from app.config import settings as app_settings
@@ -1955,9 +2092,13 @@ async def _sweep_payg_accounts(session: Session) -> dict:
     """Runs once a day (see main.py's scheduler): bills every retail payg
     account for what it used since the last tick, debits the wallet even
     past zero for that ONE tick's charge, and immediately suspends if that
-    leaves the balance negative — no grace, reactivating the moment a
-    top-up clears it. B2B payg (groups/representatives) is untouched; this
-    only ever looks at accounts with no customer_id, i.e. shop-only."""
+    leaves the balance negative — no grace. Reactivation used to wait for
+    the NEXT daily tick; since F7 the 15-minute pass
+    (reactivate_suspended_payg_accounts, wired in main.py) and the
+    topup-approve endpoint call the same reactivate_payg_if_funded helper,
+    so "top up and you're back" is measured in minutes. B2B payg
+    (groups/representatives) is untouched; this only ever looks at accounts
+    with no customer_id, i.e. shop-only."""
     from app import shop_texts
     from app.notify import send_to_shop_user
 
@@ -1990,9 +2131,20 @@ async def _sweep_payg_accounts(session: Session) -> dict:
         amount = int(-(-billable_gb * rate // 1)) if rate else 0  # ceil, same convention as quote_price
 
         if amount > 0:
+            # F6: the wallet entry and the baseline roll commit TOGETHER, via
+            # post_wallet_entry's existing commit=False — the exact pattern
+            # purchase() uses so an order and its debit can never exist
+            # without each other. Before this, a crash between the entry's
+            # own commit and the baseline roll charged the customer for a
+            # slice the NEXT tick would bill a second time (the meter had
+            # not moved). No caller here relied on the intermediate commit:
+            # everything after (wallet_balance, suspension, warnings) runs
+            # in this same session and sees the uncommitted writes.
             post_wallet_entry(
                 session, user.id, entry_type=ShopWalletEntryType.purchase,
-                amount=-amount, note=f"Payg meter: {billable_gb:.3f} GB", order_id=owning_order.id,
+                amount=-amount, note=f"بیل مصرف روزانه: {billable_gb:.3f} GB",
+                order_id=None,
+                commit=False,
             )
             account.usage_baseline = account.used_traffic
             account.usage_baseline_at = now
@@ -2021,21 +2173,7 @@ async def _sweep_payg_accounts(session: Session) -> dict:
                 result["suspended"] += 1
             continue
 
-        if account.auto_suspended:
-            try:
-                await marzban_client.modify_user(account.marzban_username, {"status": "active"})
-            except Exception:
-                logger.exception("Could not re-enable payg account %s", account.marzban_username)
-                continue
-            account.status = "active"
-            account.auto_suspended = False
-            account.payg_low_balance_warned_at = None
-            session.add(account)
-            session.commit()
-            try:
-                await send_to_shop_user(user.telegram_id, shop_texts.payg_reactivated())
-            except Exception:
-                logger.exception("Could not tell %s their payg service is back", user.telegram_id)
+        if await reactivate_payg_if_funded(session, account, user):
             result["reactivated"] += 1
             continue
 
@@ -2056,6 +2194,81 @@ async def _sweep_payg_accounts(session: Session) -> dict:
             session.commit()
 
     return result
+
+
+async def reactivate_payg_if_funded(session: Session, account: Account, user: ShopUser) -> bool:
+    """F7: re-enables a payg account the meter auto-suspended, the moment its
+    wallet is back to >= 0. The single reusable body behind all three
+    triggers (the daily meter, the 15-minute pass, the topup-approve path) —
+    keeping the promise the suspension message makes: «به محض شارژ کیف پول،
+    خودش دوباره فعال می‌شود».
+
+    Guarded by `account.auto_suspended and wallet_balance >= 0` so it can
+    never double-enable (the flag is only cleared here, after Marzban
+    confirmed) and never enable an account whose wallet is still negative.
+    Returns whether it reactivated. A Marzban enable failure is logged AND
+    reported to the operator — the customer was promised an automatic return,
+    so a failed promise is the operator's to fix by hand."""
+    from app.notify import notify_admin, send_to_shop_user
+
+    if not account.auto_suspended:
+        return False
+    if wallet_balance(session, user.id) < 0:
+        return False
+    try:
+        await marzban_client.modify_user(account.marzban_username, {"status": "active"})
+    except Exception:
+        logger.exception("Could not re-enable payg account %s", account.marzban_username)
+        try:
+            await notify_admin(
+                f"⚠️ کیف پول مشتری «{user.display_name or user.telegram_id}» شارژ شد ولی فعال‌سازی دوبارهٔ "
+                f"سرویس مصرفی‌اش ({account.marzban_username}) ناموفق بود — دستی فعالش کنید."
+            )
+        except Exception:
+            logger.exception("Could not alert the operator about the failed payg reactivation of %s",
+                             account.marzban_username)
+        return False
+    account.status = "active"
+    account.auto_suspended = False
+    account.payg_low_balance_warned_at = None
+    session.add(account)
+    session.commit()
+    try:
+        await send_to_shop_user(user.telegram_id, shop_texts.payg_reactivated())
+    except Exception:
+        logger.exception("Could not tell %s their payg service is back", user.telegram_id)
+    return True
+
+
+async def reactivate_suspended_payg_accounts(session: Session) -> int:
+    """F7's 15-minute pass: runs every warning tick (main.py) over every
+    auto-suspended retail-payg account and re-enables the ones whose wallet
+    has been topped back up — so the suspension never outlasts the customer's
+    payment by a whole day. Best-effort end to end: one account's failure is
+    logged and the pass moves on; the host job never breaks."""
+    accounts = session.exec(
+        select(Account).where(
+            Account.billing_mode == BillingMode.payg,
+            Account.customer_id.is_(None),
+            Account.auto_suspended == True,  # noqa: E712 — SQL, not Python truthiness
+        )
+    ).all()
+    reactivated = 0
+    for account in accounts:
+        owning_order = session.exec(
+            select(ShopOrder).where(
+                ShopOrder.account_id == account.id,
+                ShopOrder.status == ShopOrderStatus.delivered,
+            ).order_by(ShopOrder.id.desc())
+        ).first()
+        if owning_order is None:
+            continue
+        user = session.get(ShopUser, owning_order.shop_user_id)
+        if user is None:
+            continue
+        if await reactivate_payg_if_funded(session, account, user):
+            reactivated += 1
+    return reactivated
 
 
 # ── keeping the promise about the wait ────────────────────────────────────
@@ -2081,7 +2294,10 @@ async def notify_overdue_payments(session: Session) -> int:
         select(ShopTopup).where(
             ShopTopup.status == ShopTopupStatus.pending,
             ShopTopup.overdue_notified_at.is_(None),
-            ShopTopup.receipt_file_id.is_not(None),
+            # 2026-10-23: the receipt_file_id filter is gone — a TYPED receipt
+            # (a tracking code pasted as text) is exactly as real a payment
+            # waiting on the operator as a photo, and its sender used to wait
+            # past the promise in silence.
             ShopTopup.created_at < cutoff,
         )
     ).all()
@@ -2165,7 +2381,14 @@ async def _sweep_extension(session: Session, order: ShopOrder) -> None:
     """The stuck-order sweeper's branch for renewals. Delivers if the panel
     already shows the extension, refunds otherwise — never re-applies it,
     since a second modify on top of a landed one would give the customer the
-    plan twice."""
+    plan twice.
+
+    F1: either outcome is announced to the customer — the renewal-in-place
+    notice after a landed extension (the same push the approve path sends),
+    or the refund notice after a refund — best-effort with an operator
+    fallback, exactly like the non-extension sweep branch above."""
+    from app import shop_texts
+
     account = session.get(Account, order.extends_account_id)
     if account is not None and order.target_data_limit is not None and order.target_expire is not None:
         landed = await _extension_landed(account.marzban_username, order.target_data_limit, order.target_expire)
@@ -2177,5 +2400,21 @@ async def _sweep_extension(session: Session, order: ShopOrder) -> None:
                 logger.exception("Order #%s: could not record the recovered extension", order.id)
                 _mark_delivered_untracked(session, order, account.marzban_username,
                                           "extension recovered by the stuck-order sweep")
+                return
+            if not await deliver_order_to_customer(session, order):
+                await _push_sweep_notice(
+                    session, order,
+                    "تمدیدتان انجام شده ولی ارسال خودکار پیامش ناموفق بود — پیام بدهید تا دوباره بفرستیم.",
+                    what="late renewal notice",
+                )
             return
-    refund_order(session, order, reason="Renewal never completed (server restarted?) — refunded automatically")
+    refund_reason = "Renewal never completed (server restarted?) — refunded automatically"
+    refund_order(session, order, reason=refund_reason)
+    session.refresh(order)
+    if order.status == ShopOrderStatus.failed:
+        settings = get_shop_settings(session)
+        await _push_sweep_notice(
+            session, order,
+            shop_texts.order_refunded(order.price, refund_reason, settings.support_handle),
+            what="renewal refund",
+        )

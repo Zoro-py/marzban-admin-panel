@@ -351,6 +351,15 @@ async def _maybe_settle_payg_cap_hit(session: Session, account: Account, now: da
         return
     if effective_billing_mode(session, account) != BillingMode.payg:
         return
+    if account.customer_id is None and account.group_id is None:
+        # F3c: a retail/unassigned payg account has no reseller-ledger owner —
+        # every LedgerEntry here would charge nobody (or corrupt the roll-ups
+        # it lands in). The WALLET, not the ledger, owns their money: the
+        # retail meter (shop_service._sweep_payg_accounts) bills their shop
+        # wallet daily and handles their suspension/reactivation itself.
+        # Retail payg services are created with no Marzban cap at all, so a
+        # cap-hit reset is not something they need from this job either.
+        return
     if not account.data_limit:
         # None or 0 — 0 is how Marzban writes "unlimited". Treating it as a
         # cap of zero made every unlimited payg account look permanently over

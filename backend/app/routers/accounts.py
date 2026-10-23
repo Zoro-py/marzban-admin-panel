@@ -1,9 +1,10 @@
+import asyncio
 import logging
 import time
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
@@ -41,6 +42,8 @@ from app.schemas import (
 from app.services import (
     GB,
     PAYG_DEFAULT_DATA_LIMIT_GB,
+    IdempotencyConflict,
+    IdempotencyRegistry,
     MoneyBook,
     account_posted_balance,
     attributable_consumed_gb,
@@ -777,14 +780,34 @@ async def update_billing(account_id: int, body: AccountBillingUpdate, session: S
     return account
 
 
+# F13: adjust shares the ledger POST's Idempotency-Key guarantee through the
+# ONE shared implementation (services.IdempotencyRegistry) — same key + same
+# body returns the first request's result instead of re-running the Marzban
+# modify and re-appending an AccountEvent. This endpoint is async, so its
+# registry takes an asyncio.Lock (a threading.Lock held across the awaited
+# Marzban call would deadlock against itself on the one event-loop thread).
+_adjust_idem = IdempotencyRegistry(lock=asyncio.Lock())
+
+
 @router.post("/{account_id}/adjust", response_model=AccountRead)
-async def adjust_account(account_id: int, body: AccountAdjustRequest, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
+async def adjust_account(
+    account_id: int,
+    body: AccountAdjustRequest,
+    session: Session = Depends(get_session),
+    operator: str = Depends(require_auth),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key", max_length=80),
+):
     """
     Adjust an account's data limit or expiration date.
 
     Supports extending limits/days incrementally or setting absolute values.
     Updates the remote Marzban user first, then synchronizes the local account record,
     and logs the adjustment as an account event.
+
+    An `Idempotency-Key` header (F13) makes a retry safe: the SAME key with the
+    SAME body returns the first request's result without re-running the Marzban
+    modify — a repeated /extend with a lost response can no longer apply twice
+    (same guarantee POST /api/ledger already had; shared helper, not a copy).
 
     Args:
         account_id (int): The ID of the account to adjust.
@@ -795,6 +818,7 @@ async def adjust_account(account_id: int, body: AccountAdjustRequest, session: S
         HTTPException(404): If the local account does not exist.
         HTTPException(400): If no valid operations are provided, or Marzban rejects the change.
         HTTPException(502): If Marzban is unavailable or authentication fails.
+        HTTPException(409): If the Idempotency-Key was already used with a different body.
 
     Returns:
         AccountRead: The updated account record.
@@ -828,47 +852,56 @@ async def adjust_account(account_id: int, body: AccountAdjustRequest, session: S
     if not payload:
         raise HTTPException(400, "Provide at least one of extend_days/extend_gb/set_expire/set_data_limit_gb")
 
-    try:
-        marzban_user = await marzban_client.modify_user(account.marzban_username, payload)
-    except ValueError as exc:
-        raise HTTPException(400, f"Marzban rejected this change: {exc}")
-    except (MarzbanUnavailable, MarzbanAuthError) as exc:
-        raise HTTPException(502, str(exc))
+    async def run():
+        try:
+            marzban_user = await marzban_client.modify_user(account.marzban_username, payload)
+        except ValueError as exc:
+            raise HTTPException(400, f"Marzban rejected this change: {exc}")
+        except (MarzbanUnavailable, MarzbanAuthError) as exc:
+            raise HTTPException(502, str(exc))
 
-    account.expire = marzban_user.get("expire", account.expire)
-    account.data_limit = marzban_user.get("data_limit", account.data_limit)
-    account.status = marzban_user.get("status", account.status)
-    account.last_synced_at = utcnow()
-    # MONEY-ADJ-1: a caller that has ALREADY posted a charge for the GB it is
-    # adding (bill_added_gb=True) marks that GB billed here, in the same
-    # transaction as the adjust — otherwise it stays in `pending` (data_limit
-    # - billed_data_limit) and the next prepay settle charges it a SECOND time
-    # (live: account 39, 300,000 T billed twice for one +60GB). Clamped to the
-    # new data_limit so a billed figure can never outrun the package it
-    # belongs to. No flag → unchanged: the added GB stays pending, visible,
-    # and is billed exactly once by the next settle. set_data_limit_gb is
-    # deliberately excluded (an absolute resize is not a sale — the Addendum-6
-    # manual downsize relies on it never touching billed_data_limit).
-    if body.bill_added_gb and body.extend_gb is not None and body.extend_gb > 0:
-        new_billed = (account.billed_data_limit or 0) + bytes_from_gb(body.extend_gb)
-        account.billed_data_limit = max(0, min(new_billed, account.data_limit or 0))
-    try:
-        session.add(account)
+        account.expire = marzban_user.get("expire", account.expire)
+        account.data_limit = marzban_user.get("data_limit", account.data_limit)
+        account.status = marzban_user.get("status", account.status)
+        account.last_synced_at = utcnow()
+        # MONEY-ADJ-1: a caller that has ALREADY posted a charge for the GB it is
+        # adding (bill_added_gb=True) marks that GB billed here, in the same
+        # transaction as the adjust — otherwise it stays in `pending` (data_limit
+        # - billed_data_limit) and the next prepay settle charges it a SECOND time
+        # (live: account 39, 300,000 T billed twice for one +60GB). Clamped to the
+        # new data_limit so a billed figure can never outrun the package it
+        # belongs to. No flag → unchanged: the added GB stays pending, visible,
+        # and is billed exactly once by the next settle. set_data_limit_gb is
+        # deliberately excluded (an absolute resize is not a sale — the Addendum-6
+        # manual downsize relies on it never touching billed_data_limit).
+        if body.bill_added_gb and body.extend_gb is not None and body.extend_gb > 0:
+            new_billed = (account.billed_data_limit or 0) + bytes_from_gb(body.extend_gb)
+            account.billed_data_limit = max(0, min(new_billed, account.data_limit or 0))
+        try:
+            session.add(account)
 
-        session.add(
-            AccountEvent(
-                account_id=account.id,
-                action="adjust",
-                detail=", ".join(detail_parts) + (f" | note={body.note}" if body.note else ""),
-                created_by=operator,
+            session.add(
+                AccountEvent(
+                    account_id=account.id,
+                    action="adjust",
+                    detail=", ".join(detail_parts) + (f" | note={body.note}" if body.note else ""),
+                    created_by=operator,
+                )
             )
-        )
-        session.commit()
-        session.refresh(account)
-    except Exception:
-        session.rollback()
-        raise
-    return account
+            session.commit()
+            session.refresh(account)
+        except Exception:
+            session.rollback()
+            raise
+        return account, account.id
+
+    def fetch(stored_id):
+        return session.get(Account, stored_id)
+
+    try:
+        return await _adjust_idem.run_async(idempotency_key, body.model_dump_json(), run=run, fetch=fetch)
+    except IdempotencyConflict:
+        raise HTTPException(409, "This Idempotency-Key was already used for a different request")
 
 
 @router.get("/{account_id}/events", response_model=list[AccountEventRead])

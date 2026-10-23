@@ -302,3 +302,25 @@ async def send_photo_to_shop_user(chat_id: int, photo: bytes, caption: str, *, f
         )
     if resp.status_code != 200:
         raise RuntimeError(f"Telegram rejected the customer photo ({resp.status_code}): {resp.text}")
+
+
+async def send_to_delegate(chat_id: int, text: str) -> None:
+    """Message a DELEGATE directly from the backend, using the delegate bot's
+    own token (F15) — the push counterpart of send_to_shop_user above, for
+    the one scheduled pass that tells a delegate their account is nearing its
+    end. The delegate had no open request to reply into, and delegate_bot is
+    a separate process the backend does not route through — the exact
+    reasoning that gave the shop bot its token.
+
+    Same raise-on-failure contract as every send here: the caller (the
+    warning pass) catches and logs, and only records a warning that actually
+    delivered."""
+    if not settings.delegate_bot_token:
+        raise RuntimeError("DELEGATE_BOT_TOKEN not set — nowhere to send this delegate message")
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(
+            f"https://api.telegram.org/bot{settings.delegate_bot_token}/sendMessage",
+            data={"chat_id": chat_id, "text": text},
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"Telegram rejected the delegate message ({resp.status_code}): {resp.text}")

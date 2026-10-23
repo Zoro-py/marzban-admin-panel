@@ -18,6 +18,7 @@ drawing a chart that implies data which isn't there.
 from __future__ import annotations
 
 import base64
+import hmac
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -58,7 +59,12 @@ def _verify_token(con: sqlite3.Connection, token: str) -> str:
     # sha256 digest, base64url-encoded, first 10 chars - matches
     # app/utils/jwt.py's create_subscription_token exactly.
     expected_sig = base64.urlsafe_b64encode(sha256((body + secret_key).encode()).digest()).decode()[:10]
-    if sig != expected_sig:
+    # compare_digest, not `==`: this endpoint is unauthenticated, so the
+    # comparison must not leak the expected signature one byte at a time
+    # through timing. Encoded to bytes because compare_digest refuses str
+    # operands containing any non-ASCII character, and `sig` is attacker
+    # controlled — a stray multibyte character must answer 404, not 500.
+    if not hmac.compare_digest(sig.encode("utf-8", "surrogateescape"), expected_sig.encode()):
         raise HTTPException(404, "not found")
 
     try:

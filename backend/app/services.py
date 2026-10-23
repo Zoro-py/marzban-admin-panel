@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import threading
 from collections import defaultdict
 from datetime import datetime
 from typing import Optional
@@ -634,6 +635,93 @@ def serialise_billing(fn):
         async with billing_lock:
             return await fn(*args, **kwargs)
     return wrapper
+
+
+class IdempotencyConflict(Exception):
+    """The same Idempotency-Key came back with a DIFFERENT request body.
+    The router turns this into HTTP 409 — answering the new request with the
+    old result would tell the caller their (different) write happened when
+    it did not."""
+
+
+class IdempotencyRegistry:
+    """Optional client-supplied idempotency for money-mutating POST endpoints
+    (header `Idempotency-Key`): a double-click, a second tab or an automatic
+    retry carrying the SAME key and the SAME body returns the first request's
+    result instead of performing the mutation a second time. The ledger is
+    append-only and an adjust re-runs a Marzban modify, so a duplicated write
+    on either endpoint silently invents money or re-applies a change.
+
+    In-memory on purpose: the backend is one process (see serialise_billing
+    above), a restart only forgets keys that are minutes old, and no schema
+    change is needed. Requests WITHOUT the header behave exactly as before —
+    a legitimately repeated identical entry is never blocked.
+
+    F13 (2026-10-23): this class is the ONE implementation, extracted from
+    routers/ledger.py so POST /api/accounts/{id}/adjust could get the same
+    guarantee without copy-pasting divergent logic (§4.8). The
+    fingerprint/compare/replay/TTL rules live only here.
+
+    Two entry points, because the two endpoints run on different executors
+    and the lock type follows the executor:
+
+      * run_sync   — sync endpoints (they run in FastAPI's thread pool, so
+                     threads genuinely race): pass a threading.Lock.
+      * run_async  — async endpoints (they share one event loop, where a
+                     threading.Lock held across an await would deadlock
+                     against itself): pass an asyncio.Lock.
+
+    `run` performs the write and returns `(result, stored_id)`; `fetch`
+    re-reads a previous result in the CURRENT request's session — ORM objects
+    must never be stored or shared across sessions, so only the id is kept."""
+
+    _TTL_ENTRIES = 2000
+
+    def __init__(self, *, lock):
+        self._lock = lock
+        # key -> (stored id, request fingerprint)
+        self._seen: dict[str, tuple[int, str]] = {}
+
+    def _check_locked(self, key: str, fingerprint: str, fetch):
+        """Returns the stored result to replay, or None to proceed. Caller
+        holds the lock across check + write + commit so two concurrent
+        requests with one key can't both pass the check."""
+        seen = self._seen.get(key)
+        if seen is None:
+            return None
+        stored_id, seen_fp = seen
+        if seen_fp != fingerprint:
+            raise IdempotencyConflict()
+        return fetch(stored_id)
+
+    def _remember_locked(self, key: str, stored_id: int, fingerprint: str) -> None:
+        self._seen[key] = (stored_id, fingerprint)
+        while len(self._seen) > self._TTL_ENTRIES:
+            self._seen.pop(next(iter(self._seen)))
+
+    def run_sync(self, key: Optional[str], fingerprint: str, *, run, fetch):
+        if not key:
+            result, _stored = run()
+            return result
+        with self._lock:
+            replay = self._check_locked(key, fingerprint, fetch)
+            if replay is not None:
+                return replay
+            result, stored_id = run()
+            self._remember_locked(key, stored_id, fingerprint)
+            return result
+
+    async def run_async(self, key: Optional[str], fingerprint: str, *, run, fetch):
+        if not key:
+            result, _stored = await run()
+            return result
+        async with self._lock:
+            replay = self._check_locked(key, fingerprint, fetch)
+            if replay is not None:
+                return replay
+            result, stored_id = await run()
+            self._remember_locked(key, stored_id, fingerprint)
+            return result
 
 
 def effective_rate(session: Session, account: Account, group: Optional[Group] = None) -> float:

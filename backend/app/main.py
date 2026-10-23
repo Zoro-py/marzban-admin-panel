@@ -66,7 +66,12 @@ async def _scheduled_shop_renewal_warnings() -> None:
     was a VPN that had stopped connecting — the worst possible moment to ask
     them to buy again, and the point at which most of them didn't."""
     from app.db import get_session
-    from app.shop_service import _sweep_debt_accounts, notify_overdue_payments, warn_customers_before_service_ends
+    from app.shop_service import (
+        _sweep_debt_accounts,
+        notify_overdue_payments,
+        reactivate_suspended_payg_accounts,
+        warn_customers_before_service_ends,
+    )
     try:
         session_gen = get_session()
         session = next(session_gen)
@@ -88,10 +93,40 @@ async def _scheduled_shop_renewal_warnings() -> None:
             if debt["reminded"] or debt["suspended"] or debt["reactivated"]:
                 logger.info("Auto-renew debt sweep: %d reminded, %d suspended, %d reactivated",
                            debt["reminded"], debt["suspended"], debt["reactivated"])
+            # F7: a payg service the meter suspended for an empty wallet comes
+            # back here (within 15 minutes of a top-up) instead of waiting for
+            # tomorrow's daily meter — the suspension message promises "به محض
+            # شارژ کیف پول، خودش دوباره فعال می‌شود", and a day is not "به محض".
+            reactivated = await reactivate_suspended_payg_accounts(session)
+            if reactivated:
+                logger.info("Reactivated %d funded payg account(s)", reactivated)
         finally:
             session_gen.close()
     except Exception:
         logger.exception("Shop renewal-warning pass failed")
+
+
+async def _scheduled_delegate_lifecycle_warnings() -> None:
+    """F15: DMs each delegate whose scoped account is 3 days from expiry or
+    at 80% usage — the delegate-side mirror of the shop renewal warnings
+    above (same thresholds, same once-per-episode discipline, same 15-minute
+    cadence, which is far denser than day-granular warnings need but costs
+    nothing because a delivered warning records its own AccountEvent marker).
+    Best-effort: see warn_delegates_before_service_ends — failures are logged
+    and retried on a later pass, never fatal to the scheduler."""
+    from app.db import get_session
+    from app.delegate_service import warn_delegates_before_service_ends
+    try:
+        session_gen = get_session()
+        session = next(session_gen)
+        try:
+            sent = await warn_delegates_before_service_ends(session)
+            if sent:
+                logger.info("Sent %d delegate lifecycle warning(s)", sent)
+        finally:
+            session_gen.close()
+    except Exception:
+        logger.exception("Delegate lifecycle-warning pass failed")
 
 
 async def _scheduled_debt_nudge() -> None:
@@ -175,6 +210,14 @@ async def lifespan(app: FastAPI):
     # per order no matter how often the pass runs.
     scheduler.add_job(
         _scheduled_shop_renewal_warnings, "interval", minutes=15, id="shop_renewal_warnings",
+        max_instances=1, coalesce=True,
+    )
+    # F15: same 15-minute cadence as the shop warnings it mirrors — a
+    # delivered warning records its AccountEvent marker, so the dense schedule
+    # never spams (each account is warned once per episode no matter how often
+    # this fires).
+    scheduler.add_job(
+        _scheduled_delegate_lifecycle_warnings, "interval", minutes=15, id="delegate_lifecycle_warnings",
         max_instances=1, coalesce=True,
     )
     # Runs daily (not just "on the last day") on purpose — see

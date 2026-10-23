@@ -175,6 +175,15 @@ class Settings(BaseSettings):
     # the token.
     delegate_bot_username: str = ""
 
+    # Telegram token for the delegate bot, used ONLY by the backend's
+    # scheduled delegate lifecycle warnings (delegate_service.
+    # warn_delegates_before_service_ends) to DM a delegate whose account is
+    # nearing expiry or running out of volume. Optional, exactly like
+    # shop_bot_token above: unset simply means those warnings are skipped
+    # with a log line (best-effort by design) and nothing else reads it —
+    # no new REQUIRED env var.
+    delegate_bot_token: str = ""
+
     # Shared secret the monitoring agents on the VPN servers present on
     # POST /api/monitor/ingest (X-Monitor-Token header). Fail closed exactly
     # like the bot keys above: an unset token refuses every ingest rather

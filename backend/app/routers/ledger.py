@@ -9,7 +9,7 @@ from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, Customer, Group, LedgerEntry
 from app.schemas import BalanceRead, LedgerCreate, LedgerRead
-from app.services import MoneyBook
+from app.services import IdempotencyConflict, IdempotencyRegistry, MoneyBook
 
 router = APIRouter(prefix="/api/ledger", tags=["ledger"], dependencies=[Depends(require_auth)])
 
@@ -19,11 +19,11 @@ router = APIRouter(prefix="/api/ledger", tags=["ledger"], dependencies=[Depends(
 # append-only, so a duplicated row can't be noticed afterwards — it silently
 # invents (credit) or forgives (charge) money. Requests without the header behave
 # exactly as before, so a legitimately repeated identical entry is never blocked.
-# In-memory on purpose: the backend is one process (see services.serialise_billing),
-# a restart only forgets keys that are minutes old, and no schema change is needed.
-_IDEM_TTL_ENTRIES = 2000
-_idem_lock = threading.Lock()
-_idem_seen: dict[str, tuple[int, str]] = {}   # key -> (entry id, request fingerprint)
+# The mechanism lives in services.IdempotencyRegistry — shared with
+# POST /api/accounts/{id}/adjust (F13) so the two endpoints cannot drift. This
+# endpoint is sync, so its registry takes a threading.Lock (thread-pool
+# executors genuinely race; see the class docstring for the async counterpart).
+_idem = IdempotencyRegistry(lock=threading.Lock())
 
 
 @router.get("", response_model=list[LedgerRead])
@@ -52,27 +52,19 @@ def create_ledger_entry(
     operator: str = Depends(require_auth),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key", max_length=80),
 ):
-    if idempotency_key:
-        # Held across check + write + commit so two concurrent requests with one
-        # key can't both pass the check (the endpoint runs in a thread pool).
-        with _idem_lock:
-            fingerprint = body.model_dump_json()
-            seen = _idem_seen.get(idempotency_key)
-            if seen is not None:
-                seen_id, seen_fp = seen
-                if seen_fp != fingerprint:
-                    # Same key, different request: returning the first entry with a
-                    # 200 would tell the caller their (different) payment was recorded.
-                    raise HTTPException(409, "This Idempotency-Key was already used for a different entry")
-                existing = session.get(LedgerEntry, seen_id)
-                if existing is not None:
-                    return existing
-            entry = _write_entry(body, session, operator)
-            _idem_seen[idempotency_key] = (entry.id, fingerprint)
-            while len(_idem_seen) > _IDEM_TTL_ENTRIES:
-                _idem_seen.pop(next(iter(_idem_seen)))
-            return entry
-    return _write_entry(body, session, operator)
+    def run():
+        entry = _write_entry(body, session, operator)
+        return entry, entry.id
+
+    def fetch(stored_id):
+        return session.get(LedgerEntry, stored_id)
+
+    try:
+        return _idem.run_sync(idempotency_key, body.model_dump_json(), run=run, fetch=fetch)
+    except IdempotencyConflict:
+        # Same key, different request: returning the first entry with a
+        # 200 would tell the caller their (different) payment was recorded.
+        raise HTTPException(409, "This Idempotency-Key was already used for a different entry")
 
 
 def _write_entry(body: LedgerCreate, session: Session, operator: str) -> LedgerEntry:

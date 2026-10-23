@@ -578,6 +578,19 @@ def main() -> int:
         test_second_photo_does_not_duplicate_payment,
         test_bridge_service_guards,
         test_approval_cannot_exceed_the_shops_own_ceiling,
+        test_sweep_late_delivery_pushes_once,
+        test_sweep_refund_pushes_the_refund_notice,
+        test_sweep_refund_failure_tells_the_operator,
+        test_payg_delivery_uses_payg_caption_not_trial,
+        test_purchase_refused_on_payg_effective_account,
+        test_falsy_data_limit_is_unlimited,
+        test_cap_hit_skips_retail_payg_account,
+        test_settings_patch_rate_zero_guard,
+        test_suspended_payg_blocks_second_start,
+        test_meter_debit_and_baseline_atomic,
+        test_reactivation_fires_from_topup_approve,
+        test_order_bound_topup_skips_min_topup,
+        test_overdue_apology_reaches_typed_receipts,
     ):
         test()
     print()
@@ -1477,6 +1490,539 @@ def test_approval_cannot_exceed_the_shops_own_ceiling() -> None:
     check("the real amount still goes through", ok.status_code, 200)
     with Session(engine) as session:
         check("credited once", wallet_balance(session, uid), 100_000)
+
+
+# ── the prepublic P0+P1 fix package (2026-10-23) ─────────────────────────
+#
+# Spec test items 1-11 (12 lives in tests/test_adjust_idempotency.py; 13-14
+# are shopbot-side). Each protects a fix whose absence cost a real customer
+# something: silence after a stuck order, a "free trial" lie on a metered
+# service, a package buy capping an unlimited/payg service, a cleared rate
+# stopping the meter, a suspended customer minting a second service, a
+# two-commit meter window, a broken top-up promise, and the sub-min_topup
+# doom loop.
+
+
+def _stuck_order(session, uid: int, *, price: int = 30_000) -> ShopOrder:
+    """An order the process died on: paid, provisioning, past the timeout."""
+    from datetime import timedelta
+    order = ShopOrder(shop_user_id=uid, data_limit_gb=10, duration_days=30, price=price,
+                      status=ShopOrderStatus.provisioning,
+                      created_at=utcnow() - timedelta(minutes=STUCK_ORDER_TIMEOUT_MINUTES + 1))
+    session.add(order)
+    session.flush()
+    post_wallet_entry(session, uid, entry_type=ShopWalletEntryType.purchase,
+                      amount=-price, order_id=order.id, commit=False)
+    session.commit()
+    return order
+
+
+def test_sweep_late_delivery_pushes_once() -> None:
+    print("\n[F1.1] a late-delivered stuck order gets the SAME push as an approve path, exactly once")
+    from app import notify as notify_module
+
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 100_000)
+
+    qr_pushes: list[str] = []
+
+    async def capture_photo(chat_id, photo, caption, *, filename="qr.png"):
+        qr_pushes.append(caption)
+
+    original = notify_module.send_photo_to_shop_user
+    notify_module.send_photo_to_shop_user = capture_photo
+    try:
+        with Session(engine) as session:
+            order = _stuck_order(session, uid)
+            oid = order.id
+            # The process died AFTER Marzban created the user: the sweep must
+            # deliver it late AND tell the customer, who has heard nothing.
+            fake.panel[f"shop{oid}"] = {
+                "username": f"shop{oid}", "used_traffic": 0, "lifetime_used_traffic": 0,
+                "data_limit": 10 * GB_BYTES, "expire": None, "status": "active",
+                "note": f"shop order #{oid}", "subscription_url": f"/sub/tok_shop{oid}",
+            }
+            swept = asyncio.run(sweep_stuck_orders(session))
+            check("one order swept", len(swept), 1)
+            session.refresh(order)
+            check("delivered late", order.status, ShopOrderStatus.delivered)
+        check("the delivery push fired exactly once", len(qr_pushes), 1)
+
+        # A sweep re-run must not double-push: the order left the sweep's
+        # class (delivered) in the same session, so it is never visited again.
+        with Session(engine) as session:
+            again = asyncio.run(sweep_stuck_orders(session))
+            check("re-run sweeps nothing", len(again), 0)
+        check("never double-pushed", len(qr_pushes), 1)
+    finally:
+        notify_module.send_photo_to_shop_user = original
+
+
+def test_sweep_refund_pushes_the_refund_notice() -> None:
+    print("\n[F1.2] a sweep refund posts the refund entry AND tells the customer, with the reason")
+    from app import notify as notify_module
+
+    fake = FakeMarzban()  # empty panel -> the sweep refunds
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 100_000)
+
+    pushes: list[str] = []
+
+    async def capture(chat_id, text, reply_markup=None):
+        pushes.append(text)
+
+    original_text, original_admin = notify_module.send_to_shop_user, notify_module.notify_admin
+    notify_module.send_to_shop_user = capture
+    notify_module.notify_admin = capture
+    try:
+        with Session(engine) as session:
+            order = _stuck_order(session, uid)
+            oid = order.id
+            asyncio.run(sweep_stuck_orders(session))
+            session.refresh(order)
+            check("order marked failed", order.status, ShopOrderStatus.failed)
+            refunds = session.exec(select(ShopWalletEntry).where(
+                ShopWalletEntry.order_id == oid,
+                ShopWalletEntry.type == ShopWalletEntryType.refund,
+            )).all()
+            check("refund entry posted", len(refunds), 1)
+            check("refund is the full price", refunds[0].amount, 30_000)
+            check("money is back", wallet_balance(session, uid), 100_000)
+        check("the customer was pushed exactly one notice", len(pushes), 1)
+        body = pushes[0] if pushes else ""
+        check("it names the amount back in the wallet", "۳۰,۰۰۰" in body and "برگشت" in body, True)
+        check("it carries the reason", "علت" in body, True)
+    finally:
+        notify_module.send_to_shop_user, notify_module.notify_admin = original_text, original_admin
+
+
+def test_sweep_refund_failure_tells_the_operator() -> None:
+    print("\n[F1.3] when the refund notice cannot be sent, the operator is told to send it by hand")
+    from app import notify as notify_module
+
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 100_000)
+
+    admin_told: list[str] = []
+
+    async def broken(chat_id, text, reply_markup=None):
+        raise RuntimeError("telegram down")
+
+    async def admin_capture(text, reply_markup=None, *, thread_id=None):
+        admin_told.append(text)
+
+    original_text, original_admin = notify_module.send_to_shop_user, notify_module.notify_admin
+    notify_module.send_to_shop_user = broken
+    notify_module.notify_admin = admin_capture
+    try:
+        with Session(engine) as session:
+            _stuck_order(session, uid)
+            asyncio.run(sweep_stuck_orders(session))
+    finally:
+        notify_module.send_to_shop_user, notify_module.notify_admin = original_text, original_admin
+    check("the refund still happened (best-effort push never blocks it)", True, True)
+    check("the operator was told", any("دستی" in t for t in admin_told), True)
+
+
+def test_payg_delivery_uses_payg_caption_not_trial() -> None:
+    print("\n[F2.1] a payg service is NOT captioned as a free trial; a legacy trial still is")
+    from app import notify as notify_module
+
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+    _enable_payg(500)
+
+    captions: list[str] = []
+
+    async def capture_photo(chat_id, photo, caption, *, filename="qr.png"):
+        captions.append(caption)
+
+    original = notify_module.send_photo_to_shop_user
+    notify_module.send_photo_to_shop_user = capture_photo
+    try:
+        r = client.post("/api/shop/bot/payg/start", headers=BOT_HEADERS, json={"telegram_id": 555})
+        check("payg started", r.status_code, 200)
+        check("payg caption", "مصرفی" in (captions[-1] if captions else ""), True)
+        check("NOT the trial caption", "تست" in (captions[-1] if captions else ""), False)
+        check("it warns the meter charges daily", "کم می‌شود" in captions[-1], True)
+
+        # A LEGACY price-0 order with no payg account keeps the trial caption.
+        captions.clear()
+        client2 = _reset(fake)
+        _make_user(client2, telegram_id=888)
+        client2.patch("/api/shop/settings", json={"trial_enabled": True, "trial_gb": 1, "trial_hours": 6})
+        t = client2.post("/api/shop/bot/trial", headers=BOT_HEADERS, json={"telegram_id": 888})
+        check("trial granted", t.status_code, 200)
+        check("trial caption survives", "تست" in (captions[-1] if captions else ""), True)
+    finally:
+        notify_module.send_photo_to_shop_user = original
+
+
+def test_purchase_refused_on_payg_effective_account() -> None:
+    print("\n[F3b.1] a package buy on a payg-effective service is refused BEFORE any money moves")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 100_000)
+    _buy_from_wallet(client, 10)
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        account.billing_mode = BillingMode.payg  # operator flips the account to retail payg
+        session.add(account)
+        session.commit()
+    with Session(engine) as session:
+        balance_before = wallet_balance(session, uid)
+
+    r = client.post("/api/shop/bot/purchase", headers=BOT_HEADERS,
+                    json={"telegram_id": 555, "data_limit_gb": 10})
+    check("refused (409)", r.status_code, 409)
+    check("stable PAYG_TOPUP_INSTEAD prefix", "PAYG_TOPUP_INSTEAD" in r.json()["detail"], True)
+    with Session(engine) as session:
+        check("wallet untouched — refusal is pre-money", wallet_balance(session, uid), balance_before)
+    check("no second account", len(fake.created), 1)
+
+    q = client.post("/api/shop/bot/quote", headers=BOT_HEADERS,
+                    json={"telegram_id": 555, "data_limit_gb": 10})
+    check("quote refuses consistently (409)", q.status_code, 409)
+    check("quote carries the same code", "PAYG_TOPUP_INSTEAD" in q.json()["detail"], True)
+
+    o = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                    json={"telegram_id": 555, "data_limit_gb": 10})
+    check("order flow refuses consistently (409)", o.status_code, 409)
+    check("order flow carries the same code", "PAYG_TOPUP_INSTEAD" in o.json()["detail"], True)
+
+
+def test_falsy_data_limit_is_unlimited() -> None:
+    print("\n[F3a.1] a falsy data_limit (0) is treated as unlimited by both guards")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    uid = _make_user(client)
+    _credit(uid, 200_000)
+    _buy_from_wallet(client, 10)
+    username = fake.created[0]
+
+    # LOCAL mirror guard: 0 is how Marzban writes "unlimited" — a purchase
+    # against it must be refused pre-money, not "extended" into a 10 GB cap.
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        account.data_limit = 0
+        session.add(account)
+        session.commit()
+    r = client.post("/api/shop/bot/purchase", headers=BOT_HEADERS,
+                    json={"telegram_id": 555, "data_limit_gb": 10})
+    check("purchase refused (409)", r.status_code, 409)
+    check("SERVICE_IS_UNLIMITED prefix", "SERVICE_IS_UNLIMITED" in r.json()["detail"], True)
+    q = client.post("/api/shop/bot/quote", headers=BOT_HEADERS,
+                    json={"telegram_id": 555, "data_limit_gb": 10})
+    check("quote refused too", q.status_code, 409)
+
+    # LIVE panel guard (defence in depth): mirror says 10 GB, the panel says 0
+    # — the extension must refund, never cap the unlimited service.
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        account.data_limit = 10 * GB_BYTES
+        session.add(account)
+        session.commit()
+    fake.panel[username]["data_limit"] = 0
+    oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                      json={"telegram_id": 555, "data_limit_gb": 20}).json()["order_id"]
+    pay = client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT_HEADERS, json={"telegram_id": 555})
+    check("the pay endpoint surfaces the failure (502)", pay.status_code, 502)
+    with Session(engine) as session:
+        order = session.get(ShopOrder, oid)
+        check("order failed", order.status, ShopOrderStatus.failed)
+        check("the wallet was refunded in full", wallet_balance(session, uid), 200_000 - 30_000)
+    check("the panel's unlimited cap was never written over", fake.panel[username]["data_limit"], 0)
+
+
+def test_cap_hit_skips_retail_payg_account() -> None:
+    print("\n[F3c.1] the cap-hit settle skips a customer_id-NULL account: the wallet owns their money")
+    from app import marzban_client as marzban_module
+    from app.models import LedgerEntry
+    from app.sync_job import _maybe_settle_payg_cap_hit
+
+    fake = FakeMarzban()
+    _reset(fake)
+    resets: list[str] = []
+
+    async def fake_reset(username):
+        resets.append(username)
+        return {"status": "active", "used_traffic": 0}
+
+    original_reset = marzban_module.marzban_client.reset_user
+    marzban_module.marzban_client.reset_user = fake_reset
+    try:
+        with Session(engine) as session:
+            account = Account(marzban_username="shop_retail_cap", billing_mode=BillingMode.payg,
+                              customer_id=None, group_id=None, status="limited",
+                              data_limit=GB_BYTES, used_traffic=GB_BYTES)
+            session.add(account)
+            session.commit()
+            asyncio.run(_maybe_settle_payg_cap_hit(session, account, utcnow()))
+    finally:
+        marzban_module.marzban_client.reset_user = original_reset
+    check("no Marzban reset for a retail account", resets, [])
+    with Session(engine) as session:
+        from sqlmodel import select as _select
+        check("no LedgerEntry row created",
+              len(session.exec(_select(LedgerEntry)).all()), 0)
+
+
+def test_settings_patch_rate_zero_guard() -> None:
+    print("\n[F4.1] a cleared payg rate is refused while live retail-payg accounts exist; turning the offer off is not")
+    fake = FakeMarzban()
+    client = _reset(fake)
+
+    ok_zero = client.patch("/api/shop/settings", json={"payg_rate_per_gb": 0})
+    check("zero rate allowed with NO retail-payg accounts", ok_zero.status_code, 200)
+    client.patch("/api/shop/settings", json={"payg_rate_per_gb": 500})
+
+    # A live retail-payg account: started through the real flow.
+    _make_user(client)
+    client.patch("/api/shop/settings", json={"payg_enabled": True, "payg_rate_per_gb": 500})
+    started = client.post("/api/shop/bot/payg/start", headers=BOT_HEADERS, json={"telegram_id": 555})
+    check("payg account exists", started.status_code, 200)
+
+    off = client.patch("/api/shop/settings", json={"payg_enabled": False})
+    check("turning the OFFER off is legal", off.status_code, 200)
+
+    zero = client.patch("/api/shop/settings", json={"payg_rate_per_gb": 0})
+    check("zeroing the RATE is refused (400)", zero.status_code, 400)
+    check("the reason names the live accounts", "metered" in zero.json()["detail"], True)
+    none = client.patch("/api/shop/settings", json={"payg_rate_per_gb": None})
+    check("clearing the RATE is refused too", none.status_code, 400)
+    both = client.patch("/api/shop/settings", json={"payg_enabled": False, "payg_rate_per_gb": 0})
+    check("refused regardless of payg_enabled in the same request", both.status_code, 400)
+    off_again = client.patch("/api/shop/settings", json={"payg_enabled": False})
+    check("payg_enabled=false alone still goes through", off_again.status_code, 200)
+
+
+def test_suspended_payg_blocks_second_start() -> None:
+    print("\n[F5.1] a suspended payg service blocks a second start; abandoned checkouts do not")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+    _enable_payg(500)
+    started = client.post("/api/shop/bot/payg/start", headers=BOT_HEADERS, json={"telegram_id": 555})
+    check("first start ok", started.status_code, 200)
+
+    # The meter suspends it (empty wallet): status disabled + auto_suspended.
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        account.status = "disabled"
+        account.auto_suspended = True
+        session.add(account)
+        session.commit()
+
+    r = client.post("/api/shop/bot/payg/start", headers=BOT_HEADERS, json={"telegram_id": 555})
+    check("suspended payg service still blocks (409)", r.status_code, 409)
+    check("existing ALREADY_HAS_SERVICE refusal", "ALREADY_HAS_SERVICE" in r.json()["detail"], True)
+    check("no second service was minted", len(fake.created), 1)
+
+    # Abandoned checkouts must not lock anyone out: awaiting/failed orders
+    # (no delivered order -> no service) do NOT block a start.
+    fake2 = FakeMarzban()
+    client2 = _reset(fake2)
+    uid2 = _make_user(client2, telegram_id=777)
+    _enable_payg(500)
+    oid = client2.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                       json={"telegram_id": 777, "data_limit_gb": 10}).json()["order_id"]
+    with Session(engine) as session:
+        abandoned = session.get(ShopOrder, oid)
+        abandoned.status = ShopOrderStatus.failed  # a checkout that went nowhere
+        abandoned.error = "never provisioned"
+        session.add(abandoned)
+        session.commit()
+    r2 = client2.post("/api/shop/bot/payg/start", headers=BOT_HEADERS, json={"telegram_id": 777})
+    check("awaiting/failed orders do not block", r2.status_code, 200)
+    check("exactly one service for them", len(fake2.created), 1)
+
+
+def test_meter_debit_and_baseline_atomic() -> None:
+    print("\n[F6.1] the meter's wallet debit and baseline roll commit together — or not at all")
+    import app.shop_service as shop_service_module
+    from app.shop_service import _sweep_payg_accounts
+
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+    _enable_payg(500)
+    client.post("/api/shop/bot/payg/start", headers=BOT_HEADERS, json={"telegram_id": 555})
+    with Session(engine) as session:
+        uid = _shop_user_id(session)
+    _credit(uid, 1000)
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        account.used_traffic = GB_BYTES
+        session.add(account)
+        session.commit()
+
+    original = shop_service_module.post_wallet_entry
+
+    def crash_between(*args, **kwargs):
+        kwargs["commit"] = False
+        entry = original(*args, **kwargs)
+        raise RuntimeError(f"crash right after wallet entry #{entry.id}")
+
+    shop_service_module.post_wallet_entry = crash_between
+    crashed = False
+    try:
+        with Session(engine) as session:
+            try:
+                asyncio.run(_sweep_payg_accounts(session))
+            except RuntimeError:
+                crashed = True
+    finally:
+        shop_service_module.post_wallet_entry = original
+    check("the injected crash really happened", crashed, True)
+
+    with Session(engine) as session:
+        entries = session.exec(select(ShopWalletEntry).where(
+            ShopWalletEntry.shop_user_id == uid,
+            ShopWalletEntry.type == ShopWalletEntryType.purchase,
+        )).all()
+        account = session.exec(select(Account)).first()
+    check("a crash between them leaves NO debit", len(entries), 0)
+    check("...and NO baseline roll", account.usage_baseline, 0)
+
+    # The healthy path commits both, and carries the ride-alongs: the meter
+    # note is «بیل مصرف روزانه» and no start-order id is stamped on it.
+    with Session(engine) as session:
+        result = asyncio.run(_sweep_payg_accounts(session))
+    check("charged once", result["charged"], 1)
+    with Session(engine) as session:
+        entry = session.exec(select(ShopWalletEntry).where(
+            ShopWalletEntry.shop_user_id == uid,
+            ShopWalletEntry.type == ShopWalletEntryType.purchase,
+        )).one()
+        account = session.exec(select(Account)).first()
+    check("entry and baseline landed together", (entry.amount, account.usage_baseline),
+          (-500, GB_BYTES))
+    check("meter note is «بیل مصرف روزانه»", entry.note.startswith("بیل مصرف روزانه"), True)
+    check("meter entry carries no start-order id", entry.order_id, None)
+
+
+def test_reactivation_fires_from_topup_approve() -> None:
+    print("\n[F7.1] approving a top-up re-enables a funded payg service — once, and only if suspended")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+    _enable_payg(500)
+    client.post("/api/shop/bot/payg/start", headers=BOT_HEADERS, json={"telegram_id": 555})
+    username = fake.created[0]
+    with Session(engine) as session:
+        uid = _shop_user_id(session)
+    _credit(uid, 500)  # less than two GB's worth
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        account.used_traffic = 2 * GB_BYTES  # 2 GB at 500 T/GB = 1000 T -> balance -500
+        session.add(account)
+        session.commit()
+    from app.shop_service import _sweep_payg_accounts
+    with Session(engine) as session:
+        asyncio.run(_sweep_payg_accounts(session))
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+    check("suspended by the meter", account.auto_suspended, True)
+    modifies_after_suspend = len(fake.modified)
+
+    # 50_000, not the wallet's shortfall: F10 refuses a PLAIN top-up under
+    # min_topup (10,000 here), and this test is about reactivation, not the
+    # minimum — the credit just has to clear the approval path.
+    topup = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "claimed_amount": 50_000, "receipt_file_id": "r1"}).json()
+    approved = client.post(f"/api/shop/topups/{topup['id']}/approve", json={})
+    check("approval ok", approved.status_code, 200)
+    with Session(engine) as session:
+        account = session.exec(select(Account)).first()
+        check("auto_suspended cleared", account.auto_suspended, False)
+        check("account active again", account.status, "active")
+    check("Marzban enable really called once", len(fake.modified), modifies_after_suspend + 1)
+    check("panel account is active", fake.panel[username]["status"], "active")
+
+    # The guard: a SECOND approval (wallet already positive, not suspended)
+    # must not call Marzban again — never double-enable.
+    topup2 = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                         json={"telegram_id": 555, "claimed_amount": 50_000, "receipt_file_id": "r2"}).json()
+    client.post(f"/api/shop/topups/{topup2['id']}/approve", json={})
+    check("second approval re-enacts nothing", len(fake.modified), modifies_after_suspend + 1)
+
+    # And a customer whose account is NOT suspended sees no reactivation at all.
+    fake2 = FakeMarzban()
+    client2 = _reset(fake2)
+    _make_user(client2, telegram_id=777)
+    t2 = client2.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                      json={"telegram_id": 777, "claimed_amount": 50_000, "receipt_file_id": "r3"}).json()
+    approved2 = client2.post(f"/api/shop/topups/{t2['id']}/approve", json={})
+    check("plain approval ok", approved2.status_code, 200)
+    check("no reactivation calls for a non-suspended customer", len(fake2.modified), 0)
+
+
+def test_order_bound_topup_skips_min_topup() -> None:
+    print("\n[F10.1] an order-bound receipt is an exact payment — no minimum; a plain top-up keeps it")
+    fake = FakeMarzban()
+    client = _reset(fake)  # min_topup=10000, max_topup=50_000_000
+    _make_user(client)
+
+    oid = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                      json={"telegram_id": 555, "data_limit_gb": 10}).json()["order_id"]
+    bound = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "claimed_amount": 3_000, "order_id": oid})
+    check("order-bound topup under min_topup is accepted", bound.status_code, 200)
+
+    plain = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                        json={"telegram_id": 555, "claimed_amount": 3_000})
+    check("plain topup under min_topup is still refused (400)", plain.status_code, 400)
+
+    oid2 = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                       json={"telegram_id": 555, "data_limit_gb": 10}).json()["order_id"]
+    huge = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                       json={"telegram_id": 555, "claimed_amount": 60_000_000, "order_id": oid2})
+    check("max_topup still caps an order-bound topup", huge.status_code, 400)
+
+
+def test_overdue_apology_reaches_typed_receipts() -> None:
+    print("\n[ride-along] the late-payment apology fires for TYPED receipts too, not only photos")
+    from datetime import timedelta
+    from app import notify as notify_module
+    from app.shop_service import notify_overdue_payments
+
+    fake = FakeMarzban()
+    client = _reset(fake)
+    _make_user(client)
+    tid = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
+                      json={"telegram_id": 555, "claimed_amount": 50_000,
+                            "receipt_text": "TRACK123"}).json()["id"]
+
+    sent: list[str] = []
+
+    async def capture(chat_id, text, reply_markup=None):
+        sent.append(text)
+
+    async def admin_capture(text, reply_markup=None, *, thread_id=None):
+        sent.append(text)
+
+    original_text, original_admin = notify_module.send_to_shop_user, notify_module.notify_admin
+    notify_module.send_to_shop_user = capture
+    notify_module.notify_admin = admin_capture
+    try:
+        with Session(engine) as session:
+            check("not late yet", asyncio.run(notify_overdue_payments(session)), 0)
+            topup = session.get(ShopTopup, tid)
+            topup.created_at = utcnow() - timedelta(minutes=45)
+            session.add(topup)
+            session.commit()
+            check("typed receipt past the promise: announced", asyncio.run(notify_overdue_payments(session)), 1)
+            check("never twice", asyncio.run(notify_overdue_payments(session)), 0)
+    finally:
+        notify_module.send_to_shop_user, notify_module.notify_admin = original_text, original_admin
+    check("the apology actually went out", len(sent) >= 1, True)
 
 
 if __name__ == "__main__":

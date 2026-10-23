@@ -394,3 +394,113 @@ async def delete_delegate_account(session: Session, delegate: Delegate, account_
         session, delegate,
         f"حذف کرد: {account.marzban_username} — اگر لازم است دستی اعتبار برگردانید."
     )
+
+
+# ── lifecycle warnings (F15) ──────────────────────────────────────────────
+#
+# The delegate's service going quietly over the edge — expiry days away, or
+# volume nearly gone — used to be discovered by the delegate's own customer
+# complaining. shop_service.warn_customers_before_service_ends already runs
+# this exact play for shop customers (same 3-day/80% thresholds, warn before
+# it stops); this mirrors it for delegate-scoped accounts, addressed to the
+# DELEGATE (a reseller, not an end customer): name the account, name the
+# number, and make it theirs to act on.
+
+# Same values as the shop's own warnings (shop_service.EXPIRY_WARN_DAYS /
+# USAGE_WARN_PERCENT): enough lead to arrange a renewal, not so early it is
+# forgotten.
+DELEGATE_EXPIRY_WARN_DAYS = 3
+DELEGATE_USAGE_WARN_PERCENT = 80
+
+
+def _delegate_already_warned(session: Session, account_id: int, action: str, episode_marker: str) -> bool:
+    """Has THIS account already been warned (for this action) in its current
+    episode? No schema change: the sent marker IS an AccountEvent, and the
+    episode is identified by the value that was true when it fired
+    (`expire_target=` / `limit_target=` in the event's detail). A renewal
+    changes that value — expire moves out past the window, or the limit
+    rises — so the same account is warned again only in a genuinely new
+    episode, exactly the once-per-episode rule the shop warnings get from
+    their dedicated timestamp columns."""
+    events = session.exec(
+        select(AccountEvent).where(
+            AccountEvent.account_id == account_id,
+            AccountEvent.action == action,
+        ).order_by(AccountEvent.id.desc())
+    ).all()
+    return any(episode_marker in event.detail for event in events)
+
+
+async def warn_delegates_before_service_ends(session: Session) -> int:
+    """DMs each active delegate whose scoped account is 3 days from expiry or
+    at >=80% usage, once per account per episode. Returns how many were sent.
+
+    Only a warning that was actually DELIVERED is recorded — a Telegram
+    failure (or DELEGATE_BOT_TOKEN being unset) leaves the account unmarked
+    so a later pass tries again, instead of the delegate silently never
+    hearing. Failures are best-effort end to end: one account's failure is
+    logged and the pass moves on; the host scheduler job never breaks."""
+    from app import shop_texts
+    from app.notify import send_to_delegate
+
+    now_ts = utcnow().timestamp()
+    sent = 0
+    delegates = session.exec(
+        select(Delegate).where(
+            Delegate.is_active == True,  # noqa: E712 — SQL, not Python truthiness
+            Delegate.telegram_id.is_not(None),  # type: ignore[union-attr]
+        )
+    ).all()
+    for delegate in delegates:
+        try:
+            for account in list_delegate_accounts(session, delegate):
+                # An account Marzban no longer has is not the delegate's to
+                # renew — warning them about a ghost only generates confusion.
+                if account.status == "deleted_from_marzban":
+                    continue
+
+                message = None
+                action = None
+                episode_marker = None
+                if account.expire:
+                    seconds_left = account.expire - now_ts
+                    if 0 < seconds_left <= DELEGATE_EXPIRY_WARN_DAYS * 86400:
+                        days_left = max(1, int(-(-seconds_left // 86400)))
+                        action = "delegate_expiry_warned"
+                        episode_marker = f"expire_target={account.expire}"
+                        if not _delegate_already_warned(session, account.id, action, episode_marker):
+                            message = (
+                                f"⏳ اکانت «{account.marzban_username}» {shop_texts.fa_num(days_left)} روز دیگر منقضا می‌شود.\n"
+                                "تمدیدش با شماست — همین حالا می‌توانید از ربات تمدیدش کنید."
+                            )
+
+                if message is None and account.data_limit:
+                    percent = int(account.used_traffic * 100 / account.data_limit)
+                    if DELEGATE_USAGE_WARN_PERCENT <= percent < 100:
+                        action = "delegate_usage_warned"
+                        episode_marker = f"limit_target={account.data_limit}"
+                        if not _delegate_already_warned(session, account.id, action, episode_marker):
+                            message = (
+                                f"📉 مصرف اکانت «{account.marzban_username}» به {shop_texts.fa_num(percent)}٪ حجمش رسیده است.\n"
+                                "تمدیدش با شماست — همین حالا می‌توانید از ربات حجم اضافه بگیرید."
+                            )
+
+                if message is None:
+                    continue
+                try:
+                    await send_to_delegate(delegate.telegram_id, message)
+                except Exception:
+                    logger.exception("Could not DM delegate #%s about account %s",
+                                     delegate.id, account.marzban_username)
+                    continue
+                session.add(AccountEvent(
+                    account_id=account.id,
+                    action=action,
+                    detail=(f"warned delegate_id={delegate.id} ({episode_marker})"),
+                    source=LedgerSource.delegate,
+                ))
+                session.commit()
+                sent += 1
+        except Exception:
+            logger.exception("Delegate lifecycle-warning pass failed for delegate #%s", delegate.id)
+    return sent

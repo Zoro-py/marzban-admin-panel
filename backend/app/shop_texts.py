@@ -108,6 +108,38 @@ def delivery_caption(volume_gb: float, days: int, is_trial: bool = False,
     return f"✅ سرویس شما آماده است\n{fa_num(volume_gb)} گیگ — {fa_num(days)} روز"
 
 
+def delivery_caption_payg() -> str:
+    """Caption on the QR image for a retail pay-as-you-go service (F2).
+
+    A payg start order has price=0 and no fixed volume, so it used to inherit
+    the trial caption ("رایگان است و چیزی از شما کم نشد") — which was false
+    here in the one direction that matters: usage IS charged, daily, from the
+    wallet. This says so up front, before the first meter tick does. No
+    volume/day figures on purpose: a payg service has neither."""
+    return (
+        "📊 سرویس مصرفی‌تان آماده است\n\n"
+        "حجم و زمان ثابت ندارد — هر روز فقط به‌اندازهٔ مصرفتان از کیف پولتان کم می‌شود.\n"
+        "اگر کیف پول خالی شود سرویس موقتاً قطع می‌شود و با شارژ دوباره، خودش وصل می‌شود."
+    )
+
+
+def order_refunded(amount: int, reason: Optional[str] = None,
+                   handle: Optional[str] = None) -> str:
+    """A stuck order the sweep refunded on its own (F1) — the customer hears
+    it from us, not from a charge that silently reappeared. The old silence
+    was indistinguishable from theft: they had paid, the bot went quiet, and
+    days later the money was back with nobody saying why. Names the amount
+    and that it is back in the wallet, before any why. No blame, no jargon:
+    the reason (a restart mid-provisioning) is ours, not theirs."""
+    why = f"\nعلت: {reason}" if reason else ""
+    return (
+        f"سلام — سفارشتان ساخته نشد و {money_fa(amount)} کامل به کیف پولتان برگشت.\n"
+        "هیچ کسرشی نشده؛ هر وقت خواستید دوباره خرید کنید."
+        + why
+        + support_line(handle)
+    )
+
+
 def delivery_link(url: str) -> str:
     """The URL sits alone on its own line with nothing after it.
 
