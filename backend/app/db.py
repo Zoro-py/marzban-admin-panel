@@ -485,6 +485,10 @@ def _run_shop_migrations() -> None:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shoptopup_order_id ON shoptopup (order_id)"))
 
         settings_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(shopsettings)"))}
+        account_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(account)"))}
+        if account_cols and "service_name" not in account_cols:
+            # The customer's own nickname for a service, set from the shop bot.
+            conn.execute(text("ALTER TABLE account ADD COLUMN service_name VARCHAR"))
         if settings_cols and "shop_inbound_tags" not in settings_cols:
             # JSON-encoded list of Marzban inbound tags the shop puts into its
             # created accounts (see ShopSettings.shop_inbound_tags). NULL =

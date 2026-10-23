@@ -2,7 +2,7 @@ import * as React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { apiErrorMessage, shopApi } from '@/lib/api'
-import type { ShopInboundInfo, ShopSettings, ShopTopup, ShopUser } from '@/lib/types'
+import type { ShopInboundInfo, ShopIssueOrder, ShopIssues, ShopSettings, ShopTopup, ShopUser } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -37,6 +37,11 @@ export function ShopPage() {
     refetchInterval: 30_000,
   })
 
+  const issuesQuery = useQuery({
+    queryKey: ['shop', 'issues'],
+    queryFn: shopApi.issues,
+    refetchInterval: 30_000, // an attention queue — fresh without being chatty
+  })
   const pendingCount = pendingQuery.data?.length ?? 0
 
   return (
@@ -61,6 +66,14 @@ export function ShopPage() {
           </TabsTrigger>
           <TabsTrigger value="users">Customers</TabsTrigger>
           <TabsTrigger value="orders">Orders</TabsTrigger>
+          <TabsTrigger value="issues" className="gap-1.5">
+            Issues
+            {issuesQuery.data && issuesQuery.data.counts.stuck + issuesQuery.data.counts.failed > 0 && (
+              <Badge variant="destructive" className="px-1.5">
+                {issuesQuery.data.counts.stuck + issuesQuery.data.counts.failed}
+              </Badge>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
 
@@ -72,6 +85,9 @@ export function ShopPage() {
         </TabsContent>
         <TabsContent value="orders">
           <ShopOrders />
+        </TabsContent>
+        <TabsContent value="issues">
+          <ShopIssues />
         </TabsContent>
         <TabsContent value="settings">
           <ShopSettingsForm />
@@ -829,6 +845,72 @@ function ShopInboundsCard({
               Nothing selected — Marzban's own panel defaults apply to every shop-built account.
             </p>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ShopIssues() {
+  const query = useQuery({
+    queryKey: ['shop', 'issues'],
+    queryFn: shopApi.issues,
+    refetchInterval: 30_000,
+  })
+
+  if (query.isLoading) return <Skeleton className="h-48 w-full" />
+  if (query.isError) return <LoadFailed what="the provisioning-issue queue" onRetry={() => query.refetch()} />
+  const { stuck, failed } = query.data ?? { stuck: [], failed: [] }
+
+  if (stuck.length === 0 && failed.length === 0) {
+    return (
+      <div className="rounded-lg border border-border bg-card px-4 py-6 text-center">
+        <p className="text-sm">No provisioning issues — every paying customer got their service.</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Failed and stuck orders land here automatically, with the raw error and who to reach.
+        </p>
+      </div>
+    )
+  }
+
+  const age = (iso: string) => {
+    const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000))
+    return mins < 60 ? `${mins}m` : `${Math.round(mins / 60)}h`
+  }
+
+  const Row = ({ o, kind }: { o: ShopIssueOrder; kind: 'stuck' | 'failed' }) => (
+    <div className="flex flex-col gap-1 rounded-md border border-border px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-medium">
+          {o.customer} <span className="font-mono text-xs text-muted-foreground">· tg {o.telegram_id ?? '—'} · #{o.id}</span>
+        </span>
+        <span className="flex items-center gap-2">
+          <Badge variant={kind === 'stuck' ? 'secondary' : 'destructive'}>
+            {kind === 'stuck' ? 'stuck in provisioning' : 'failed · refunded'}
+          </Badge>
+          <span className="text-xs tabular-nums text-muted-foreground">{age(o.created_at)} ago</span>
+        </span>
+      </div>
+      <div className="text-xs text-muted-foreground">
+        {o.data_limit_gb} GB · {toman(o.price)}
+        {kind === 'failed' && ' — the money is back in their wallet'}
+      </div>
+      {o.error && <p className="rounded bg-muted/50 px-2 py-1 font-mono text-[11px] leading-relaxed">{o.error}</p>}
+    </div>
+  )
+
+  return (
+    <div className="flex flex-col gap-4">
+      {stuck.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <h2 className="text-sm font-semibold">Stuck in provisioning ({stuck.length}) — the sweeper resolves these within minutes</h2>
+          {stuck.map((o) => <Row key={o.id} o={o} kind="stuck" />)}
+        </div>
+      )}
+      {failed.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <h2 className="text-sm font-semibold">Failed ({failed.length}) — newest 50</h2>
+          {failed.map((o) => <Row key={o.id} o={o} kind="failed" />)}
         </div>
       )}
     </div>

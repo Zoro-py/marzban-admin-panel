@@ -185,6 +185,11 @@ class Account(SQLModel, table=True):
     # so a later change to MARZBAN_SUBSCRIPTION_BASE_URL fixes every stored row
     # at once instead of needing a backfill.
     subscription_url: Optional[str] = None
+    # The CUSTOMER's own name for this service, set through the shop bot
+    # («گوشی علی», «لپ‌تاپ کار»). Purely cosmetic — no billing code reads
+    # it; the bot shows it as the service's title in «سرویس‌های من". Cleared
+    # with an empty name. Panel usernames stay untouched.
+    service_name: Optional[str] = None
 
     # Marzban's own "last connected" timestamp, mirrored by the sync job —
     # used to derive whether this account is currently online (see

@@ -61,6 +61,8 @@ _STATE_CONFIRMING_WALLET_BUY = "confirming_wallet_buy"
 _STATE_CONFIRMING_PAYG_START = "confirming_payg_start"
 _STATE_CHOOSING_TOPUP = "choosing_topup"
 _STATE_AWAITING_RECEIPT = "awaiting_receipt"
+_STATE_AWAITING_SERVICE_NAME = "awaiting_service_name"
+_SERVICE_NAME_ACCOUNT = "service_name_account_id"
 _ORDER_ID = "order_id"
 _PENDING_AMOUNT = "pending_amount"
 # Set while choosing a volume via MENU_NEW_SERVICE instead of MENU_BUY -
@@ -950,21 +952,38 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # suspended service must say so instead of rendering as "active, X GB
         # left" that secretly connects to nothing. Passing it changes nothing
         # for active/limited/expired rows (see account_line's default).
-        lines = [texts.account_line(limit_gb, used_gb, days_left, status=row.get("status"))]
-        keyboard = None
+        lines = [texts.account_line(limit_gb, used_gb, days_left,
+                                     status=row.get("status"), name=row.get("service_name"))]
+        # An inline URL BUTTON, not the raw link: subscription URLs churn on
+        # every panel-side modify (live 2026-10-01 — three different tokens
+        # in one hour), and a Latin URL printed inside Persian text gets
+        # bidi-reordered and copied wrong. A button always opens the CURRENT
+        # url without pasting anything into the chat. The nickname button
+        # (owner feature 2026-10-23) rides the same keyboard — ownership is
+        # re-checked server-side at save time; the button only opens the ask.
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        buttons = []
         if row["subscription_url"]:
-            # An inline URL BUTTON, not the raw link: subscription URLs churn
-            # on every panel-side modify (live 2026-10-01 — three different
-            # tokens in one hour), and a Latin URL printed inside Persian
-            # text gets bidi-reordered and copied wrong. A button always
-            # opens the CURRENT url without pasting anything into the chat.
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-            keyboard = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🔗 لینک اشتراک", url=row["subscription_url"])]]
-            )
+            buttons.append([InlineKeyboardButton("🔗 لینک اشتراک", url=row["subscription_url"])])
+        if row.get("account_id"):
+            buttons.append([InlineKeyboardButton("✏️ نام سرویس", callback_data=f"svcname:{row['account_id']}")])
+        keyboard = InlineKeyboardMarkup(buttons) if buttons else None
         await update.effective_message.reply_text("\n".join(lines), reply_markup=keyboard)
 
     await _reply(update, texts.wallet_summary(session["balance"]), session)
+
+
+async def on_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The ✏️ نام button on a service: asks for the customer's own nickname.
+    Ownership is validated SERVER-side when the name is saved (the callback
+    only opens the ask); the id rides in the callback data."""
+    query = update.callback_query
+    await query.answer()
+    account_id = query.data.split(":", 1)[1]
+    context.user_data.clear()
+    context.user_data[_STATE] = _STATE_AWAITING_SERVICE_NAME
+    context.user_data[_SERVICE_NAME_ACCOUNT] = account_id
+    await update.effective_message.reply_text(texts.ASK_SERVICE_NAME)
 
 
 # ── routing ───────────────────────────────────────────────────────────────
@@ -1051,6 +1070,35 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if _looks_like_receipt_text(text):
             return await _submit_receipt(update, context, receipt_text=text.strip())
         await update.effective_message.reply_text(texts.NEED_PHOTO)
+        return
+
+    if state == _STATE_AWAITING_SERVICE_NAME:
+        account_id = context.user_data.get(_SERVICE_NAME_ACCOUNT)
+        context.user_data.clear()
+        name = text.strip()
+        if name in ("حذف", "پاک کردن"):
+            name = ""
+        if len(name) > 40:
+            await update.effective_message.reply_text(texts.SERVICE_NAME_TOO_LONG)
+            return
+        try:
+            session = await _session(update)
+        except ShopApiError:
+            logger.exception("Session failed during a service rename for %s", update.effective_user.id)
+            await update.effective_message.reply_text(texts.generic_error(None))
+            return
+        try:
+            await backend.post(
+                f"/api/shop/bot/accounts/{account_id}/name",
+                json={"telegram_id": update.effective_user.id, "name": name},
+            )
+        except ShopApiError:
+            logger.exception("Service rename failed for %s (account %s)",
+                             update.effective_user.id, account_id)
+            await update.effective_message.reply_text(texts.generic_error(session))
+            return
+        await update.effective_message.reply_text(
+            texts.SERVICE_NAME_CLEARED if not name else texts.SERVICE_NAME_SAVED)
         return
 
     session = await _session(update)

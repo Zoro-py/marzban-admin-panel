@@ -58,6 +58,7 @@ from app.models import (
     ShopWalletEntry,
     ShopWalletEntryType,
     utcnow,
+    AccountEvent,
 )
 from app.notify import (
     relay_shop_photo_to_admin,
@@ -81,6 +82,7 @@ from app.schemas import (
     ShopLinkInviteRead,
     ShopLinkInviteRequest,
     ShopLinkState,
+    ShopBotServiceNameRequest,
     ShopTelegramBindRequest,
     ShopTelegramBindResult,
     ShopAutoRenewResult,
@@ -109,6 +111,7 @@ from app.shop_service import (
     find_prior_receipt_text_use,
     find_topup_by_code,
     get_or_create_shop_user,
+    STUCK_ORDER_TIMEOUT_MINUTES,
     get_shop_settings,
     grant_trial,
     is_existing_customer,
@@ -1599,6 +1602,8 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
         rows.append(ShopBotAccountRow(
             order_id=order.id,
             source="shop",
+            account_id=account.id if account else None,
+            service_name=account.service_name if account else None,
             marzban_username=order.marzban_username or "—",
             data_limit_gb=order.data_limit_gb,
             used_traffic=account.used_traffic if account else 0,
@@ -1624,6 +1629,8 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
             rows.append(ShopBotAccountRow(
                 order_id=None,
                 source="linked",
+                account_id=account.id,
+                service_name=account.service_name,
                 marzban_username=account.marzban_username,
                 # A GB figure for consistency with shop rows; the bot's own
                 # list rendering reads data_limit (bytes), not this.
@@ -1636,6 +1643,100 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
                 created_at=account.created_at,
             ))
     return rows
+
+
+@bot_router.post("/accounts/{account_id}/name")
+async def bot_rename_account(account_id: int, body: ShopBotServiceNameRequest,
+                             session: Session = Depends(get_session)):
+    """The customer names THEIR OWN service («گوشی علی»). Ownership is the
+    same scoping bot_list_accounts uses — the account must be a delivered
+    shop order of this telegram's shop user, or an account of the customer
+    linked to it; anything else is 404 with no oracle about whose it is.
+    An empty/whitespace name clears the nickname."""
+    user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
+    if user is None:
+        raise HTTPException(404, "Unknown shop user — call /session first")
+    account = session.get(Account, account_id)
+    if account is None:
+        raise HTTPException(404, "not found")
+
+    visible_ids: set[int] = set()
+    orders = session.exec(
+        select(ShopOrder).where(ShopOrder.shop_user_id == user.id,
+                                ShopOrder.status == ShopOrderStatus.delivered)
+    ).all()
+    for order in orders:
+        if order.account_id:
+            visible_ids.add(order.account_id)
+    customer = session.exec(select(Customer).where(Customer.shop_user_id == user.id)).first()
+    if customer is not None:
+        for acc in session.exec(select(Account.id).where(Account.customer_id == customer.id)).all():
+            visible_ids.add(acc if isinstance(acc, int) else acc[0])
+
+    if account_id not in visible_ids:
+        raise HTTPException(404, "not found")
+
+    name = (body.name or "").strip()
+    if len(name) > 40:
+        raise HTTPException(400, "The name is limited to 40 characters")
+    old = account.service_name
+    account.service_name = name or None
+    session.add(account)
+    session.add(AccountEvent(
+        account_id=account.id,
+        action="service_renamed",
+        detail=f"{old!r} -> {account.service_name!r} (set by the customer in the shop bot)",
+        created_by=f"telegram:{body.telegram_id}",
+    ))
+    session.commit()
+    return {"ok": True, "service_name": account.service_name}
+
+
+@router.get("/issues")
+def list_shop_issues(session: Session = Depends(get_session)):
+    """The operator's provisioning-failure queue (owner request 2026-10-23):
+    every order where a PAYING customer did not get their service, in one
+    glance. Two sections:
+      stuck  — status `provisioning` past the sweeper's timeout; the sweep
+               will resolve these (deliver or refund) within minutes, but
+               while one sits here a customer is waiting with money held.
+      failed — provisioned and failed; the wallet was automatically
+               refunded (every failed path refunds — that is the design),
+               so the money is safe and the row is here so the operator can
+               see WHY (the raw Marzban error) and reach the customer.
+    Failed orders are capped at the newest 50; this is an attention queue,
+    not an archive — the full history lives in the Orders tab."""
+    stuck_before = utcnow() - timedelta(minutes=STUCK_ORDER_TIMEOUT_MINUTES)
+    stuck = session.exec(
+        select(ShopOrder)
+        .where(ShopOrder.status == ShopOrderStatus.provisioning,
+               ShopOrder.created_at < stuck_before)
+        .order_by(ShopOrder.created_at)
+    ).all()
+    failed = session.exec(
+        select(ShopOrder)
+        .where(ShopOrder.status == ShopOrderStatus.failed)
+        .order_by(ShopOrder.created_at.desc())
+        .limit(50)
+    ).all()
+
+    def row(o: ShopOrder) -> dict:
+        user = session.get(ShopUser, o.shop_user_id)
+        return {
+            "id": o.id,
+            "customer": (user.display_name or user.telegram_username or str(user.telegram_id)) if user else "—",
+            "telegram_id": user.telegram_id if user else None,
+            "price": o.price,
+            "data_limit_gb": o.data_limit_gb,
+            "error": o.error,
+            "created_at": o.created_at,
+        }
+
+    return {
+        "stuck": [row(o) for o in stuck],
+        "failed": [row(o) for o in failed],
+        "counts": {"stuck": len(stuck), "failed": len(failed)},
+    }
 
 
 @bot_router.get("/wallet", response_model=list[ShopWalletEntryRead])

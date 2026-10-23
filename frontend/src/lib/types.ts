@@ -87,6 +87,8 @@ export interface Account {
   // account (or a whole bulk-created batch) from ever being auto-renewed.
   auto_renew_enabled: boolean
   created_at: string
+  // The customer's own nickname for this service (set via the shop bot).
+  service_name: string | null
 }
 
 // ---- bulk ("family") account creation ----
@@ -590,6 +592,22 @@ export interface MonthlySettlementRunResult {
 // Every amount below is WHOLE TOMAN as a number with no decimal part — the
 // backend stores these as int for a reason (see the shop section header in
 // backend/app/models.py). Never format them with decimals; never divide one.
+
+export interface ShopIssueOrder {
+  id: number
+  customer: string
+  telegram_id: number | null
+  price: number
+  data_limit_gb: number
+  error: string | null
+  created_at: string
+}
+
+export interface ShopIssues {
+  stuck: ShopIssueOrder[]
+  failed: ShopIssueOrder[]
+  counts: { stuck: number; failed: number }
+}
 
 export interface ShopSettings {
   id: number

@@ -453,9 +453,18 @@ def usage_bar(used_gb: float, total_gb: float, width: int = 10) -> str:
 # as a broken promise the day the customer notices nothing connects.
 STATUS_SUSPENDED_BADGE = "⚪️ موقتاً متوقف — با شارژ کیف پول یا پس از رفع بدهی دوباره وصل می‌شود"
 
+# ── naming a service (the customer's own nickname) ────────────────────────
+ASK_SERVICE_NAME = (
+    "نام سرویس را بفرست — هر اسمی که برایت مفهوم است، مثلاً «گوشی علی» یا «لپ‌تاپ کار».",
+    "برای حذفِ نام فعلی، «حذف» را بفرست."
+)
+SERVICE_NAME_SAVED = "✅ ثبت شد — از این به بعد سرویست با همین نام نشان داده می‌شود."
+SERVICE_NAME_CLEARED = "نام حذف شد — سرویست دوباره با حجمش نام‌گذاری می‌شود."
+SERVICE_NAME_TOO_LONG = "نام طولانی است — تا ۴۰ کاراکتر."
+
 
 def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional[int],
-                 status: Optional[str] = None) -> str:
+                 status: Optional[str] = None, name: Optional[str] = None) -> str:
     """One subscription, named by what it IS rather than by its panel username.
 
     The previous version printed the raw Marzban username — a Latin identifier
@@ -483,16 +492,20 @@ def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional
         life = "تمام شده"
     else:
         life = f"{fa(days_left)} روز مانده"
+    # The customer's own nickname (set via «✏️ نام» on the service) becomes
+    # its title — the thing they actually call it in their head. Without one,
+    # the size-based default title keeps every rendering byte-identical.
+    title = f"🔑 «{name}» — سرویس" if name else "🔑 سرویس"
     if volume_gb is None:
-        text = f"🔑 سرویس نامحدود\nمصرف تا امروز: {fa(round(used_gb, 2))} گیگ\n{life}"
+        text = f"{title} نامحدود\nمصرف تا امروز: {fa(round(used_gb, 2))} گیگ\n{life}"
     else:
         remaining = max(0.0, volume_gb - used_gb)
         if remaining <= 0:
-            text = f"🔑 سرویس {gb(volume_gb)}\n🔴 حجم سرویس تمام شد\n{life}"
+            text = f"{title} {gb(volume_gb)}\n🔴 حجم سرویس تمام شد\n{life}"
         else:
             pct = int(used_gb * 100 / volume_gb) if volume_gb else 0
             bar = f"{usage_bar(used_gb, volume_gb)} {fa(round(remaining, 2))} گیگ باقی مانده ({fa(pct)}٪ مصرف شده)"
-            text = f"🔑 سرویس {gb(volume_gb)}\n{bar}\n{life}"
+            text = f"{title} {gb(volume_gb)}\n{bar}\n{life}"
     if status == "disabled":
         text += "\n" + STATUS_SUSPENDED_BADGE
     return text

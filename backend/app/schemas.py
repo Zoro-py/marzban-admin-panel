@@ -241,6 +241,9 @@ class AccountResetRequest(BaseModel):
 class AccountRead(BaseModel):
     id: int
     marzban_username: str
+    # The customer-set nickname (shop bot) — shown in the panel alongside the
+    # username; never a key, purely display.
+    service_name: Optional[str] = None
     customer_id: Optional[int]
     group_id: Optional[int]
     role: AccountRole
@@ -920,6 +923,10 @@ class ShopBotAccountRow(BaseModel):
     # router dedupes by account, preferring the shop row.
     order_id: Optional[int] = None
     source: str = "shop"
+    # The account id the row describes — the bot's per-service rename button
+    # targets it (POST /api/shop/bot/accounts/{id}/name).
+    account_id: Optional[int] = None
+    service_name: Optional[str] = None
     marzban_username: str
     data_limit_gb: float
     used_traffic: int
@@ -988,6 +995,13 @@ class ShopTelegramBindResult(BaseModel):
     # still works and they see everything on their first /start.
     notification_delivered: bool = False
     notification_note: Optional[str] = None
+
+
+class ShopBotServiceNameRequest(BaseModel):
+    """shopbot only (POST /api/shop/bot/accounts/{id}/name): the customer names
+    their own service. An empty/whitespace name CLEARS it."""
+    telegram_id: int
+    name: str = ""
 
 
 class ShopBotClaimLinkRequest(BaseModel):

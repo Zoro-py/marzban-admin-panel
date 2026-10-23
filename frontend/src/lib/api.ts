@@ -32,6 +32,7 @@ import type {
   ReportSummary,
   ShopOrder,
   ShopInboundsResponse,
+  ShopIssues,
   ShopSettings,
   ShopLinkInvite,
   ShopLinkState,
@@ -334,6 +335,9 @@ export const shopApi = {
   settings: async () => (await api.get<ShopSettings>('/api/shop/settings')).data,
   updateSettings: async (body: Partial<Omit<ShopSettings, 'id'>>) =>
     (await api.patch<ShopSettings>('/api/shop/settings', body)).data,
+  // The operator's provisioning-failure queue (stuck + failed orders).
+  issues: async () =>
+    (await api.get<ShopIssues>('/api/shop/issues')).data,
   // The server's LIVE Marzban inbounds + the current shop selection — the
   // checkbox list on the Settings tab. Live, never a stored copy.
   shopInbounds: async () =>
