@@ -442,14 +442,20 @@ async def _provision_order(
     username = f"{settings.username_prefix}{order.id}"
     payload = {
         "username": username,
-        "proxies": app_settings.marzban_default_proxies,
-        "inbounds": app_settings.marzban_default_inbounds,
         "expire": int(utcnow().timestamp()) + seconds,
         "data_limit": bytes_from_gb(order.data_limit_gb),
         "data_limit_reset_strategy": "no_reset",
         "status": "active",
         "note": f"shop order #{order.id}",
     }
+    # Empty config = OMIT the keys, so Marzban applies its own panel defaults —
+    # the same contract as the admin-side creates. Sending a hardcoded protocol
+    # list 400-rejected every shop create on servers without that protocol
+    # (live 2026-10-23: "Protocol ProxyTypes.VMess is disabled on your server").
+    if app_settings.marzban_default_proxies:
+        payload["proxies"] = app_settings.marzban_default_proxies
+    if app_settings.marzban_default_inbounds:
+        payload["inbounds"] = app_settings.marzban_default_inbounds
 
     try:
         marzban_user = await marzban_client.create_user(payload)
@@ -2038,14 +2044,20 @@ async def start_payg_service(session: Session, shop_user: ShopUser) -> ShopOrder
     username = f"{settings.username_prefix}{order.id}"
     payload = {
         "username": username,
-        "proxies": app_settings.marzban_default_proxies,
-        "inbounds": app_settings.marzban_default_inbounds,
         "expire": int(utcnow().timestamp()) + PAYG_START_DURATION_DAYS * SECONDS_IN_DAY,
         "data_limit": 0,  # unlimited — the wallet, not Marzban, governs reachability
         "data_limit_reset_strategy": "no_reset",
         "status": "active",
         "note": f"shop order #{order.id} (payg)",
     }
+    # Empty config = OMIT the keys, so Marzban applies its own panel defaults —
+    # the same contract as the admin-side creates. Sending a hardcoded protocol
+    # list 400-rejected every shop create on servers without that protocol
+    # (live 2026-10-23: "Protocol ProxyTypes.VMess is disabled on your server").
+    if app_settings.marzban_default_proxies:
+        payload["proxies"] = app_settings.marzban_default_proxies
+    if app_settings.marzban_default_inbounds:
+        payload["inbounds"] = app_settings.marzban_default_inbounds
     try:
         marzban_user = await marzban_client.create_user(payload)
     except (ValueError, MarzbanUnavailable, MarzbanAuthError) as exc:

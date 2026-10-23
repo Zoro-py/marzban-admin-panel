@@ -97,10 +97,14 @@ class Settings(BaseSettings):
     debt_nudge_minute: int = 0
 
     # Applied to a new Marzban user when the caller doesn't specify proxies/inbounds.
-    # Adjust these to match this panel's real inbound tags before creating users from
-    # the dashboard — Marzban applies a protocol to every inbound that supports it when
-    # no explicit inbound tag list is given, which may not match what you actually want.
-    marzban_default_proxies: dict[str, dict] = {"vless": {}, "vmess": {}, "trojan": {}, "shadowsocks": {}}
+    # EMPTY (the default) = the key is OMITTED from the create payload entirely, so
+    # Marzban applies its own panel defaults — the same contract the working
+    # admin-side creates use, and the only choice that is correct on every server
+    # (the old hardcoded {"vless": …, "vmess": …, …} default sent VMess to Marzban
+    # on servers without it and 400-rejected every shop-created user, live
+    # 2026-10-23). Set e.g. MARZBAN_DEFAULT_PROXIES={"vless": {}, "shadowsocks": {}}
+    # to pin the protocols explicitly for THIS panel.
+    marzban_default_proxies: dict[str, dict] = {}
     marzban_default_inbounds: dict[str, list[str]] = {}
 
     # Marzban returns each user's `subscription_url` as a RELATIVE path
