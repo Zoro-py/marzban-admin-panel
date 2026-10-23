@@ -34,6 +34,7 @@ import type {
   ShopSettings,
   ShopLinkInvite,
   ShopLinkState,
+  ShopTelegramBindResult,
   ShopTopup,
   ShopTopupStatus,
   ShopUser,
@@ -363,6 +364,12 @@ export const shopApi = {
   // wallet and every account row untouched.
   unlinkLink: async (customerId: number) =>
     (await api.delete<{ ok: boolean }>(`/api/shop/link/${customerId}`)).data,
+  // The operator's DIRECT bind: types the customer's Telegram id, no invite
+  // round-trip. 409s (group rep, payg billing, either side already bound)
+  // arrive as detail text and are shown verbatim. notification_delivered
+  // false is not an error — see ShopTelegramBindResult.
+  bindTelegram: async (customerId: number, body: { telegram_id: number; telegram_username?: string; display_name?: string }) =>
+    (await api.post<ShopTelegramBindResult>(`/api/shop/link/${customerId}/telegram`, body)).data,
 }
 
 // ---- server monitoring (dashboard view of scripts/monitor agents) ----

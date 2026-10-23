@@ -718,6 +718,20 @@ export interface ShopLinkInvite {
   claim_expires_at: string
 }
 
+// Response of POST /api/shop/link/{id}/telegram (mirrors
+// schemas.ShopTelegramBindResult): the operator's direct bind. A false
+// notification_delivered is NOT an error — Telegram refuses bot-initiated
+// contact until the customer has pressed /start once; the binding itself
+// works either way and the reason rides in notification_note.
+export interface ShopTelegramBindResult {
+  customer_id: number
+  customer_name: string
+  linked_telegram_id: number
+  accounts_linked: number
+  notification_delivered: boolean
+  notification_note: string | null
+}
+
 // ---- delegates (operator-granted self-service via delegate_bot) ----
 // Mirrors schemas.DelegateRead: exactly one of customer_id/group_id is set —
 // the delegate's scope. See backend models.Delegate for the trust-boundary

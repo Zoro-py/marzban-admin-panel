@@ -78,6 +78,8 @@ from app.schemas import (
     ShopLinkInviteRead,
     ShopLinkInviteRequest,
     ShopLinkState,
+    ShopTelegramBindRequest,
+    ShopTelegramBindResult,
     ShopAutoRenewResult,
     ShopOrderIntent,
     ShopOrderRead,
@@ -695,6 +697,137 @@ def unlink_shop_customer(customer_id: int, session: Session = Depends(get_sessio
     session.add(customer)
     session.commit()
     return {"ok": True}
+
+
+@router.post("/link/{customer_id}/telegram", response_model=ShopTelegramBindResult)
+async def bind_shop_customer_telegram(
+    customer_id: int,
+    body: ShopTelegramBindRequest,
+    session: Session = Depends(get_session),
+):
+    """The operator types the customer's Telegram id straight into the panel —
+    the direct counterpart of the invite-link flow, for when the operator
+    already KNOWS who the customer is on Telegram and doesn't need a
+    consent round-trip through a deep link. The bot then knows which
+    accounts belong to which Telegram user exactly as if the customer had
+    claimed an invite: same writes (Customer.shop_user_id), same refusals,
+    same trust consequences — this hands «سرویس‌های من», the wallet and
+    renewals for THIS customer's accounts to that Telegram account, so every
+    refusal below is a different sentence on purpose, and a wrong id is
+    recoverable the same way as a mis-sent invite: unlink, rebind.
+
+    NOT the same as the claim in one respect: there is no token, so there is
+    nothing to consume — a still-pending invite is simply superseded (its
+    token dies here; a claim arriving later finds it gone and 404s).
+
+    notification_delivered=False is NOT a failure: Telegram refuses
+    bot-initiated contact with someone who has never pressed /start, so the
+    confirmation DM lands only for customers who already met the bot. The
+    binding itself works either way."""
+    customer = session.get(Customer, customer_id)
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    if customer.is_group_rep:
+        raise HTTPException(
+            409,
+            "این مشتری نمایندهٔ گروه/خانواده است — اتصالِ سرویس‌های مشترکِ گروه به یک "
+            "تلگرامِ شخصی یعنی یک نفر همه را ببیند و تمدید کند. برای این حالت، دسترسیِ "
+            "دلیگیت جایگزین است.",
+        )
+    if _customer_has_payg_billing(session, customer.id):
+        raise HTTPException(
+            409,
+            "این مشتری بیلینگ مصرفی (payg) دارد: تسویهٔ ماهانه از لجر برای مصرف واقعی "
+            "بیل می‌زند ولی خریدِ فروشگاه از کیف پول همان اکانت را تمدید می‌کند — دو "
+            "نظامِ پولی روی یک شمارنده سایه می‌اندازند. اتصالِ مشتریِ payg به فروشگاه رد می‌شود.",
+        )
+
+    shop_user = get_or_create_shop_user(
+        session,
+        body.telegram_id,
+        telegram_username=body.telegram_username,
+        display_name=body.display_name,
+    )
+
+    if customer.shop_user_id is not None:
+        if customer.shop_user_id == shop_user.id:
+            # Same pair — idempotent: refresh the display snapshots and
+            # re-count, no state change, still worth a DM attempt (it may
+            # succeed NOW if the customer has since pressed /start).
+            accounts_linked = _linked_account_count(session, customer)
+            delivered, note = await _send_bind_confirmation(shop_user.telegram_id, customer.name, accounts_linked)
+            return ShopTelegramBindResult(
+                customer_id=customer.id,
+                customer_name=customer.name,
+                linked_telegram_id=shop_user.telegram_id,
+                accounts_linked=accounts_linked,
+                notification_delivered=delivered,
+                notification_note=note,
+            )
+        other = session.get(ShopUser, customer.shop_user_id)
+        bound = f"telegram id {other.telegram_id}" if other else "an unknown shop user"
+        raise HTTPException(
+            409,
+            f"این مشتری از قبل به تلگرامِ دیگری وصل است ({bound}) — اول با "
+            f"DELETE /api/shop/link/{customer.id} جدا کنید، بعد دوباره ببندید.",
+        )
+
+    collision = session.exec(
+        select(Customer).where(
+            Customer.shop_user_id == shop_user.id,
+            Customer.id != customer.id,
+        )
+    ).first()
+    if collision is not None:
+        raise HTTPException(
+            409,
+            f"این آیدی تلگرام از قبل به مشتریِ دیگری وصل است ({collision.name}) — "
+            "اول آن را جدا کنید؛ یک تلگرام فقط سرویس‌های یک مشتری را می‌بیند.",
+        )
+
+    customer.shop_user_id = shop_user.id
+    customer.shop_link_linked_at = utcnow()
+    # A pending invite is superseded by a direct bind: its token dies with
+    # the link, so a claim arriving later finds nothing and 404s.
+    customer.shop_link_token = None
+    customer.shop_link_expires_at = None
+    session.add(customer)
+    session.commit()
+    session.refresh(customer)
+    accounts_linked = _linked_account_count(session, customer)
+    delivered, note = await _send_bind_confirmation(shop_user.telegram_id, customer.name, accounts_linked)
+    return ShopTelegramBindResult(
+        customer_id=customer.id,
+        customer_name=customer.name,
+        linked_telegram_id=shop_user.telegram_id,
+        accounts_linked=accounts_linked,
+        notification_delivered=delivered,
+        notification_note=note,
+    )
+
+
+async def _send_bind_confirmation(telegram_id: int, customer_name: str, accounts_linked: int) -> tuple[bool, Optional[str]]:
+    """Best-effort «شما وصل شدید» DM after a direct bind. Doubles as the
+    operator's typo check: a wrong id (nobody home) or a customer who has
+    never started the bot both surface here as notification_delivered=False
+    with the reason spelled out — the bind itself is never undone by it.
+    send_to_shop_user raises on ANY failure and returns None on success, so
+    reaching the return line IS the delivery."""
+    from app.notify import send_to_shop_user
+
+    text = (
+        "🔗 حساب شما به فروشگاه وصل شد!\n\n"
+        "از این به بعد «سرویس‌های من» سرویس‌هایتان را نشان می‌دهد و می‌توانید "
+        "کیف پولتان را شارژ کنید و سرویستان را تمدید کنید."
+        + (f"\n\nتعداد سرویس‌های متصل: {accounts_linked}" if accounts_linked else "")
+    )
+    try:
+        await send_to_shop_user(telegram_id, text)
+        return True, None
+    except RuntimeError as exc:
+        return False, str(exc)[:200]
+    except Exception as exc:  # noqa: BLE001 — the DM must never fail the bind
+        return False, f"Telegram refused the confirmation message: {exc}"
 
 
 # ══════════════════════════════════════════════════════ shop-bot endpoints

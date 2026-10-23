@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 import { toast } from 'sonner'
 import { Clock, Link2, MessageCircle, ShieldCheck } from 'lucide-react'
 import { apiErrorMessage, shopApi } from '@/lib/api'
@@ -7,6 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Label } from '@/components/ui/label'
 import { formatDate } from '@/lib/utils'
 
 // Same inline copy flow as every other surface (no shared clipboard helper
@@ -75,6 +77,118 @@ function PendingBody({ state }: { state: ShopLinkState }) {
 // existing accounts appear in «سرویس‌های من» and a purchase renews their
 // real account in place. Minting a link moves no money — this card binds
 // identities, never balances.
+// The not_linked state offers BOTH ways to connect a customer: the classic
+// one-time invite (the customer consents by tapping it) and the operator's
+// DIRECT bind — type their Telegram id, done. The direct form states whose
+// services the Telegram account will see BEFORE it connects (the fear here
+// is handing access to the wrong person), validates the id locally, and
+// reports the confirmation-DM outcome honestly afterwards.
+function NotLinkedBody({ customerName, customerId }: { customerName: string; customerId: number }) {
+  const queryClient = useQueryClient()
+  const [showBind, setShowBind] = useState(false)
+  const [telegramId, setTelegramId] = useState('')
+  const [username, setUsername] = useState('')
+
+  const invite = useMutation({
+    mutationFn: () => shopApi.inviteLink(customerId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['shop-link', customerId] }),
+    onError: (err) => toast.error(apiErrorMessage(err)),
+  })
+
+  const bind = useMutation({
+    mutationFn: () =>
+      shopApi.bindTelegram(customerId, {
+        telegram_id: Number(telegramId),
+        telegram_username: username.trim() ? username.trim().replace(/^@/, '') : undefined,
+      }),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['shop-link', customerId] })
+      if (res.notification_delivered) {
+        toast.success(`Connected — a confirmation message was delivered to Telegram id ${res.linked_telegram_id}`)
+      } else {
+        toast.warning(
+          `Connected, but no confirmation message could be delivered yet — this customer has probably never opened the shop bot. ` +
+            `The binding works; they see everything on their first /start.` +
+            (res.notification_note ? ` (${res.notification_note})` : ''),
+        )
+      }
+      setShowBind(false)
+    },
+    onError: (err) => toast.error(apiErrorMessage(err)),
+  })
+
+  // Telegram user ids are pure digits (authorization header style); anything
+  // else is a typo'd @handle pasted by mistake — refuse locally, instantly.
+  const idValid = /^\d{4,20}$/.test(telegramId.trim())
+
+  return (
+    <div className="flex flex-col gap-3 pt-1">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs text-muted-foreground">
+          Not connected. Once connected, this customer sees their existing accounts in the shop bot, can top up a
+          wallet, and renew in place — paid from their shop wallet, not this ledger.
+        </p>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button size="sm" variant="outline" className="h-8 gap-1.5" disabled={invite.isPending} onClick={() => invite.mutate()}>
+            <Link2 className="h-3.5 w-3.5" /> Create invite
+          </Button>
+          <Button
+            size="sm"
+            variant={showBind ? 'ghost' : 'secondary'}
+            className="h-8"
+            onClick={() => setShowBind((v) => !v)}
+          >
+            {showBind ? 'Cancel' : 'Bind by Telegram ID'}
+          </Button>
+        </div>
+      </div>
+
+      {showBind && (
+        <div className="flex flex-col gap-2.5 rounded-md border border-border bg-background/40 p-3">
+          <p className="text-xs">
+            <span className="font-medium">{customerName}</span>'s services become visible to Telegram id{' '}
+            <span className="font-mono tabular-nums">{telegramId.trim() || '…'}</span> immediately — the wallet,
+            renewals and every account they own. Double-check the number: it grants real access.
+          </p>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs">Telegram ID</Label>
+              <Input
+                autoFocus
+                inputMode="numeric"
+                placeholder="e.g. 1999634605"
+                value={telegramId}
+                onChange={(e) => setTelegramId(e.currentTarget.value.replace(/[^\d]/g, ''))}
+                className="h-8 w-48 font-mono tabular-nums"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs">@username (optional)</Label>
+              <Input
+                placeholder="@handle"
+                value={username}
+                onChange={(e) => setUsername(e.currentTarget.value)}
+                className="h-8 w-40"
+              />
+            </div>
+            <Button
+              size="sm"
+              className="h-8"
+              disabled={!idValid || bind.isPending}
+              onClick={() => bind.mutate()}
+            >
+              {bind.isPending ? 'Connecting…' : 'Connect'}
+            </Button>
+          </div>
+          {!idValid && telegramId.trim().length > 0 && (
+            <p className="text-xs text-muted-foreground">The Telegram ID is the numeric id only — no @, no letters.</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function ShopLinkCard({ customerId }: { customerId: number }) {
   const queryClient = useQueryClient()
   const { data: state, isLoading } = useQuery({
@@ -117,15 +231,10 @@ export function ShopLinkCard({ customerId }: { customerId: number }) {
       </div>
 
       {!isLoading && state?.status === 'not_linked' && (
-        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-          <p className="text-xs text-muted-foreground">
-            Not connected. An invite link lets this customer see their existing accounts in the shop bot, top up a
-            wallet, and renew in place — paid from their shop wallet, not this ledger.
-          </p>
-          <Button size="sm" variant="outline" className="h-8 shrink-0 gap-1.5" disabled={invite.isPending} onClick={() => invite.mutate()}>
-            <Link2 className="h-3.5 w-3.5" /> Create invite
-          </Button>
-        </div>
+        <NotLinkedBody
+          customerName={state.customer_name}
+          customerId={state.customer_id}
+        />
       )}
 
       {!isLoading && state?.status === 'pending' && <div className="pt-1">{<PendingBody state={state} />}</div>}

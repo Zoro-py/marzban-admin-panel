@@ -961,6 +961,29 @@ class ShopLinkState(BaseModel):
     accounts_linked: int = 0
 
 
+class ShopTelegramBindRequest(BaseModel):
+    """POST /api/shop/link/{customer_id}/telegram — the operator types the
+    customer's Telegram id straight into the panel, skipping the invite-link
+    round-trip. The bot then knows which accounts belong to which Telegram
+    user exactly as if the customer had claimed an invite."""
+    telegram_id: int = Field(gt=0)
+    telegram_username: Optional[str] = None
+    display_name: Optional[str] = None
+
+
+class ShopTelegramBindResult(BaseModel):
+    customer_id: int
+    customer_name: str
+    linked_telegram_id: int
+    accounts_linked: int = 0
+    # Whether the confirmation DM actually landed. False is NOT an error —
+    # a customer who has never pressed /start on the shop bot cannot be
+    # messaged yet (Telegram refuses bot-initiated contact); the binding
+    # still works and they see everything on their first /start.
+    notification_delivered: bool = False
+    notification_note: Optional[str] = None
+
+
 class ShopBotClaimLinkRequest(BaseModel):
     """shopbot only (POST /api/shop/bot/claim-link): bind the tapping user's
     Telegram account to the customer whose invite token the deep link

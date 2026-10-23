@@ -7,6 +7,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Money } from '@/components/Money'
 import type { AccountRow } from '@/lib/types'
 import { CheckCircle2, X } from 'lucide-react'
+import { BulkMoveBar } from '@/components/accounts/BulkMoveBar'
 
 /** Settle several accounts in one action, the daily-routine case this exists
  * for: "N customers paid today, record all of them" without opening each
@@ -134,7 +135,7 @@ export function BulkSettleBar({
         {mutation.isPending ? 'Settling…' : `Settle ${settleable.length}`}
       </Button>
 
-      <span className="mx-1 h-4 w-px bg-border" aria-hidden />
+      <BulkMoveBar selected={selected} onClear={onClear} />
 
       <Button
         size="sm"
