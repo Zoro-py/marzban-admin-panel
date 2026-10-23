@@ -159,6 +159,7 @@ export function AccountsPage() {
       rows = rows.filter(
         (a) =>
           a.marzban_username.toLowerCase().includes(q) ||
+          a.service_name?.toLowerCase().includes(q) ||
           a.customer_name?.toLowerCase().includes(q) ||
           a.group_name?.toLowerCase().includes(q),
       )
@@ -460,6 +461,11 @@ function AccountTableRow({
             <span className="truncate text-[11px] text-muted-foreground md:hidden">
               {a.customer_name ?? groupName ?? a.group_name ?? 'unassigned'}
             </span>
+            {a.service_name && (
+              <span className="truncate text-[11px] text-primary" title={`Customer nickname: ${a.service_name}`}>
+                «{a.service_name}»
+              </span>
+            )}
           </span>
         </span>
       </TableCell>
