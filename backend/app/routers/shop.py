@@ -987,6 +987,14 @@ def bot_quote(body: ShopBotPurchaseRequest, session: Session = Depends(get_sessi
         raise HTTPException(409 if str(exc).startswith("SERVICE_IS_UNLIMITED") else 400, str(exc))
 
 
+def _clean_service_name(raw: Optional[str]) -> Optional[str]:
+    """The customer-typed service name: trimmed, capped at 40, empty -> None
+    (never an empty string on the account). The schema caps the length too;
+    this is the single enforcement point both create paths share."""
+    name = (raw or "").strip()
+    return name[:40] or None
+
+
 @bot_router.post("/purchase", response_model=ShopPurchaseResult)
 async def bot_purchase(body: ShopBotPurchaseRequest, session: Session = Depends(get_session)):
     user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
@@ -994,7 +1002,7 @@ async def bot_purchase(body: ShopBotPurchaseRequest, session: Session = Depends(
         raise HTTPException(404, "Unknown shop user — call /session first")
 
     try:
-        order = await purchase(session, user, body.data_limit_gb)
+        order = await purchase(session, user, body.data_limit_gb, service_name=_clean_service_name(body.service_name))
     except ShopError as exc:
         # A 400 with the user-facing sentence, which the bot shows verbatim.
         # The unlimited refusal AND the payg refusal (F3b) ride 409 with
@@ -1112,7 +1120,8 @@ def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depends(ge
     except ShopError as exc:
         raise HTTPException(409, str(exc))
     try:
-        order = create_awaiting_order(session, user, body.data_limit_gb, force_new_service=body.force_new_service)
+        order = create_awaiting_order(session, user, body.data_limit_gb, force_new_service=body.force_new_service,
+                                  service_name=_clean_service_name(body.service_name))
     except ShopError as exc:
         raise HTTPException(
             409 if str(exc).startswith(("SERVICE_IS_UNLIMITED", "PAYG_TOPUP_INSTEAD")) else 400,

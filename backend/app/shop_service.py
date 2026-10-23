@@ -229,7 +229,8 @@ def validate_purchase_request(settings: ShopSettings, data_limit_gb: float) -> N
 # ── purchase ──────────────────────────────────────────────────────────────
 
 
-async def purchase(session: Session, shop_user: ShopUser, data_limit_gb: float) -> ShopOrder:
+async def purchase(session: Session, shop_user: ShopUser, data_limit_gb: float,
+                   service_name: Optional[str] = None) -> ShopOrder:
     """Buy one plan from the wallet, then provision it.
 
     ORDER OF OPERATIONS — this is the part that matters:
@@ -281,6 +282,7 @@ async def purchase(session: Session, shop_user: ShopUser, data_limit_gb: float) 
             duration_days=settings.plan_duration_days,
             price=price,
             status=ShopOrderStatus.provisioning,
+            service_name=(service_name or None),
         )
         session.add(order)
         # flush assigns order.id so the debit can reference it, while keeping
@@ -378,6 +380,7 @@ def _record_delivered(session: Session, order: ShopOrder, username: str, marzban
 
     now = utcnow()
     account = Account(
+        service_name=order.service_name,
         marzban_username=username,
         used_traffic=marzban_user.get("used_traffic", 0),
         lifetime_used_traffic=marzban_user.get("lifetime_used_traffic", 0),
@@ -1157,6 +1160,7 @@ async def grant_trial(session: Session, shop_user: ShopUser) -> ShopOrder:
 
 def create_awaiting_order(
     session: Session, shop_user: ShopUser, data_limit_gb: float, *, force_new_service: bool = False,
+    service_name: Optional[str] = None,
 ) -> ShopOrder:
     """Records what the customer chose, before asking them for any money.
 
@@ -1182,6 +1186,7 @@ def create_awaiting_order(
         price=price,
         status=ShopOrderStatus.awaiting_payment,
         force_new_service=force_new_service,
+        service_name=(service_name or None),
     )
     session.add(order)
     session.commit()
@@ -1683,6 +1688,12 @@ def _record_extended(session: Session, order: ShopOrder, account: Account, marzb
             "Order #%s reached extension as '%s', not 'provisioning' — re-charging so the "
             "added volume is not free.", order.id, order.status.value,
         )
+    # The name asked during the purchase flow is the customer's LATEST intent
+    # for this service — a renewal with a name attached renames it. Without a
+    # name, whatever the service is called stays untouched.
+    if order.service_name:
+        account.service_name = order.service_name
+        session.add(account)
         post_wallet_entry(
             session,
             order.shop_user_id,

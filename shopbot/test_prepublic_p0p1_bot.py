@@ -125,6 +125,12 @@ async def main() -> None:
     stub.order_intent = order_intent(shortfall=30_000)
     (upd, context), msg = make_update()
     await shop._handle_volume(upd, context, 10)
+    # F-E: the optional-name step sits between the volume and the payment
+    # screen — an empty text answers it as "no name", continuing the flow on
+    # the SAME context (the stashed volume/state live there).
+    msg.text = ""
+    upd.message = msg  # handle_text reads update.message.text
+    await shop.handle_text(upd, context)
     check("sub-min shortfall asks for min_topup, not the shortfall",
           context.user_data[shop._PENDING_AMOUNT] == 50_000
           and context.user_data[shop._STATE] == shop._STATE_AWAITING_RECEIPT)
@@ -148,6 +154,12 @@ async def main() -> None:
     stub.order_intent = order_intent(shortfall=120_000)
     (upd, context), msg = make_update()
     await shop._handle_volume(upd, context, 10)
+    # F-E: the optional-name step sits between the volume and the payment
+    # screen — an empty text answers it as "no name", continuing the flow on
+    # the SAME context (the stashed volume/state live there).
+    msg.text = ""
+    upd.message = msg  # handle_text reads update.message.text
+    await shop.handle_text(upd, context)
     check("above-min shortfall asks exactly the shortfall",
           context.user_data[shop._PENDING_AMOUNT] == 120_000)
     text = msg.replies[-1][0]
@@ -160,6 +172,12 @@ async def main() -> None:
     stub.order_intent = order_intent(shortfall=30_000)
     (upd, context), msg = make_update()
     await shop._handle_volume(upd, context, 10)
+    # F-E: the optional-name step sits between the volume and the payment
+    # screen — an empty text answers it as "no name", continuing the flow on
+    # the SAME context (the stashed volume/state live there).
+    msg.text = ""
+    upd.message = msg  # handle_text reads update.message.text
+    await shop.handle_text(upd, context)
     check("min_topup=0 asks the bare shortfall as before",
           context.user_data[shop._PENDING_AMOUNT] == 30_000
           and "برای تکمیل، مبلغ" in msg.replies[-1][0])
@@ -169,6 +187,12 @@ async def main() -> None:
     stub.order_error = ("PAYG_TOPUP_INSTEAD: current service is metered", 409)
     (upd, context), msg = make_update()
     await shop._handle_volume(upd, context, 10)
+    # F-E: the optional-name step sits between the volume and the payment
+    # screen — an empty text answers it as "no name", continuing the flow on
+    # the SAME context (the stashed volume/state live there).
+    msg.text = ""
+    upd.message = msg  # handle_text reads update.message.text
+    await shop.handle_text(upd, context)
     check("PAYG_TOPUP_INSTEAD maps to its own text",
           msg.replies[-1][0] == texts.PAYG_TOPUP_INSTEAD)
     check("PAYG_TOPUP_INSTEAD clears the flow state", context.user_data == {})
@@ -179,6 +203,12 @@ async def main() -> None:
     stub.order_error = ("SERVICE_IS_UNLIMITED: renewal target has no cap", 409)
     (upd, context), msg = make_update()
     await shop._handle_volume(upd, context, 10)
+    # F-E: the optional-name step sits between the volume and the payment
+    # screen — an empty text answers it as "no name", continuing the flow on
+    # the SAME context (the stashed volume/state live there).
+    msg.text = ""
+    upd.message = msg  # handle_text reads update.message.text
+    await shop.handle_text(upd, context)
     check("SERVICE_IS_UNLIMITED still maps to SERVICE_UNLIMITED",
           msg.replies[-1][0] == texts.SERVICE_UNLIMITED)
     stub.order_error = None

@@ -831,6 +831,10 @@ class ShopBotPurchaseRequest(BaseModel):
     # lookup so this purchase always mints a brand-new account, even for a
     # customer who already has one (owner decision 2026-10-22).
     force_new_service: bool = False
+    # The customer's own name for the service this purchase creates/extends,
+    # asked optionally in the bot's purchase flow. Applied to the account at
+    # delivery; stripped/capped in the service layer.
+    service_name: Optional[str] = Field(default=None, max_length=40)
 
 
 class ShopPurchaseResult(BaseModel):

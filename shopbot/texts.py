@@ -461,6 +461,12 @@ ASK_SERVICE_NAME = (
 SERVICE_NAME_SAVED = "✅ ثبت شد — از این به بعد سرویست با همین نام نشان داده می‌شود."
 SERVICE_NAME_CLEARED = "نام حذف شد — سرویست دوباره با حجمش نام‌گذاری می‌شود."
 SERVICE_NAME_TOO_LONG = "نام طولانی است — تا ۴۰ کاراکتر."
+ASK_OPTIONAL_NAME = (
+    "برای این سرویس چه اسمی بگذاریم؟ (اختیاری)\n"
+    "مثلاً «گوشی علی» — هر وقت هم خواستی از «سرویس‌های من» با ✏️ عوضش کن."
+)
+SKIP_NAME = "بدون نام"
+PURCHASE_CANCELLED = "خرید لغو شد — هر وقت خواستی از «🛒 خرید سرویس» شروع کن."
 
 
 def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional[int],

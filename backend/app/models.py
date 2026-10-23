@@ -614,6 +614,12 @@ class ShopOrder(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     shop_user_id: int = Field(foreign_key="shopuser.id", index=True)
+    # The name the customer gave this service DURING the purchase flow (asked
+    # right after the volume, optional). Applied to Account.service_name at
+    # delivery — the moment the account is born — and on extensions (the
+    # customer's latest intent renames the service they just topped up).
+    # None = never named; delivery leaves any existing name untouched.
+    service_name: Optional[str] = None
 
     data_limit_gb: float
     duration_days: int

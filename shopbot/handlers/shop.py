@@ -63,6 +63,11 @@ _STATE_CHOOSING_TOPUP = "choosing_topup"
 _STATE_AWAITING_RECEIPT = "awaiting_receipt"
 _STATE_AWAITING_SERVICE_NAME = "awaiting_service_name"
 _SERVICE_NAME_ACCOUNT = "service_name_account_id"
+_STATE_AWAITING_OPTIONAL_NAME = "awaiting_optional_name"
+_PENDING_SERVICE_NAME = "pending_service_name"
+_PENDING_VOLUME_VALUE = "pending_volume_value"
+_PENDING_FORCE_NEW = "pending_force_new"
+SKIP_NAME = "بدون نام"
 _ORDER_ID = "order_id"
 _PENDING_AMOUNT = "pending_amount"
 # Set while choosing a volume via MENU_NEW_SERVICE instead of MENU_BUY -
@@ -579,18 +584,43 @@ def _payment_request_text(intent: dict, ask: int | None = None) -> str:
 
 
 async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, volume: float) -> None:
-    """Volume chosen. Creates the ORDER — which takes no money — then shows
-    whichever of the two payment screens applies."""
+    """Volume chosen. Asks for an OPTIONAL service name (skippable — the F-E
+    owner request: customers name the service at the moment they care about
+    it), then creates the ORDER — which takes no money — and shows whichever
+    of the two payment screens applies."""
     session = await _session(update)
     if not (session["min_gb"] <= volume <= session["max_gb"]):
         await update.effective_message.reply_text(texts.out_of_range(session["min_gb"], session["max_gb"]))
         return
 
+    # Stash the choice and ask for a name. The state machine answers BEFORE
+    # the menu dispatch (see handle_text), so a stray menu tap cannot wipe
+    # this step silently — explicit buttons are the only way out.
+    context.user_data[_STATE] = _STATE_AWAITING_OPTIONAL_NAME
+    context.user_data[_PENDING_VOLUME_VALUE] = volume
+    context.user_data[_PENDING_FORCE_NEW] = bool(context.user_data.get(_FORCE_NEW_SERVICE))
+    await update.effective_message.reply_text(
+        texts.ASK_OPTIONAL_NAME,
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton(texts.SKIP_NAME)], [KeyboardButton(texts.CANCEL)]],
+            resize_keyboard=True,
+        ),
+    )
+
+
+async def _create_order_and_ask_payment(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                        volume: float, service_name: str | None,
+                                        *, force_new: bool = False) -> None:
+    """The original _handle_volume body: create the order, then the payment
+    screen. `service_name` rides the order and is applied to the account at
+    delivery (or on extension — the customer's latest intent)."""
+    session = await _session(update)
     try:
         intent = await backend.post("/api/shop/bot/orders", json={
             "telegram_id": update.effective_user.id,
             "data_limit_gb": volume,
-            "force_new_service": bool(context.user_data.get(_FORCE_NEW_SERVICE)),
+            "force_new_service": force_new,
+            "service_name": service_name,
         })
     except ShopApiError as exc:
         if getattr(exc, "status", 0) == 409 and "SERVICE_IS_UNLIMITED" in str(exc):
@@ -999,6 +1029,70 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """
     text = (update.message.text or "").strip()
 
+    # The ✏️ rename ask ALSO answers before the menu dispatch — the same
+    # live report: a «سرویس‌های من» tap mid-rename wiped the ask silently.
+    # Menu buttons cancel the ask and run their menu; «حذف» clears the name;
+    # anything else is the name.
+    if context.user_data.get(_STATE) == _STATE_AWAITING_SERVICE_NAME:
+        account_id = context.user_data.get(_SERVICE_NAME_ACCOUNT)
+        name = text.strip()
+        if name in ("حذف", "پاک کردن"):
+            name = ""
+        if name in (texts.MENU_BUY, texts.MENU_NEW_SERVICE, texts.MENU_ACCOUNTS,
+                    texts.MENU_WALLET, texts.MENU_TOPUP, texts.MENU_PAYG,
+                    texts.MENU_TRIAL, texts.MENU_HELP, texts.CANCEL):
+            context.user_data.clear()
+            return await handle_text(update, context)  # re-dispatch as a menu tap
+        if len(name) > 40:
+            await update.effective_message.reply_text(texts.SERVICE_NAME_TOO_LONG)
+            return
+        context.user_data.clear()
+        try:
+            session = await _session(update)
+        except ShopApiError:
+            logger.exception("Session failed during a service rename for %s", update.effective_user.id)
+            await update.effective_message.reply_text(texts.generic_error(None))
+            return
+        try:
+            await backend.post(
+                f"/api/shop/bot/accounts/{account_id}/name",
+                json={"telegram_id": update.effective_user.id, "name": name},
+            )
+        except ShopApiError:
+            logger.exception("Service rename failed for %s (account %s)",
+                             update.effective_user.id, account_id)
+            await update.effective_message.reply_text(texts.generic_error(session))
+            return
+        await update.effective_message.reply_text(
+            texts.SERVICE_NAME_CLEARED if not name else texts.SERVICE_NAME_SAVED)
+        return
+
+    # The optional service-name step answers BEFORE the menu dispatch — the
+    # live 2026-10-24 report: the ask was silently wiped when the customer
+    # tapped «سرویس‌های من» mid-naming, because every handler starts with
+    # context.user_data.clear(). Named escape hatches only.
+    if context.user_data.get(_STATE) == _STATE_AWAITING_OPTIONAL_NAME:
+        volume = context.user_data.get(_PENDING_VOLUME_VALUE)
+        force_new = bool(context.user_data.get(_PENDING_FORCE_NEW))
+        if text == texts.CANCEL:
+            context.user_data.clear()
+            session = None
+            try:
+                session = await _session(update)
+            except ShopApiError:
+                pass
+            await update.effective_message.reply_text(
+                texts.PURCHASE_CANCELLED,
+                reply_markup=main_menu(session),
+            )
+            return
+        name = "" if text == SKIP_NAME else text.strip()
+        if len(name) > 40:
+            await update.effective_message.reply_text(texts.SERVICE_NAME_TOO_LONG)
+            return
+        return await _create_order_and_ask_payment(
+            update, context, volume, name, force_new=force_new)
+
     if text == texts.PHONE_LATER:
         context.user_data.clear()
         session = await _session(update)
@@ -1070,35 +1164,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if _looks_like_receipt_text(text):
             return await _submit_receipt(update, context, receipt_text=text.strip())
         await update.effective_message.reply_text(texts.NEED_PHOTO)
-        return
-
-    if state == _STATE_AWAITING_SERVICE_NAME:
-        account_id = context.user_data.get(_SERVICE_NAME_ACCOUNT)
-        context.user_data.clear()
-        name = text.strip()
-        if name in ("حذف", "پاک کردن"):
-            name = ""
-        if len(name) > 40:
-            await update.effective_message.reply_text(texts.SERVICE_NAME_TOO_LONG)
-            return
-        try:
-            session = await _session(update)
-        except ShopApiError:
-            logger.exception("Session failed during a service rename for %s", update.effective_user.id)
-            await update.effective_message.reply_text(texts.generic_error(None))
-            return
-        try:
-            await backend.post(
-                f"/api/shop/bot/accounts/{account_id}/name",
-                json={"telegram_id": update.effective_user.id, "name": name},
-            )
-        except ShopApiError:
-            logger.exception("Service rename failed for %s (account %s)",
-                             update.effective_user.id, account_id)
-            await update.effective_message.reply_text(texts.generic_error(session))
-            return
-        await update.effective_message.reply_text(
-            texts.SERVICE_NAME_CLEARED if not name else texts.SERVICE_NAME_SAVED)
         return
 
     session = await _session(update)

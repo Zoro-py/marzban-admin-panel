@@ -166,6 +166,77 @@ check("failed row carries the Marzban error",
 check("failed rows name the customer", d["failed"][0]["customer"] == "Ali")
 check("stuck rows carry the amount", d["stuck"][0]["price"] == 25_000)
 
+# ---- 7. F-E: the name asked DURING the purchase flow rides the order and
+# lands on the account at delivery; a renewal with a name renames; no name
+# leaves the existing one untouched. ----
+created: list[dict] = []
+
+
+async def fake_create_user(payload: dict) -> dict:
+    created.append(payload)
+    return {"username": payload["username"], "inbounds": {}, "data_limit": payload.get("data_limit"),
+            "expire": payload.get("expire"), "status": "active", "used_traffic": 0,
+            "subscription_url": "/sub/tok"}
+
+
+async def fake_get_user(username: str) -> dict:
+    # The fixture account's real cap (10 GB) — a None here reads as "unlimited"
+    # and sends every renewal down the refund path.
+    return {"username": username, "data_limit": 10 * 1024**3,
+            "expire": 4102444800, "used_traffic": 0, "status": "active"}
+
+
+async def fake_modify_user(username: str, payload: dict) -> dict:
+    return {"username": username}
+
+
+from app import marzban_client as marzban_module  # noqa: E402
+marzban_module.marzban_client.create_user = fake_create_user
+marzban_module.marzban_client.get_user = fake_get_user
+marzban_module.marzban_client.modify_user = fake_modify_user
+
+with Session(engine) as session:
+    from app.models import ShopWalletEntry, ShopWalletEntryType
+
+    session.add(ShopWalletEntry(shop_user_id=ali.id, type=ShopWalletEntryType.topup,
+                                amount=500_000, note='F-E test credit', created_at=utcnow()))
+    session.commit()
+
+# Delivery-path naming: an order-first FORCE-NEW purchase with a name mints a
+# newborn account that carries the name at birth.
+oid = client.post("/api/shop/bot/orders", headers=BOT,
+                  json={"telegram_id": 3131, "data_limit_gb": 5,
+                        "force_new_service": True, "service_name": "موبایل فاطمه"}
+                  ).json()["order_id"]
+r = client.post(f"/api/shop/bot/orders/{oid}/pay", headers=BOT, json={"telegram_id": 3131})
+check("force-new purchase with an in-flow name succeeds", r.status_code == 200)
+with Session(engine) as session:
+    a_new = session.exec(select(Account).where(Account.service_name == "موبایل فاطمه")).first()
+check("the newborn account carries the in-flow name", a_new is not None)
+
+# Extension-path naming: a renewal WITH a name renames the extended service.
+# The renewal extends the NEWEST live service — the force-new account just
+# created above — and its name is the customer's latest intent for THAT.
+r = client.post("/api/shop/bot/purchase", headers=BOT,
+                json={"telegram_id": 3131, "data_limit_gb": 5, "service_name": "موبایل جدید علی"})
+check("renewal with a name succeeds", r.status_code == 200)
+with Session(engine) as session:
+    check("the renewal renamed the extended service",
+          session.get(Account, a_new.id).service_name == "موبایل جدید علی")
+
+# A renewal WITHOUT a name leaves the name untouched.
+r = client.post("/api/shop/bot/purchase", headers=BOT,
+                json={"telegram_id": 3131, "data_limit_gb": 5})
+check("renewal without a name succeeds", r.status_code == 200)
+with Session(engine) as session:
+    check("the name survives an unnamed renewal",
+          session.get(Account, a_new.id).service_name == "موبایل جدید علی")
+
+# Over-long name refused at the API edge.
+r = client.post("/api/shop/bot/purchase", headers=BOT,
+                json={"telegram_id": 3131, "data_limit_gb": 5, "service_name": "ن" * 41})
+check("41-char in-flow name refused", r.status_code in (400, 422))
+
 print()
 if failures:
     print(f"{len(failures)} FAILED: {failures}")
