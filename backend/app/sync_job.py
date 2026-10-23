@@ -2,7 +2,7 @@ import asyncio
 import logging
 import math
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sqlmodel import Session, select
@@ -260,10 +260,43 @@ async def _maybe_auto_queue_next_plan(session: Session, account: Account, now: d
         # as a heads-up so the operator still finds out, but no plan is
         # guessed at (same "insufficient_data" principle the dashboard
         # itself follows rather than showing a number from too little data).
-        await _notify_admin(
-            f"⚠️ اکانت «{account.marzban_username}» {status_text}، ولی هنوز داده‌ی کافی "
-            "برای میانگین مصرف نداریم — پلن بعدی رو دستی تنظیم کن."
-        )
+        #
+        # AT MOST ONCE A DAY (live 2026-10-23): this branch queues NOTHING,
+        # so the qualifying condition stayed true on every 60-second sync
+        # cycle and the operator got this exact Telegram message once a
+        # minute until a human acted (account 183, zz_irancell_plain, 0.66
+        # GB left with too-thin history). Mark the episode with an
+        # AccountEvent — the same once-per-episode discipline the delegate
+        # warnings use — and stay silent for 24h. The plan being set by
+        # hand, the account dropping out of the near-quota window, or
+        # enough history accumulating all clear the condition for real.
+        last_insufficient = session.exec(
+            select(AccountEvent)
+            .where(
+                AccountEvent.account_id == account.id,
+                AccountEvent.action == "auto_queue_insufficient_data",
+            )
+            .order_by(AccountEvent.date.desc())
+        ).first()
+        # Both sides forced naive: `now` arrives tz-aware here, but a datetime
+        # that has round-tripped through SQLite comes back naive, and
+        # aware - naive raises TypeError (caught upstream as a failed
+        # auto-queue attempt, which would have disabled the dedupe entirely).
+        episode_stale = last_insufficient is None or (
+            now.replace(tzinfo=None) - last_insufficient.date.replace(tzinfo=None)
+        ) > timedelta(hours=24)
+        if episode_stale:
+            await _notify_admin(
+                f"⚠️ اکانت «{account.marzban_username}» {status_text}، ولی هنوز داده‌ی کافی "
+                "برای میانگین مصرف نداریم — پلن بعدی رو دستی تنظیم کن."
+            )
+            session.add(AccountEvent(
+                account_id=account.id,
+                action="auto_queue_insufficient_data",
+                detail=f"operator notified ({status_text}); monthly_avg_usage returned None",
+                created_by="system:auto-queue",
+            ))
+            session.commit()
         return
 
     # The billing decision takes the DAMPENED estimate, not the raw one
