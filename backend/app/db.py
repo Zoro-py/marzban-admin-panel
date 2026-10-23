@@ -485,6 +485,11 @@ def _run_shop_migrations() -> None:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shoptopup_order_id ON shoptopup (order_id)"))
 
         settings_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(shopsettings)"))}
+        if settings_cols and "shop_inbound_tags" not in settings_cols:
+            # JSON-encoded list of Marzban inbound tags the shop puts into its
+            # created accounts (see ShopSettings.shop_inbound_tags). NULL =
+            # unselected = Marzban's own panel defaults.
+            conn.execute(text("ALTER TABLE shopsettings ADD COLUMN shop_inbound_tags TEXT"))
         if settings_cols and "provisional_enabled" not in settings_cols:
             # Defaults ON for an existing shop: it only ever ADDS a small
             # service to a customer who has already sent a receipt, and an

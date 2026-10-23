@@ -2,7 +2,7 @@ import * as React from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { apiErrorMessage, shopApi } from '@/lib/api'
-import type { ShopSettings, ShopTopup, ShopUser } from '@/lib/types'
+import type { ShopInboundInfo, ShopSettings, ShopTopup, ShopUser } from '@/lib/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -539,6 +539,7 @@ function ShopSettingsForm() {
         trial_hours: Number(draft.trial_hours ?? 24),
         payg_enabled: Boolean(draft.payg_enabled),
         payg_rate_per_gb: draft.payg_rate_per_gb != null ? Number(draft.payg_rate_per_gb) : null,
+        shop_inbound_tags: draft.shop_inbound_tags ?? [],
       }),
     onSuccess: () => {
       toast.success('Shop settings saved')
@@ -753,6 +754,17 @@ function ShopSettingsForm() {
           </Field>
         </div>
 
+        <ShopInboundsCard
+          selected={draft.shop_inbound_tags ?? []}
+          onToggle={(tag, checked) => {
+            const current = draft.shop_inbound_tags ?? []
+            set(
+              'shop_inbound_tags',
+              checked ? [...current, tag] : current.filter((t) => t !== tag),
+            )
+          }}
+        />
+
         <div>
           {settingsInvalid && (
             <p className="text-xs text-destructive">
@@ -765,6 +777,61 @@ function ShopSettingsForm() {
         </div>
       </CardContent>
     </Card>
+  )
+}
+
+// Which Marzban inbounds go into accounts the SHOP creates. The list is the
+// server's LIVE inbounds (never a stored copy), grouped by protocol, with the
+// currently selected tags ticked. Empty selection = Marzban's own panel
+// defaults — the honest note says so, because on this deployment those
+// defaults include Shadowsocks, which the owner explicitly excluded
+// (2026-10-23): the intended state is vless tags only.
+function ShopInboundsCard({
+  selected,
+  onToggle,
+}: {
+  selected: string[]
+  onToggle: (tag: string, checked: boolean) => void
+}) {
+  const query = useQuery({ queryKey: ['shop', 'inbounds'], queryFn: shopApi.shopInbounds })
+
+  return (
+    <div className="flex flex-col gap-3 rounded-md border p-3">
+      <div>
+        <span className="text-sm">Service inbounds (accounts the shop creates)</span>
+        <p className="mt-1 text-xs text-muted-foreground">
+          Pick which server inbounds every shop-built account carries. Nothing selected = Marzban applies its own
+          panel defaults. The list is live from the panel — a protocol you untick (e.g. Shadowsocks) never reaches a
+          customer's account.
+        </p>
+      </div>
+      {query.isLoading && <Skeleton className="h-20 w-full" />}
+      {query.isError && <LoadFailed what="the server's inbound list" onRetry={() => query.refetch()} />}
+      {query.data && (
+        <div className="flex flex-col gap-1.5">
+          {query.data.inbounds.map((inb: ShopInboundInfo) => (
+            <label key={inb.tag} className="flex cursor-pointer items-center gap-2 text-xs">
+              <Checkbox
+                checked={selected.includes(inb.tag)}
+                onCheckedChange={(c) => onToggle(inb.tag, c === true)}
+              />
+              <Badge variant={selected.includes(inb.tag) ? 'default' : 'secondary'} className="w-24 justify-center font-mono text-[10px]">
+                {inb.protocol}
+              </Badge>
+              <span className="font-mono tabular-nums">{inb.tag}</span>
+              {inb.hosts.length > 1 && (
+                <span className="text-muted-foreground">· {inb.hosts.length} hosts</span>
+              )}
+            </label>
+          ))}
+          {selected.length === 0 && (
+            <p className="text-xs text-warning">
+              Nothing selected — Marzban's own panel defaults apply to every shop-built account.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 

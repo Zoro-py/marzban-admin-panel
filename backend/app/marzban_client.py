@@ -164,6 +164,16 @@ class MarzbanClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def list_inbounds(self) -> dict:
+        """The panel's LIVE inbound config, Marzban-shaped: {host: [inbound, …]}
+        with each inbound carrying tag/protocol. The shop's inbound selection
+        (ShopSettings.shop_inbound_tags) is validated against and resolved
+        through this — never against a stored copy, which would silently keep
+        offering tags the server no longer has."""
+        resp = await self._request("GET", "/api/inbounds")
+        resp.raise_for_status()
+        return resp.json()
+
     async def create_user(self, payload: dict) -> dict:
         resp = await self._request("POST", "/api/user", json=payload)
         if resp.status_code >= 400:

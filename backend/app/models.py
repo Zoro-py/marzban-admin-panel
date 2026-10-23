@@ -754,6 +754,18 @@ class ShopSettings(SQLModel, table=True):
     # same convention as price_per_gb == 0 blocking prepay in quote_price.
     payg_rate_per_gb: Optional[int] = None
 
+    # Which Marzban inbound TAGS go into accounts the SHOP creates (purchases,
+    # payg starts). Owner requirement 2026-10-23: shop accounts are vless-only
+    # (no shadowsocks) and the operator picks the tags in the panel, from the
+    # server's LIVE inbounds (GET /api/shop/inbounds). None/empty = the keys
+    # are omitted from the create payload and Marzban applies its own panel
+    # defaults. Stored as a JSON-encoded list of tag strings (SQLite has no
+    # array type; the service layer parses it) — tags are matched across ALL
+    # hosts, and the create payload derives both `proxies` (one entry per
+    # selected tag's protocol) and `inbounds` (per-host tag lists) from the
+    # same selection, so the two can never disagree.
+    shop_inbound_tags: Optional[str] = None
+
 
 # ══════════════════════════════════════════════════ delegated self-service
 #

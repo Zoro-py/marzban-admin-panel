@@ -605,6 +605,9 @@ class ShopSettingsRead(BaseModel):
     trial_hours: int = 24
     payg_enabled: bool = False
     payg_rate_per_gb: Optional[int] = None
+    # Parsed from the TEXT column's JSON (the router decodes before
+    # responding). Empty/None = unselected = Marzban's own panel defaults.
+    shop_inbound_tags: Optional[list[str]] = None
 
 
 class ShopSettingsUpdate(BaseModel):
@@ -641,6 +644,9 @@ class ShopSettingsUpdate(BaseModel):
     trial_hours: Optional[int] = Field(default=None, ge=1, le=720)
     payg_enabled: Optional[bool] = None
     payg_rate_per_gb: Optional[int] = Field(default=None, ge=0)
+    # Panel-picked Marzban inbound tags for shop-created accounts; validated
+    # against the server's LIVE inbounds in the router before persisting.
+    shop_inbound_tags: Optional[list[str]] = None
 
 
 class ShopUserRead(BaseModel):

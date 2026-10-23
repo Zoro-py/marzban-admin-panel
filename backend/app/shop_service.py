@@ -14,6 +14,8 @@ without reading the comment on that function.
 
 from __future__ import annotations
 
+import json
+
 import asyncio
 import logging
 import secrets
@@ -404,6 +406,48 @@ def _record_delivered(session: Session, order: ShopOrder, username: str, marzban
     session.commit()
 
 
+async def _shop_inbounds_payload(session: Session) -> Optional[tuple[dict, dict]]:
+    """Resolve the operator's panel-selected inbound tags (ShopSettings.
+    shop_inbound_tags) into the (proxies, inbounds) pair for a create payload,
+    against the server's LIVE inbounds — never a stored copy. Returns None
+    (→ the payload omits the keys → Marzban's own panel defaults) when the
+    selection is unset/empty, unparseable, the Marzban list call fails, or
+    NOTHING selected still exists on the server: falling back to Marzban's
+    defaults is always safer than guessing a half-known list. Owner rule
+    2026-10-23: shop accounts carry exactly the protocols/tags the operator
+    picked — e.g. vless-only, never shadowsocks."""
+    row = get_shop_settings(session)
+    raw = row.shop_inbound_tags
+    if not raw:
+        return None
+    try:
+        selected = set(json.loads(raw))
+    except (ValueError, TypeError):
+        logger.warning("shop_inbound_tags is not valid JSON — ignoring (Marzban defaults apply)")
+        return None
+    if not selected:
+        return None
+    try:
+        hosts = await marzban_client.list_inbounds()
+    except Exception:  # noqa: BLE001 — Marzban down: defaults beat guessing
+        logger.warning("Could not list Marzban inbounds for the shop selection — Marzban defaults apply")
+        return None
+    proxies: dict = {}
+    inbounds: dict = {}
+    for host, inbs in (hosts or {}).items():
+        matched = [i["tag"] for i in inbs or [] if i.get("tag") in selected]
+        if matched:
+            inbounds[host] = matched
+            for i in inbs or []:
+                if i.get("tag") in selected:
+                    proxies[i["protocol"]] = {}
+    if not inbounds:
+        logger.warning("None of the shop's selected inbounds (%s) exist on the server — Marzban defaults apply",
+                       sorted(selected))
+        return None
+    return proxies, inbounds
+
+
 async def _provision_order(
     session: Session,
     order: ShopOrder,
@@ -456,6 +500,11 @@ async def _provision_order(
         payload["proxies"] = app_settings.marzban_default_proxies
     if app_settings.marzban_default_inbounds:
         payload["inbounds"] = app_settings.marzban_default_inbounds
+    # Panel selection WINS over the env/config defaults (owner rule
+    # 2026-10-23): the operator picks the exact tags in the panel.
+    panel_pair = await _shop_inbounds_payload(session)
+    if panel_pair is not None:
+        payload["proxies"], payload["inbounds"] = panel_pair
 
     try:
         marzban_user = await marzban_client.create_user(payload)
@@ -2058,6 +2107,11 @@ async def start_payg_service(session: Session, shop_user: ShopUser) -> ShopOrder
         payload["proxies"] = app_settings.marzban_default_proxies
     if app_settings.marzban_default_inbounds:
         payload["inbounds"] = app_settings.marzban_default_inbounds
+    # Panel selection WINS over the env/config defaults (owner rule
+    # 2026-10-23): the operator picks the exact tags in the panel.
+    panel_pair = await _shop_inbounds_payload(session)
+    if panel_pair is not None:
+        payload["proxies"], payload["inbounds"] = panel_pair
     try:
         marzban_user = await marzban_client.create_user(payload)
     except (ValueError, MarzbanUnavailable, MarzbanAuthError) as exc:

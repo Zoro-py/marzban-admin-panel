@@ -30,6 +30,8 @@ money (only an operator approval does that) nor touch anything outside /shop.
 
 from __future__ import annotations
 
+import json
+
 import logging
 import secrets
 from datetime import timedelta
@@ -65,6 +67,7 @@ from app.notify import (
     send_to_shop_user,
 )
 from app.qr import subscription_qr_png
+from app.marzban_client import marzban_client
 from app.schemas import (
     ShopBotAccountRow,
     ShopBotClaimLinkRequest,
@@ -181,12 +184,18 @@ def _shop_user_row(session: Session, user: ShopUser) -> ShopUserRead:
 
 
 @router.get("/settings", response_model=ShopSettingsRead)
-def read_settings(session: Session = Depends(get_session)):
-    return get_shop_settings(session)
+async def read_settings(session: Session = Depends(get_session)):
+    row = get_shop_settings(session)
+    if row.shop_inbound_tags:
+        try:
+            row.shop_inbound_tags = json.loads(row.shop_inbound_tags)
+        except (ValueError, TypeError):
+            row.shop_inbound_tags = None
+    return row
 
 
 @router.patch("/settings", response_model=ShopSettingsRead)
-def update_settings(body: ShopSettingsUpdate, session: Session = Depends(get_session)):
+async def update_settings(body: ShopSettingsUpdate, session: Session = Depends(get_session)):
     settings = get_shop_settings(session)
     updates = body.model_dump(exclude_unset=True)
 
@@ -244,12 +253,68 @@ def update_settings(body: ShopSettingsUpdate, session: Session = Depends(get_ses
     if "support_handle" in updates and updates["support_handle"]:
         updates["support_handle"] = updates["support_handle"].strip().lstrip("@") or None
 
+    # Shop inbound selection: validate every tag against the server's LIVE
+    # inbounds (a stale/typo'd tag would silently fall back to Marzban
+    # defaults for THAT tag — better to refuse with the reason), then store
+    # as JSON (the column is TEXT). Empty list = clear the selection.
+    if "shop_inbound_tags" in updates:
+        wanted = sorted(set(updates["shop_inbound_tags"] or []))
+        if wanted:
+            try:
+                hosts = await marzban_client.list_inbounds()
+            except Exception as exc:  # noqa: BLE001 — cannot validate → refuse, don't guess
+                raise HTTPException(502, f"Could not validate the inbound selection against Marzban: {exc}")
+            live_tags = {i.get("tag") for inbs in (hosts or {}).values() for i in inbs or []}
+            unknown = [t for t in wanted if t not in live_tags]
+            if unknown:
+                raise HTTPException(
+                    400,
+                    "These inbound tags don't exist on the server anymore: " + ", ".join(unknown),
+                )
+        updates["shop_inbound_tags"] = json.dumps(wanted) if wanted else None
+
     for field, value in updates.items():
         setattr(settings, field, value)
     session.add(settings)
     session.commit()
     session.refresh(settings)
+    if settings.shop_inbound_tags:
+        try:
+            settings.shop_inbound_tags = json.loads(settings.shop_inbound_tags)
+        except (ValueError, TypeError):
+            settings.shop_inbound_tags = None
     return settings
+
+
+@router.get("/inbounds")
+async def list_shop_inbounds(session: Session = Depends(get_session)):
+    """The server's LIVE Marzban inbounds, grouped by tag, plus which ones the
+    operator has currently selected for shop-created accounts. The UI renders
+    this as the checkbox list on the Shop settings tab — one source of truth,
+    so a tag that no longer exists on the server can never be re-selected."""
+    settings_row = get_shop_settings(session)
+    selected: list[str] = []
+    if settings_row.shop_inbound_tags:
+        try:
+            selected = json.loads(settings_row.shop_inbound_tags)
+        except (ValueError, TypeError):
+            selected = []
+    try:
+        hosts = await marzban_client.list_inbounds()
+    except Exception as exc:  # noqa: BLE001 — surface as 502, the UI shows a toast
+        raise HTTPException(502, f"Could not read Marzban's inbound list: {exc}")
+    grouped: dict[str, dict] = {}
+    for host, inbs in (hosts or {}).items():
+        for i in inbs or []:
+            entry = grouped.setdefault(
+                i.get("tag", ""), {"tag": i.get("tag"), "protocol": i.get("protocol"), "hosts": []}
+            )
+            if host not in entry["hosts"]:
+                entry["hosts"].append(host)
+    inbounds = sorted(grouped.values(), key=lambda e: (e["protocol"], e["tag"]))
+    for e in inbounds:
+        e["selected"] = e["tag"] in selected
+    return {"inbounds": inbounds, "selected": [t for t in selected]}
 
 
 @router.get("/users", response_model=list[ShopUserRead])

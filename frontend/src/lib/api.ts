@@ -31,6 +31,7 @@ import type {
   RateChange,
   ReportSummary,
   ShopOrder,
+  ShopInboundsResponse,
   ShopSettings,
   ShopLinkInvite,
   ShopLinkState,
@@ -333,6 +334,10 @@ export const shopApi = {
   settings: async () => (await api.get<ShopSettings>('/api/shop/settings')).data,
   updateSettings: async (body: Partial<Omit<ShopSettings, 'id'>>) =>
     (await api.patch<ShopSettings>('/api/shop/settings', body)).data,
+  // The server's LIVE Marzban inbounds + the current shop selection — the
+  // checkbox list on the Settings tab. Live, never a stored copy.
+  shopInbounds: async () =>
+    (await api.get<ShopInboundsResponse>('/api/shop/inbounds')).data,
   users: async () => (await api.get<ShopUser[]>('/api/shop/users')).data,
   updateUser: async (id: number, body: { is_blocked?: boolean; customer_id?: number | null }) =>
     (await api.patch<ShopUser>(`/api/shop/users/${id}`, body)).data,

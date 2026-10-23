@@ -614,6 +614,24 @@ export interface ShopSettings {
   trial_hours: number
   payg_enabled: boolean
   payg_rate_per_gb: number | null
+  // Marzban inbound tags applied to accounts the SHOP creates (purchases and
+  // payg starts). Empty/undefined = Marzban's own panel defaults. The panel
+  // picks them from the server's LIVE inbounds (shopApi.shopInbounds).
+  shop_inbound_tags?: string[] | null
+}
+
+// One entry of GET /api/shop/inbounds — the server's LIVE inbounds grouped by
+// tag, so the operator only ever selects tags that actually exist.
+export interface ShopInboundInfo {
+  tag: string
+  protocol: string
+  hosts: string[]
+  selected: boolean
+}
+
+export interface ShopInboundsResponse {
+  inbounds: ShopInboundInfo[]
+  selected: string[]
 }
 
 export interface ShopUser {
