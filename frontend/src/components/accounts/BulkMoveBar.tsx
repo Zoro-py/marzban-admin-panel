@@ -122,7 +122,6 @@ export function BulkMoveBar({ selected, onClear }: { selected: AccountRow[]; onC
                 placeholder="Pick a customer or group…"
                 searchPlaceholder="Search customers and groups…"
                 options={[
-                  { value: NONE, label: '— pick —', disabled: true },
                   ...customers.map((c) => ({ value: `c:${c.id}`, label: `Customer: ${c.name}` })),
                   ...groups.map((g) => ({ value: `g:${g.id}`, label: `Group: ${g.name}` })),
                 ]}

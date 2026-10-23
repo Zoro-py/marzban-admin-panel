@@ -85,15 +85,15 @@ function PendingBody({ state }: { state: ShopLinkState }) {
 // reports the confirmation-DM outcome honestly afterwards.
 function NotLinkedBody({ customerName, customerId }: { customerName: string; customerId: number }) {
   const queryClient = useQueryClient()
-  const [showBind, setShowBind] = useState(false)
-  const [telegramId, setTelegramId] = useState('')
-  const [username, setUsername] = useState('')
-
   const invite = useMutation({
     mutationFn: () => shopApi.inviteLink(customerId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['shop-link', customerId] }),
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
+
+  const [showBind, setShowBind] = useState(false)
+  const [telegramId, setTelegramId] = useState('')
+  const [username, setUsername] = useState('')
 
   const bind = useMutation({
     mutationFn: () =>
@@ -194,12 +194,6 @@ export function ShopLinkCard({ customerId }: { customerId: number }) {
   const { data: state, isLoading } = useQuery({
     queryKey: ['shop-link', customerId],
     queryFn: () => shopApi.linkState(customerId),
-  })
-
-  const invite = useMutation({
-    mutationFn: () => shopApi.inviteLink(customerId),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['shop-link', customerId] }),
-    onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
   const unlink = useMutation({
