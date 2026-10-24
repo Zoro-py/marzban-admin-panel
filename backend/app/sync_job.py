@@ -410,7 +410,16 @@ async def _maybe_settle_payg_cap_hit(session: Session, account: Account, now: da
         # down. If the meter looks fine but Marzban still reports the
         # account blocked, retry ONLY the reactivation here — no new
         # reset, no new charge, this account was already settled.
-        if account.status not in ("active", None):
+        # 2026-10-24 flap fix: this retry exists ONLY for the cap-hit block
+        # ('limited' — Marzban's data-limit state). 'expired' matched too and
+        # produced an infinite loop on payg accounts whose expire was already
+        # past: sync PUTs active, Marzban core re-expires it seconds later
+        # (the expire field is unchanged), next cycle PUTs again — a 60s
+        # active/expired flap plus a Telegram "reactivated" message each
+        # round (live: Keyhan/Amir_taheri, group-11 payg members with a
+        # leftover pre-pay expire). An expired account is EXPIRED — reviving
+        # it is a human decision (renew), never this retry.
+        if account.status == "limited":
             try:
                 marzban_user = await marzban_client.modify_user(account.marzban_username, {"status": "active"})
             except Exception:
