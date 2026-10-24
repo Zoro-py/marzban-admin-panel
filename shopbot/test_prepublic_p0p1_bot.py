@@ -72,6 +72,8 @@ class StubBackend:
         self.topup_posts: list[dict] = []
         self.pay_error: tuple[str, int] | None = None
 
+    username_posts: list = []
+
     async def post(self, path: str, json=None, timeout: float = 20):
         if path == "/api/shop/bot/orders":
             if self.order_error is not None:
@@ -80,6 +82,9 @@ class StubBackend:
         if path == "/api/shop/bot/topups":
             self.topup_posts.append(json or {})
             return {"reference_code": "ABCD", "status": "pending"}
+        if path.startswith("/api/shop/bot/orders/") and path.endswith("/username"):
+            self.username_posts.append(json or {})
+            return {"ok": True}
         if path.startswith("/api/shop/bot/orders/") and path.endswith("/pay"):
             if self.pay_error is not None:
                 raise shop.ShopApiError(self.pay_error[0], status=self.pay_error[1])
@@ -114,6 +119,7 @@ def order_intent(**overrides) -> dict:
         "order_id": 77, "data_limit_gb": 10, "duration_days": 30,
         "price": 100_000, "balance": 0, "shortfall": 100_000,
         "payable_from_wallet": False, "card_number": "6037-9911-2222-3333",
+        "creates_new": True,
         "card_holder": None, "approval_eta_minutes": 30,
     }
     intent.update(overrides)
@@ -128,7 +134,7 @@ async def main() -> None:
     # F-E: the optional-name step sits between the volume and the payment
     # screen — an empty text answers it as "no name", continuing the flow on
     # the SAME context (the stashed volume/state live there).
-    msg.text = ""
+    msg.text = shop.texts.SKIP_NAME  # the «بدون نام» button's own text
     upd.message = msg  # handle_text reads update.message.text
     await shop.handle_text(upd, context)
     check("sub-min shortfall asks for min_topup, not the shortfall",
@@ -157,7 +163,7 @@ async def main() -> None:
     # F-E: the optional-name step sits between the volume and the payment
     # screen — an empty text answers it as "no name", continuing the flow on
     # the SAME context (the stashed volume/state live there).
-    msg.text = ""
+    msg.text = shop.texts.SKIP_NAME  # the «بدون نام» button's own text
     upd.message = msg  # handle_text reads update.message.text
     await shop.handle_text(upd, context)
     check("above-min shortfall asks exactly the shortfall",
@@ -175,7 +181,7 @@ async def main() -> None:
     # F-E: the optional-name step sits between the volume and the payment
     # screen — an empty text answers it as "no name", continuing the flow on
     # the SAME context (the stashed volume/state live there).
-    msg.text = ""
+    msg.text = shop.texts.SKIP_NAME  # the «بدون نام» button's own text
     upd.message = msg  # handle_text reads update.message.text
     await shop.handle_text(upd, context)
     check("min_topup=0 asks the bare shortfall as before",
@@ -186,13 +192,9 @@ async def main() -> None:
     # ── F3(b): the PAYG_TOPUP_INSTEAD 409 ─────────────────────────────────
     stub.order_error = ("PAYG_TOPUP_INSTEAD: current service is metered", 409)
     (upd, context), msg = make_update()
+    # The 409 fires INSIDE _handle_volume (before the name step) — the flow
+    # ends here, so no name-step answer follows.
     await shop._handle_volume(upd, context, 10)
-    # F-E: the optional-name step sits between the volume and the payment
-    # screen — an empty text answers it as "no name", continuing the flow on
-    # the SAME context (the stashed volume/state live there).
-    msg.text = ""
-    upd.message = msg  # handle_text reads update.message.text
-    await shop.handle_text(upd, context)
     check("PAYG_TOPUP_INSTEAD maps to its own text",
           msg.replies[-1][0] == texts.PAYG_TOPUP_INSTEAD)
     check("PAYG_TOPUP_INSTEAD clears the flow state", context.user_data == {})
@@ -202,13 +204,9 @@ async def main() -> None:
     # SERVICE_IS_UNLIMITED keeps its existing mapping (regression).
     stub.order_error = ("SERVICE_IS_UNLIMITED: renewal target has no cap", 409)
     (upd, context), msg = make_update()
+    # The 409 fires INSIDE _handle_volume (before the name step) — the flow
+    # ends here, so no name-step answer follows.
     await shop._handle_volume(upd, context, 10)
-    # F-E: the optional-name step sits between the volume and the payment
-    # screen — an empty text answers it as "no name", continuing the flow on
-    # the SAME context (the stashed volume/state live there).
-    msg.text = ""
-    upd.message = msg  # handle_text reads update.message.text
-    await shop.handle_text(upd, context)
     check("SERVICE_IS_UNLIMITED still maps to SERVICE_UNLIMITED",
           msg.replies[-1][0] == texts.SERVICE_UNLIMITED)
     stub.order_error = None

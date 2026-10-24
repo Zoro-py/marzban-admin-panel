@@ -620,7 +620,12 @@ class ShopOrder(SQLModel, table=True):
     # customer's latest intent renames the service they just topped up).
     # None = never named; delivery leaves any existing name untouched.
     service_name: Optional[str] = None
-
+    # The Marzban username the CUSTOMER chose for this service (asked in the
+    # bot's purchase flow, optional — empty = the auto shop{id} name). Stored
+    # on the order at creation/answer time; _provision_order uses it instead
+    # of the auto name. Extensions never rename (Marzban usernames are
+    # immutable identity).
+    requested_username: Optional[str] = None
     data_limit_gb: float
     duration_days: int
     price: int  # whole Toman, snapshot of the price at purchase time

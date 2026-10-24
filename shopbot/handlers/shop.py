@@ -61,6 +61,8 @@ _STATE_CONFIRMING_WALLET_BUY = "confirming_wallet_buy"
 _STATE_CONFIRMING_PAYG_START = "confirming_payg_start"
 _STATE_CHOOSING_TOPUP = "choosing_topup"
 _STATE_AWAITING_RECEIPT = "awaiting_receipt"
+_STATE_AWAITING_OPTIONAL_USERNAME = "awaiting_optional_username"
+_PENDING_INTENT = "pending_intent"
 _STATE_AWAITING_SERVICE_NAME = "awaiting_service_name"
 _SERVICE_NAME_ACCOUNT = "service_name_account_id"
 _STATE_AWAITING_OPTIONAL_NAME = "awaiting_optional_name"
@@ -584,43 +586,20 @@ def _payment_request_text(intent: dict, ask: int | None = None) -> str:
 
 
 async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, volume: float) -> None:
-    """Volume chosen. Asks for an OPTIONAL service name (skippable — the F-E
-    owner request: customers name the service at the moment they care about
-    it), then creates the ORDER — which takes no money — and shows whichever
-    of the two payment screens applies."""
+    """Volume chosen. Creates the ORDER — which takes no money — then, when
+    this purchase MINTS a new user, asks for the customer's CHOSEN Marzban
+    username (optional; skip = the auto shop{id} name) before the payment
+    screen. Extensions cannot rename, so they skip the ask entirely."""
     session = await _session(update)
     if not (session["min_gb"] <= volume <= session["max_gb"]):
         await update.effective_message.reply_text(texts.out_of_range(session["min_gb"], session["max_gb"]))
         return
 
-    # Stash the choice and ask for a name. The state machine answers BEFORE
-    # the menu dispatch (see handle_text), so a stray menu tap cannot wipe
-    # this step silently — explicit buttons are the only way out.
-    context.user_data[_STATE] = _STATE_AWAITING_OPTIONAL_NAME
-    context.user_data[_PENDING_VOLUME_VALUE] = volume
-    context.user_data[_PENDING_FORCE_NEW] = bool(context.user_data.get(_FORCE_NEW_SERVICE))
-    await update.effective_message.reply_text(
-        texts.ASK_OPTIONAL_NAME,
-        reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton(texts.SKIP_NAME)], [KeyboardButton(texts.CANCEL)]],
-            resize_keyboard=True,
-        ),
-    )
-
-
-async def _create_order_and_ask_payment(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                                        volume: float, service_name: str | None,
-                                        *, force_new: bool = False) -> None:
-    """The original _handle_volume body: create the order, then the payment
-    screen. `service_name` rides the order and is applied to the account at
-    delivery (or on extension — the customer's latest intent)."""
-    session = await _session(update)
     try:
         intent = await backend.post("/api/shop/bot/orders", json={
             "telegram_id": update.effective_user.id,
             "data_limit_gb": volume,
-            "force_new_service": force_new,
-            "service_name": service_name,
+            "force_new_service": bool(context.user_data.get(_FORCE_NEW_SERVICE)),
         })
     except ShopApiError as exc:
         if getattr(exc, "status", 0) == 409 and "SERVICE_IS_UNLIMITED" in str(exc):
@@ -644,6 +623,34 @@ async def _create_order_and_ask_payment(update: Update, context: ContextTypes.DE
 
     context.user_data[_ORDER_ID] = intent["order_id"]
     context.user_data[_PENDING_VOLUME] = intent["data_limit_gb"]
+
+    if intent.get("creates_new"):
+        # F-E2 (owner 2026-10-24): a NEW service carries the customer's CHOSEN
+        # username — the name their VPN app and subscription actually show —
+        # instead of an auto shop10. Optional (skip = auto), and the answer
+        # passes a live availability check before any payment moves. The
+        # state answers BEFORE the menu dispatch (see handle_text): a menu
+        # tap mid-ask used to wipe it silently.
+        context.user_data[_STATE] = _STATE_AWAITING_OPTIONAL_USERNAME
+        context.user_data[_PENDING_INTENT] = intent
+        await update.effective_message.reply_text(
+            texts.ASK_OPTIONAL_USERNAME,
+            reply_markup=ReplyKeyboardMarkup(
+                [[KeyboardButton(texts.SKIP_NAME)], [KeyboardButton(texts.CANCEL)]],
+                resize_keyboard=True,
+            ),
+        )
+        return
+
+    return await _payment_screens(update, context, intent)
+
+
+async def _payment_screens(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                           intent: dict) -> None:
+    """The two payment screens (one-tap wallet confirm / card-to-card receipt
+    ask), driven by the order intent. Split from the order creation so the
+    optional-username step can sit between them."""
+    session = await _session(update)
 
     if intent["payable_from_wallet"]:
         # Enough credit already: one tap, no card, no human in the loop.
@@ -1028,6 +1035,60 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     a real dead end in the previous version.
     """
     text = (update.message.text or "").strip()
+
+    # The username ask answers BEFORE the menu dispatch — the live customer
+    # report: a «سرویس‌های من» tap mid-ask wiped the pending state silently
+    # (every handler starts with context.user_data.clear()). Named escapes
+    # only: «انصراف» cancels, a menu button cancels AND runs its menu,
+    # «بدون نام» takes the auto name, anything else is the chosen username.
+    if context.user_data.get(_STATE) == _STATE_AWAITING_OPTIONAL_USERNAME:
+        intent = context.user_data.get(_PENDING_INTENT) or {}
+        order_id = context.user_data.get(_ORDER_ID)
+        if text == texts.CANCEL:
+            context.user_data.clear()
+            session = None
+            try:
+                session = await _session(update)
+            except ShopApiError:
+                pass
+            await update.effective_message.reply_text(
+                texts.PURCHASE_CANCELLED,
+                reply_markup=main_menu(session),
+            )
+            return
+        if text in (texts.MENU_BUY, texts.MENU_NEW_SERVICE, texts.MENU_ACCOUNTS,
+                    texts.MENU_WALLET, texts.MENU_TOPUP, texts.MENU_PAYG,
+                    texts.MENU_TRIAL, texts.MENU_HELP):
+            context.user_data.clear()
+            return await handle_text(update, context)  # re-dispatch as a menu tap
+        if text == texts.SKIP_NAME:
+            chosen = None  # auto shop{id} name
+        else:
+            chosen = text.strip()
+            # Instant local pattern check; the definitive availability check
+            # runs server-side now, and AGAIN at create_user (a race refunds,
+            # never double-charges).
+            if not re.match(r"^[a-zA-Z0-9_-]{3,30}$", chosen):
+                await update.effective_message.reply_text(texts.USERNAME_INVALID)
+                return
+        try:
+            await backend.post(f"/api/shop/bot/orders/{order_id}/username",
+                               json={"telegram_id": update.effective_user.id, "name": chosen or ""})
+        except ShopApiError as exc:
+            if getattr(exc, "status", 0) == 409:
+                # Taken — the ask stays open so the customer tries another.
+                await update.effective_message.reply_text(texts.username_taken(chosen))
+                return
+            logger.exception("Username set failed for %s (order %s)",
+                             update.effective_user.id, order_id)
+            await update.effective_message.reply_text(texts.generic_error(None))
+            return
+        context.user_data.clear()
+        # The order binding MUST survive: the card path's receipt submission
+        # posts its topup bound to this order id (order-first flow).
+        context.user_data[_ORDER_ID] = order_id
+        context.user_data[_PENDING_INTENT] = intent
+        return await _payment_screens(update, context, intent)
 
     # The ✏️ rename ask ALSO answers before the menu dispatch — the same
     # live report: a «سرویس‌های من» tap mid-rename wiped the ask silently.

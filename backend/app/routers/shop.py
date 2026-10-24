@@ -31,6 +31,7 @@ money (only an operator approval does that) nor touch anything outside /shop.
 from __future__ import annotations
 
 import json
+import re
 
 import logging
 import secrets
@@ -122,6 +123,7 @@ from app.shop_service import (
     purchase,
     quote_price,
     reactivate_suspended_payg_accounts,
+    renewable_account,
     refuse_unlimited_renewal,
     reject_topup,
     revoke_provisional,
@@ -987,6 +989,33 @@ def bot_quote(body: ShopBotPurchaseRequest, session: Session = Depends(get_sessi
         raise HTTPException(409 if str(exc).startswith("SERVICE_IS_UNLIMITED") else 400, str(exc))
 
 
+_USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{3,30}$")
+
+
+def _clean_chosen_username(raw: Optional[str]) -> Optional[str]:
+    """The customer-chosen Marzban username: trimmed, pattern-validated
+    (letters/digits/_/-, 3-30 — Marzban's own rule). None = "auto" (shop{id}).
+    Raises ShopError with a Persian sentence the bot shows verbatim."""
+    name = (raw or "").strip()
+    if not name:
+        return None
+    if not _USERNAME_PATTERN.match(name):
+        raise ShopError(
+            "نام کاربری فقط حروف انگلیسی، عدد و _ یا - است — بین ۳ تا ۳۰ کاراکتر."
+        )
+    return name
+
+
+async def _ensure_username_available(name: Optional[str]) -> None:
+    """Definitive pre-money availability check against the live panel: a name
+    Marzban already knows is refused BEFORE any payment moves (the definitive
+    guard is still create_user — a race here refunds, never double-charges)."""
+    if not name:
+        return
+    if await marzban_client.get_user(name) is not None:
+        raise ShopError("این نام کاربری قبلاً گرفته شده — یکی دیگر انتخاب کن.")
+
+
 def _clean_service_name(raw: Optional[str]) -> Optional[str]:
     """The customer-typed service name: trimmed, capped at 40, empty -> None
     (never an empty string on the account). The schema caps the length too;
@@ -1002,7 +1031,16 @@ async def bot_purchase(body: ShopBotPurchaseRequest, session: Session = Depends(
         raise HTTPException(404, "Unknown shop user — call /session first")
 
     try:
-        order = await purchase(session, user, body.data_limit_gb, service_name=_clean_service_name(body.service_name))
+        chosen = _clean_chosen_username(body.marzban_username)
+    except ShopError as exc:
+        raise HTTPException(400, str(exc))
+    try:
+        await _ensure_username_available(chosen)
+    except ShopError as exc:
+        raise HTTPException(409, str(exc))
+
+    try:
+        order = await purchase(session, user, body.data_limit_gb, service_name=_clean_service_name(body.service_name), marzban_username=chosen)
     except ShopError as exc:
         # A 400 with the user-facing sentence, which the bot shows verbatim.
         # The unlimited refusal AND the payg refusal (F3b) ride 409 with
@@ -1096,7 +1134,7 @@ async def bot_deliver_qr(order_id: int, body: ShopBotOrderAction, session: Sessi
 
 
 @bot_router.post("/orders", response_model=ShopOrderIntent)
-def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depends(get_session)):
+async def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depends(get_session)):
     """Records what the customer chose, BEFORE asking them for money.
 
     This is the order-first flow. The old shape made a first-time buyer fund a
@@ -1120,8 +1158,16 @@ def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depends(ge
     except ShopError as exc:
         raise HTTPException(409, str(exc))
     try:
+        chosen = _clean_chosen_username(body.marzban_username)
+    except ShopError as exc:
+        raise HTTPException(400, str(exc))
+    try:
+        await _ensure_username_available(chosen)
+    except ShopError as exc:
+        raise HTTPException(409, str(exc))
+    try:
         order = create_awaiting_order(session, user, body.data_limit_gb, force_new_service=body.force_new_service,
-                                  service_name=_clean_service_name(body.service_name))
+                                  service_name=_clean_service_name(body.service_name), marzban_username=chosen)
     except ShopError as exc:
         raise HTTPException(
             409 if str(exc).startswith(("SERVICE_IS_UNLIMITED", "PAYG_TOPUP_INSTEAD")) else 400,
@@ -1130,8 +1176,12 @@ def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depends(ge
 
     balance = wallet_balance(session, user.id)
     settings = get_shop_settings(session)
+    creates_new = body.force_new_service or (
+        renewable_account(session, user.id) is None and order.account_id is None
+    )
     return ShopOrderIntent(
         order_id=order.id,
+        creates_new=creates_new,
         data_limit_gb=order.data_limit_gb,
         duration_days=order.duration_days,
         price=order.price,
@@ -1145,6 +1195,38 @@ def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depends(ge
         card_holder=settings.card_holder,
         approval_eta_minutes=settings.approval_eta_minutes,
     )
+
+
+@bot_router.post("/orders/{order_id}/username")
+async def bot_set_order_username(order_id: int, body: ShopBotServiceNameRequest,
+                                 session: Session = Depends(get_session)):
+    """Sets the customer-chosen Marzban username on a still-awaiting order —
+    the answer to the bot's optional username question, arriving AFTER the
+    order exists (the bot learns whether the purchase mints a new user from
+    the intent's creates_new). Availability is checked against the live panel
+    here, and again definitively at create_user (a race refunds, never
+    double-charges). The order must belong to this telegram's shop user."""
+    user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
+    if user is None:
+        raise HTTPException(404, "Unknown shop user — call /session first")
+    order = session.get(ShopOrder, order_id)
+    if order is None or order.shop_user_id != user.id:
+        raise HTTPException(404, "not found")
+    if order.status != ShopOrderStatus.awaiting_payment:
+        raise HTTPException(409, "This order is already past the username step")
+    try:
+        chosen = _clean_chosen_username(body.name)
+        if chosen:
+            await _ensure_username_available(chosen)
+    except ShopError as exc:
+        # Invalid pattern -> 400, taken -> 409; both carry the Persian
+        # sentence the bot shows verbatim so the customer can retry IN the
+        # ask (the state stays open on a 409).
+        raise HTTPException(409 if "قبلاً گرفته شده" in str(exc) else 400, str(exc))
+    order.requested_username = chosen
+    session.add(order)
+    session.commit()
+    return {"ok": True, "requested_username": order.requested_username}
 
 
 @bot_router.post("/orders/{order_id}/pay", response_model=ShopPurchaseResult)

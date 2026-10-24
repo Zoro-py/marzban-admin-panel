@@ -821,6 +821,11 @@ class ShopBotOrderAction(BaseModel):
 
 
 class ShopBotPurchaseRequest(BaseModel):
+    # The customer-chosen Marzban username for a NEW service (optional;
+    # pattern-validated here, availability-checked against the live panel in
+    # the router). Empty = the auto shop{id} name.
+    marzban_username: Optional[str] = Field(default=None, max_length=30)
+
     telegram_id: int
     # Bounded here as well as in shop_service.validate_purchase_request: this
     # stops an absurd value (1e9 GB) reaching the pricing multiplication at
@@ -912,6 +917,10 @@ class ShopOrderIntent(BaseModel):
     # one of the concrete defects in the previous flow.
     shortfall: int
     payable_from_wallet: bool
+    # True when this order will MINT a new Marzban user (vs extend the
+    # customer's existing one) — the bot asks for a chosen username only
+    # then; extensions cannot rename.
+    creates_new: bool = False
     card_number: Optional[str] = None
     card_holder: Optional[str] = None
     approval_eta_minutes: int

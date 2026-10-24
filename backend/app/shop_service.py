@@ -230,7 +230,8 @@ def validate_purchase_request(settings: ShopSettings, data_limit_gb: float) -> N
 
 
 async def purchase(session: Session, shop_user: ShopUser, data_limit_gb: float,
-                   service_name: Optional[str] = None) -> ShopOrder:
+                   service_name: Optional[str] = None,
+                   marzban_username: Optional[str] = None) -> ShopOrder:
     """Buy one plan from the wallet, then provision it.
 
     ORDER OF OPERATIONS — this is the part that matters:
@@ -486,7 +487,10 @@ async def _provision_order(
     from app.config import settings as app_settings
 
     seconds = duration_hours * 3600 if duration_hours is not None else order.duration_days * SECONDS_IN_DAY
-    username = f"{settings.username_prefix}{order.id}"
+    # The customer's chosen username wins when they picked one in the bot's
+    # purchase flow; the auto shop{id} name is the fallback. Extensions never
+    # reach this with a rename — Marzban usernames are immutable identity.
+    username = order.requested_username or f"{settings.username_prefix}{order.id}"
     payload = {
         "username": username,
         "expire": int(utcnow().timestamp()) + seconds,
@@ -1160,7 +1164,7 @@ async def grant_trial(session: Session, shop_user: ShopUser) -> ShopOrder:
 
 def create_awaiting_order(
     session: Session, shop_user: ShopUser, data_limit_gb: float, *, force_new_service: bool = False,
-    service_name: Optional[str] = None,
+    service_name: Optional[str] = None, marzban_username: Optional[str] = None,
 ) -> ShopOrder:
     """Records what the customer chose, before asking them for any money.
 
@@ -1187,6 +1191,7 @@ def create_awaiting_order(
         status=ShopOrderStatus.awaiting_payment,
         force_new_service=force_new_service,
         service_name=(service_name or None),
+        requested_username=(marzban_username or None),
     )
     session.add(order)
     session.commit()
