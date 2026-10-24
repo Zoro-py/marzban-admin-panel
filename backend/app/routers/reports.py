@@ -316,7 +316,12 @@ def finance(
     # Everything below stays naive-UTC to match what's actually stored.
     now = utcnow().replace(tzinfo=None)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    all_entries = session.exec(select(LedgerEntry)).all()
+    # Money figures (month totals + per-day buckets) read only LIVE entries —
+    # a voided row is history, not revenue and not a charge (see
+    # models.LedgerEntry's void block). The recent-transactions list below
+    # keeps voided rows visible, flagged, so a voided deposit still explains
+    # itself there instead of vanishing from the page entirely.
+    all_entries = session.exec(select(LedgerEntry).where(LedgerEntry.voided_at.is_(None))).all()
 
     revenue_this_month = sum(e.amount for e in all_entries if e.type == LedgerType.credit and e.date >= month_start)
     charged_this_month = sum(e.amount for e in all_entries if e.type == LedgerType.charge and e.date >= month_start)
@@ -357,6 +362,9 @@ def finance(
         # A picked window replaces the "recent" cap with "everything in the
         # window", still bounded — 500 rows is far past any honest browsing
         # need and keeps a pathological full-history request off the wire.
+        # Reads ALL rows including voided ones: the recent list is a visibility
+        # surface, not a money figure; a voided deposit stays visible here with
+        # its void flag so it explains itself instead of silently vanishing.
         recent = (
             session.exec(
                 select(LedgerEntry)
@@ -376,6 +384,8 @@ def finance(
             "note": e.note,
             "customer_name": customer_names.get(e.customer_id) if e.customer_id else None,
             "group_name": group_names.get(e.group_id) if e.group_id else None,
+            "voided": e.voided_at is not None,
+            "void_reason": e.void_reason,
         }
         for e in recent
     ]

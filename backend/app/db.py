@@ -359,6 +359,14 @@ def _run_lightweight_migrations() -> None:
             # before this column existed, and a guessed username would be
             # worse than an honest blank.
             conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN created_by VARCHAR"))
+        if existing_ledger and "voided_at" not in existing_ledger:
+            # Void stamp (2026-10-24, see models.LedgerEntry's void block) —
+            # NULL for every existing row, which is correct: nothing was ever
+            # voided before this existed. voided_by/void_reason ride the same
+            # startup so the three can never be partially present.
+            conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN voided_at DATETIME"))
+            conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN voided_by VARCHAR"))
+            conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN void_reason VARCHAR"))
 
         existing_event = {row[1] for row in conn.execute(text("PRAGMA table_info(accountevent)"))}
         if existing_event and "created_by" not in existing_event:

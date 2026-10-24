@@ -8,8 +8,21 @@ from sqlmodel import Session, select
 from app.auth import require_auth
 from app.db import get_session
 from app.models import Account, Customer, Group, LedgerEntry
-from app.schemas import BalanceRead, LedgerCreate, LedgerRead
-from app.services import IdempotencyConflict, IdempotencyRegistry, MoneyBook
+from app.schemas import (
+    BalanceRead,
+    LedgerCreate,
+    LedgerRead,
+    LedgerVoidRequest,
+    LedgerVoidResult,
+)
+from app.services import (
+    IdempotencyConflict,
+    IdempotencyRegistry,
+    MoneyBook,
+    account_posted_balance,
+    group_only_posted_balance,
+    serialise_billing,
+)
 
 router = APIRouter(prefix="/api/ledger", tags=["ledger"], dependencies=[Depends(require_auth)])
 
@@ -227,3 +240,131 @@ async def get_statement(
     if result is None:
         raise HTTPException(404, "Scope not found")
     return result
+
+
+# ── void / unvoid (2026-10-24) ────────────────────────────────────────────────
+#
+# The owner-facing answer to "واریز اشتباه رو بتونم از حساب‌کتاب حذف کنم"
+# WITHOUT breaking the append-only rule the ledger's correctness hangs on
+# (models.LedgerEntry's class docstring, DOMAIN_AND_BILLING.md §1): the row is
+# never deleted and its amount never edited — voiding STAMPS it
+# (voided_at/by/reason), and every money computation in the system excludes
+# stamped rows. The stamp itself is the audit trail: who withdrew it, when,
+# and why (the reason is mandatory).
+#
+# Deliberately NOT compensated with a mirror entry: a compensating entry would
+# keep both rows visible in every listing forever and double the noise a
+# mistaken deposit already caused; the stamp keeps the audit (the row shows
+# struck-through, with who/when/why) while every balance, statement, finance
+# bucket, debt-nudge replay, audit pass and charge-history total drops it —
+# verified exhaustively by tests/test_ledger_void.py.
+#
+# What voiding does NOT undo (documented, deliberate): side effects that
+# already happened outside this table. A voided payg settle's charge does not
+# re-open the meter epoch that was closed when it posted (the usage was really
+# consumed and really reset — re-opening it would re-bill GB the meter says
+# were billed), and a voided mark-paid credit does not un-check the
+# MonthlySettlementBatch row (un-mark it by hand if that pairing matters).
+# The void result's before/after balances are exactly where the operator sees
+# the effect and decides.
+
+
+def _owning_scope(session: Session, entry: LedgerEntry) -> tuple[str, int]:
+    """The single owner a LedgerEntry is summed at (DOMAIN_AND_BILLING.md §1:
+    account_id, else group_id, else customer_id — the other FK columns are
+    display metadata, never a second bucket)."""
+    if entry.account_id is not None:
+        return "account", entry.account_id
+    if entry.group_id is not None:
+        return "group", entry.group_id
+    if entry.customer_id is not None:
+        return "customer", entry.customer_id
+    raise HTTPException(400, "This entry has no owning scope (all of account/group/customer are NULL)")
+
+
+def _scope_balance(session: Session, scope: str, scope_id: int) -> float:
+    """The posted balance of exactly the bucket the entry lives in — the same
+    figure a void moves. Group rows are measured against the GROUP-ONLY bucket
+    (a member account's balance is a different bucket), customer rows against
+    the customer roll-up MoneyBook attributes the customer-level bucket to."""
+    if scope == "account":
+        return account_posted_balance(session, scope_id)
+    if scope == "group":
+        return group_only_posted_balance(session, scope_id)
+    customer = session.get(Customer, scope_id)
+    if customer is None:
+        raise HTTPException(404, "customer_id not found")
+    return round(MoneyBook(session).customer_posted(customer), 2)
+
+
+@router.post("/{entry_id}/void", response_model=LedgerVoidResult)
+@serialise_billing
+async def void_ledger_entry(
+    entry_id: int,
+    body: LedgerVoidRequest,
+    session: Session = Depends(get_session),
+    operator: str = Depends(require_auth),
+):
+    """Withdraw a mistaken entry. Takes the process-wide billing lock so a
+    concurrent settle can't interleave its read-compute-write around the
+    balance snapshot this returns. Idempotence is the STATE guard below, not
+    an idempotency key: a second void of the same row is a 409, not a second
+    stamp."""
+    entry = session.get(LedgerEntry, entry_id)
+    if not entry:
+        raise HTTPException(404, "Ledger entry not found")
+    if entry.voided_at is not None:
+        raise HTTPException(409, "This entry is already voided")
+    scope_name, scope_id = _owning_scope(session, entry)
+
+    balance_before = _scope_balance(session, scope_name, scope_id)
+    entry.voided_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    entry.voided_by = operator
+    entry.void_reason = body.reason.strip()
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+    balance_after = _scope_balance(session, scope_name, scope_id)
+    return LedgerVoidResult(
+        entry=LedgerRead.model_validate(entry, from_attributes=True),
+        scope=scope_name,
+        scope_id=scope_id,
+        scope_balance_before=round(balance_before, 2),
+        scope_balance_after=round(balance_after, 2),
+    )
+
+
+@router.post("/{entry_id}/unvoid", response_model=LedgerVoidResult)
+@serialise_billing
+async def unvoid_ledger_entry(
+    entry_id: int,
+    session: Session = Depends(get_session),
+    operator: str = Depends(require_auth),
+):
+    """Undo a mistaken void — the safety valve for "I voided the wrong row".
+    Clears the stamp; the row counts in every sum again. The fact that it was
+    once voided is visible in the audit trail only as this row's past state
+    (the void's reason is gone with the stamp — a fresh unvoid needs no
+    reason, it is itself the operator's statement)."""
+    entry = session.get(LedgerEntry, entry_id)
+    if not entry:
+        raise HTTPException(404, "Ledger entry not found")
+    if entry.voided_at is None:
+        raise HTTPException(409, "This entry is not voided")
+    scope_name, scope_id = _owning_scope(session, entry)
+
+    balance_before = _scope_balance(session, scope_name, scope_id)
+    entry.voided_at = None
+    entry.voided_by = None
+    entry.void_reason = None
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+    balance_after = _scope_balance(session, scope_name, scope_id)
+    return LedgerVoidResult(
+        entry=LedgerRead.model_validate(entry, from_attributes=True),
+        scope=scope_name,
+        scope_id=scope_id,
+        scope_balance_before=round(balance_before, 2),
+        scope_balance_after=round(balance_after, 2),
+    )

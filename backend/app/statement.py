@@ -267,7 +267,15 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
     acc_by_id = {a.id: a for a in scope.accounts}
     cond = _scope_condition(scope)
 
-    rows = session.exec(select(LedgerEntry).where(cond).order_by(LedgerEntry.date, LedgerEntry.id)).all()
+    # Voided entries are history, not money (models.LedgerEntry's void block):
+    # they open no balance, bill nothing, and pay nothing here. They are also
+    # deliberately NOT shown in the statement's activity list — the statement
+    # answers "how did this balance come to be", and a voided row contributed
+    # nothing to it. The full ledger page (with the void stamps visible) is
+    # where withdrawn rows live.
+    rows = session.exec(
+        select(LedgerEntry).where(LedgerEntry.voided_at.is_(None), cond).order_by(LedgerEntry.date, LedgerEntry.id)
+    ).all()
     opening = round(sum(_signed(e) for e in rows if e.date < since), 2)
     window = [e for e in rows if since <= e.date < until]
     after = [e for e in rows if e.date >= until]

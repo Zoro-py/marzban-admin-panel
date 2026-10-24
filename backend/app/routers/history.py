@@ -208,7 +208,11 @@ def charge_history(
     by_id = {a.id: a for a in accounts}
     ordered_accounts = [by_id[i] for i in ids]
 
-    # One IN-query per table — never a per-account loop.
+    # One IN-query per table — never a per-account loop. Voided rows ride
+    # along in the ENTRY list (flagged — see HistoryEntry.voided) so a
+    # withdrawn charge still explains itself on the timeline, but the
+    # summaries below are computed from LIVE rows only: a voided entry
+    # billed nothing and paid nothing (models.LedgerEntry's void block).
     rows = session.exec(
         select(LedgerEntry)
         .where(LedgerEntry.account_id.in_(ids))  # type: ignore[arg-type]
@@ -216,6 +220,7 @@ def charge_history(
         .where(LedgerEntry.date <= until_naive)
         .order_by(LedgerEntry.date, LedgerEntry.id)
     ).all()
+    live_rows = [r for r in rows if r.voided_at is None]
     packages = session.exec(
         select(QueuedPlan)
         .where(QueuedPlan.account_id.in_(ids))  # type: ignore[arg-type]
@@ -256,7 +261,7 @@ def charge_history(
         return value.replace(tzinfo=timezone.utc) if value is not None else None
 
     rows_by_account: dict[int, list[LedgerEntry]] = {i: [] for i in ids}
-    for row in rows:
+    for row in live_rows:
         rows_by_account[row.account_id].append(row)
 
     return ChargeHistoryResponse(
@@ -286,6 +291,8 @@ def charge_history(
                 source=r.source,
                 created_by=r.created_by,
                 note=r.note,
+                voided=r.voided_at is not None,
+                void_reason=r.void_reason,
             )
             # include_credits only hides credits from the ENTRY list — the
             # summaries below are computed from the unfiltered rows.
@@ -312,5 +319,5 @@ def charge_history(
             for e in events
         ],
         summaries={str(i): _summarize(rows_by_account[i]) for i in ids},
-        totals=_summarize(list(rows)),
+        totals=_summarize(live_rows),
     )

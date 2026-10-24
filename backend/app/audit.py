@@ -179,6 +179,7 @@ def build_anomalies(session: Session, *, lookback_days: int = 60) -> dict:
 
     charges = session.exec(
         select(LedgerEntry).where(
+            LedgerEntry.voided_at.is_(None),
             LedgerEntry.account_id.in_(list(by_id)), LedgerEntry.type == LedgerType.charge, LedgerEntry.date >= since
         )
     ).all() if by_id else []
@@ -187,7 +188,10 @@ def build_anomalies(session: Session, *, lookback_days: int = 60) -> dict:
         charges_by_acc[e.account_id].append(e)
 
     money_events = session.exec(
-        select(LedgerEntry).where(LedgerEntry.account_id.in_(list(by_id)), LedgerEntry.date >= since - EXTERNAL_CHANGE_BILL_WINDOW)
+        select(LedgerEntry).where(
+            LedgerEntry.voided_at.is_(None),
+            LedgerEntry.account_id.in_(list(by_id)), LedgerEntry.date >= since - EXTERNAL_CHANGE_BILL_WINDOW,
+        )
     ).all() if by_id else []
     money_by_acc: dict[int, list[LedgerEntry]] = defaultdict(list)
     for e in money_events:

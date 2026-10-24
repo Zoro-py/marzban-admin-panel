@@ -274,6 +274,24 @@ class LedgerEntry(SQLModel, table=True):
     # rows predating the column — same convention as gb_amount.
     created_by: Optional[str] = None
 
+    # ── VOID (2026-10-24) ─────────────────────────────────────────────────
+    # An entry the operator has withdrawn (a mistaken deposit, a duplicate
+    # payment typed twice). The append-only rule above is NOT relaxed: the
+    # row is never deleted or amount-edited — voiding STAMPS it. A voided
+    # row is excluded from every balance/sum/revenue/aging computation
+    # (MoneyBook, statement, finance buckets, debt-nudge replay, audit,
+    # charge history totals) but stays visible in ledger/history listings,
+    # struck through with its reason, so "why did the balance jump" always
+    # has an answer. Un-void (clearing all three fields) exists for a
+    # mistaken void and is equally operator-only and audited by the row
+    # itself carrying voided_by.
+    # AccountEvent-level compensation is NOT needed: money never moved
+    # inside this dashboard because of the voided row — the void simply
+    # stops it counting.
+    voided_at: Optional[datetime] = None
+    voided_by: Optional[str] = None
+    void_reason: Optional[str] = None
+
 
 class AppSettings(SQLModel, table=True):
     """Single-row table (id is always 1) for dashboard-wide settings — currently

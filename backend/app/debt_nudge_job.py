@@ -60,7 +60,11 @@ def _customer_ledger_scope(session: Session, customer: Customer) -> list[LedgerE
     conditions.append(
         (LedgerEntry.account_id.is_(None)) & (LedgerEntry.group_id.is_(None)) & (LedgerEntry.customer_id == customer.id)
     )
-    return session.exec(select(LedgerEntry).where(or_(*conditions)).order_by(LedgerEntry.date.asc())).all()
+    return session.exec(
+        select(LedgerEntry)
+        .where(LedgerEntry.voided_at.is_(None), or_(*conditions))
+        .order_by(LedgerEntry.date.asc())
+    ).all()
 
 
 def _debt_age_days(entries: list[LedgerEntry], now: datetime) -> float | None:

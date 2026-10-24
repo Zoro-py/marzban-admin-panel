@@ -7,7 +7,7 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from app.models import Account, AccountEvent, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, QueuedPlan, QueuedPlanStatus, utcnow
+from app.models import Account, AccountEvent, AppSettings, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, QueuedPlan, QueuedPlanStatus, ShopOrder, utcnow
 
 # ══════════════════════════════════════════════════════════════ the money model
 #
@@ -133,12 +133,17 @@ class MoneyBook:
         self._credits_customer_only: dict[int, float] = defaultdict(float)
         from sqlmodel import func
 
+        # Every sum below reads only LIVE (never-voided) entries — a voided
+        # row (models.LedgerEntry's void block) is history, not money. The
+        # condition rides every statement in this constructor so no accessor
+        # can accidentally see a voided row.
+        _live = LedgerEntry.voided_at.is_(None)
         # Sum by account_id where account_id is not null
-        stmt_acc = select(LedgerEntry.account_id, LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.account_id.is_not(None)).group_by(LedgerEntry.account_id, LedgerEntry.type)
+        stmt_acc = select(LedgerEntry.account_id, LedgerEntry.type, func.sum(LedgerEntry.amount)).where(_live, LedgerEntry.account_id.is_not(None)).group_by(LedgerEntry.account_id, LedgerEntry.type)
         # Sum by group_id where account_id is null and group_id is not null
-        stmt_grp = select(LedgerEntry.group_id, LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_not(None)).group_by(LedgerEntry.group_id, LedgerEntry.type)
+        stmt_grp = select(LedgerEntry.group_id, LedgerEntry.type, func.sum(LedgerEntry.amount)).where(_live, LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_not(None)).group_by(LedgerEntry.group_id, LedgerEntry.type)
         # Sum by customer_id where account_id is null and group_id is null and customer_id is not null
-        stmt_cust = select(LedgerEntry.customer_id, LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_(None), LedgerEntry.customer_id.is_not(None)).group_by(LedgerEntry.customer_id, LedgerEntry.type)
+        stmt_cust = select(LedgerEntry.customer_id, LedgerEntry.type, func.sum(LedgerEntry.amount)).where(_live, LedgerEntry.account_id.is_(None), LedgerEntry.group_id.is_(None), LedgerEntry.customer_id.is_not(None)).group_by(LedgerEntry.customer_id, LedgerEntry.type)
         if since is not None:
             stmt_acc = stmt_acc.where(LedgerEntry.date >= since)
             stmt_grp = stmt_grp.where(LedgerEntry.date >= since)
@@ -207,6 +212,7 @@ class MoneyBook:
             ),
         )
         for stmt, bucket in gb_specs:
+            stmt = stmt.where(_live)
             if since is not None:
                 stmt = stmt.where(LedgerEntry.date >= since)
             for scope_id, gb_c, gb_u, amt, amt_u in session.exec(stmt).all():
@@ -226,7 +232,7 @@ class MoneyBook:
         for id_col, conditions, bucket in meta_specs:
             stmt = (
                 select(id_col, func.count(LedgerEntry.id), func.count(LedgerEntry.gb_amount), gb_known_amount)
-                .where(*conditions, LedgerEntry.type == LedgerType.charge)
+                .where(_live, *conditions, LedgerEntry.type == LedgerType.charge)
                 .group_by(id_col)
             )
             if since is not None:
@@ -245,7 +251,7 @@ class MoneyBook:
         accounts_by_id = {a.id: a for a in self._accounts}
         consumed_rows = session.exec(
             select(LedgerEntry.account_id, LedgerEntry.consumed_gb, LedgerEntry.date)
-            .where(LedgerEntry.account_id.is_not(None), LedgerEntry.consumed_gb.is_not(None))
+            .where(_live, LedgerEntry.account_id.is_not(None), LedgerEntry.consumed_gb.is_not(None))
         ).all()
         for acc_id, c_gb, entry_date in consumed_rows:
             account = accounts_by_id.get(acc_id)
@@ -434,7 +440,7 @@ def account_posted_balance(session: Session, account_id: int) -> float:
     """One account's posted balance, read directly — for the settle endpoints,
     which need this mid-transaction and shouldn't pay for a whole MoneyBook."""
     from sqlmodel import func
-    stmt = select(LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.account_id == account_id).group_by(LedgerEntry.type)
+    stmt = select(LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.voided_at.is_(None), LedgerEntry.account_id == account_id).group_by(LedgerEntry.type)
     return sum(amount if l_type == LedgerType.charge else -amount for l_type, amount in session.exec(stmt).all())
 
 
@@ -444,7 +450,7 @@ def group_only_posted_balance(session: Session, group_id: int) -> float:
     group and marking it paid has to clear this too, or "paid in full" would
     leave the group still owing money it had no member to attribute it to."""
     from sqlmodel import func
-    stmt = select(LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.group_id == group_id, LedgerEntry.account_id.is_(None)).group_by(LedgerEntry.type)
+    stmt = select(LedgerEntry.type, func.sum(LedgerEntry.amount)).where(LedgerEntry.voided_at.is_(None), LedgerEntry.group_id == group_id, LedgerEntry.account_id.is_(None)).group_by(LedgerEntry.type)
     return sum(amount if l_type == LedgerType.charge else -amount for l_type, amount in session.exec(stmt).all())
 
 
@@ -801,6 +807,7 @@ def attributable_consumed_gb(session: Session, account: Account) -> float:
     stmt = (
         select(func.sum(LedgerEntry.consumed_gb))
         .where(
+            LedgerEntry.voided_at.is_(None),
             LedgerEntry.account_id == account.id,
             LedgerEntry.consumed_gb.is_not(None),
         )
@@ -1009,6 +1016,50 @@ def enrich_accounts(session: Session, accounts: list[Account], book: Optional[Mo
         ).all()
         accounts_with_next_plan = set(pending_plans)
 
+    # Creation origin per account (owner ask 2026-10-24: «کدوم خودم زدم کدوم
+    # باته») — batch-loaded once, never per-row. Two sources, joined in this
+    # order: a ShopOrder delivered onto the account is AUTHORITATIVE (the shop
+    # bot minted it, whatever the audit event says), then the account's newest
+    # creation-shaped AccountEvent (panel create / bulk batch / delegate
+    # self-service). An account with NEITHER was adopted from Marzban by the
+    # sync job (the only remaining writer of Account rows) — or predates the
+    # events table entirely; both read as "not minted by this dashboard".
+    origin_by_account: dict[int, tuple[Optional[str], Optional[str]]] = {}
+    if account_ids:
+        shop_order_rows = session.exec(
+            select(ShopOrder.account_id, ShopOrder.id).where(ShopOrder.account_id.in_(account_ids))
+        ).all()
+        shop_order_by_account = {acc_id: order_id for acc_id, order_id in shop_order_rows}
+        origin_events: dict[int, AccountEvent] = {}
+        for ev in session.exec(
+            select(AccountEvent).where(
+                AccountEvent.account_id.in_(account_ids),
+                AccountEvent.action.in_(["create", "delegate_create"]),
+            )
+        ).all():
+            # Rows come unordered-ish; iterating in date order is not needed —
+            # keep the LAST one per account by primary key (creation events are
+            # once-per-life; a duplicate means a restore/migration landed twice,
+            # and the newest row is the one that stuck).
+            if ev.account_id not in origin_events or (ev.id or 0) > (origin_events[ev.account_id].id or 0):
+                origin_events[ev.account_id] = ev
+        for a in accounts:
+            if a.id is None:
+                continue
+            order_id = shop_order_by_account.get(a.id)
+            if order_id is not None:
+                origin_by_account[a.id] = ("shop", f"order #{order_id}")
+                continue
+            ev = origin_events.get(a.id)
+            if ev is None:
+                origin_by_account[a.id] = ("sync", None)
+            elif ev.action == "delegate_create":
+                origin_by_account[a.id] = ("delegate", ev.detail)
+            elif (ev.detail or "").startswith("Created via bulk batch"):
+                origin_by_account[a.id] = ("bulk", ev.created_by)
+            else:
+                origin_by_account[a.id] = ("web", ev.created_by)
+
     # created_at/first_seen_traffic_at round-trip through SQLite as naive even
     # though utcnow() produces an aware datetime (same quirk documented in
     # reports.py) — strip tzinfo here too so the subtraction below doesn't raise.
@@ -1047,6 +1098,8 @@ def enrich_accounts(session: Session, accounts: list[Account], book: Optional[Mo
                 has_next_plan=a.id in accounts_with_next_plan,
                 payer_balance_since=round(since_book.account_posted(a), 2) if since_book else None,
                 net_owed_since=(round(since_book.account_posted(a) + pending, 2) if since_book else None),
+                created_via=origin_by_account.get(a.id, (None, None))[0],
+                created_via_detail=origin_by_account.get(a.id, (None, None))[1],
             )
         )
     return rows

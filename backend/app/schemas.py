@@ -315,6 +315,13 @@ class AccountRow(AccountRead):
     monthly_avg_usage_gb: Optional[float]
     usage_confidence: Literal["insufficient_data", "preliminary", "full"]
     usage_sample_days: float
+    # Where this account came from (owner ask 2026-10-24): "web" = minted by
+    # the operator in this panel (detail = their login), "bulk" = a family
+    # batch, "shop" = the customer-facing shop bot (detail = order ref),
+    # "delegate" = delegate self-service, "sync" = adopted from Marzban
+    # (never minted here). NULL only if derivation found nothing at all.
+    created_via: Optional[Literal["web", "bulk", "shop", "delegate", "sync"]] = None
+    created_via_detail: Optional[str] = None
     # True if a QueuedPlan with status='pending' exists for this account —
     # shown as a small badge in the accounts table so the operator can see at
     # a glance which accounts are covered.
@@ -389,6 +396,33 @@ class LedgerRead(BaseModel):
     # Raw login username of the operator who posted it — set on web-sourced
     # rows only (sync/bot/shop/delegate carry their own source label).
     created_by: Optional[str] = None
+    # Void stamp (see models.LedgerEntry's void block) — NULL while the entry
+    # is live. Voided rows are excluded from every balance/sum but stay
+    # visible in listings, struck through with their reason.
+    voided_at: Optional[datetime] = None
+    voided_by: Optional[str] = None
+    void_reason: Optional[str] = None
+
+
+class LedgerVoidRequest(BaseModel):
+    """Body of POST /api/ledger/{id}/void — the reason is mandatory and
+    becomes part of the row's permanent stamp (NOT a free-text note the
+    operator can skip: a voided deposit with no "why" is how the next audit
+    session turns into archaeology)."""
+
+    reason: str = Field(min_length=3, max_length=300)
+
+
+class LedgerVoidResult(BaseModel):
+    """Response of void/unvoid — the stamped entry plus the owning scope's
+    posted balance measured BEFORE and AFTER the change, so the operator sees
+    exactly what the void did to the books in the same response that did it."""
+
+    entry: LedgerRead
+    scope: Literal["customer", "group", "account"]
+    scope_id: int
+    scope_balance_before: float
+    scope_balance_after: float
 
 
 class BalanceRead(BaseModel):
@@ -1258,6 +1292,10 @@ class HistoryEntry(BaseModel):
     source: LedgerSource
     created_by: Optional[str] = None
     note: Optional[str] = None
+    # True = the operator voided this row (a mistaken deposit/charge): shown
+    # struck through, excluded from every summary/totals figure.
+    voided: bool = False
+    void_reason: Optional[str] = None
 
 
 class HistoryPackage(BaseModel):
@@ -1312,3 +1350,68 @@ class ChargeHistoryResponse(BaseModel):
     # Keyed by str(account_id) — JSON object keys are strings.
     summaries: dict[str, HistorySummary]
     totals: HistorySummary
+
+
+# ══════════════════════════════════════════════ telegram connections (2026-10-24)
+#
+# One operator view over "who is reachable through Telegram and what they did
+# there" — the shop-bot link, the delegate grant, and the merged bot timeline.
+# See routers/connections.py for the assembly rules; every field here is a
+# read of rows other flows already wrote.
+
+class ShopLinkSummary(BaseModel):
+    """The shop-bot link of one customer, collapsed to the state its row is in:
+    "linked" (owner pressed Start — carries the telegram identity + wallet),
+    "pending" (a one-time invite link exists, unclaimed), "none"."""
+
+    state: Literal["linked", "pending", "none"]
+    invite_url: Optional[str] = None
+    claim_expires_at: Optional[datetime] = None
+    linked_at: Optional[datetime] = None
+    shop_user_id: Optional[int] = None
+    telegram_id: Optional[int] = None
+    telegram_username: Optional[str] = None
+    display_name: Optional[str] = None
+    wallet_balance: Optional[int] = None
+    last_seen_at: Optional[datetime] = None
+    is_blocked: bool = False
+
+
+class DelegateSummary(BaseModel):
+    """The customer-scoped delegate grant, collapsed to the one row that
+    matters (active claim > pending invite > most recent revoked)."""
+
+    id: int
+    state: Literal["claimed", "pending", "revoked"]
+    telegram_id: Optional[int] = None
+    label: Optional[str] = None
+    credit_limit: Optional[float] = None
+    claim_expires_at: Optional[datetime] = None
+    is_active: bool = True
+
+
+class ConnectionRow(BaseModel):
+    """One row of GET /api/connections — a customer with both of their
+    telegram touchpoints side by side."""
+
+    customer_id: int
+    name: str
+    kind: str  # "individual" | "family"
+    contact: Optional[str] = None
+    accounts_count: int = 0
+    shop: ShopLinkSummary
+    delegate: Optional[DelegateSummary] = None
+
+
+class BotHistoryItem(BaseModel):
+    """One merged-timeline row of GET /api/connections/{id}/bot-history.
+    `amount` is whole-Toman for shop kinds (signed: purchase debits) and
+    Toman for ledger rows; None where the kind has no money figure."""
+
+    ts: datetime
+    kind: Literal["order", "topup", "wallet", "account_event", "ledger"]
+    title: str
+    detail: Optional[str] = None
+    amount: Optional[float] = None
+    account_username: Optional[str] = None
+
