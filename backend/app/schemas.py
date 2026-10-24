@@ -404,6 +404,28 @@ class LedgerRead(BaseModel):
     void_reason: Optional[str] = None
 
 
+class ShopBindClaimRequest(BaseModel):
+    """Body of POST /api/shop/bind-claim — bind a customer by the identity
+    the operator KNOWS (@username and/or exact display name); the bot fills
+    in the numeric telegram id on the customer's first message. At least one
+    of the two is required, and they are mutually reinforcing, not either/or
+    (sending both tightens the match)."""
+
+    customer_id: int
+    telegram_username: Optional[str] = Field(default=None, max_length=64)
+    display_name: Optional[str] = Field(default=None, max_length=100)
+
+
+class ShopBindClaimRead(BaseModel):
+    id: int
+    customer_id: int
+    telegram_username: Optional[str] = None
+    display_name: Optional[str] = None
+    created_at: datetime
+    claimed_at: Optional[datetime] = None
+    claimed_telegram_id: Optional[int] = None
+
+
 class LedgerVoidRequest(BaseModel):
     """Body of POST /api/ledger/{id}/void — the reason is mandatory and
     becomes part of the row's permanent stamp (NOT a free-text note the
@@ -1028,6 +1050,12 @@ class ShopLinkState(BaseModel):
     linked_telegram_id: Optional[int] = None
     linked_at: Optional[datetime] = None
     accounts_linked: int = 0
+    # The operator's pending bind-by-identity claim (2026-10-24): what they
+    # typed instead of a numeric telegram id, waiting for the customer's
+    # first message to the bot to complete the bind. NULL = no pending claim.
+    bind_claim_username: Optional[str] = None
+    bind_claim_display_name: Optional[str] = None
+    bind_claim_created_at: Optional[datetime] = None
 
 
 class ShopTelegramBindRequest(BaseModel):
@@ -1375,6 +1403,11 @@ class ShopLinkSummary(BaseModel):
     wallet_balance: Optional[int] = None
     last_seen_at: Optional[datetime] = None
     is_blocked: bool = False
+    # Pending bind-by-identity claim — the operator typed a @username/name
+    # and is waiting for the customer's first bot message.
+    bind_claim_username: Optional[str] = None
+    bind_claim_display_name: Optional[str] = None
+    bind_claim_created_at: Optional[datetime] = None
 
 
 class DelegateSummary(BaseModel):

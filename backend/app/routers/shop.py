@@ -53,6 +53,7 @@ from app.models import (
     Group,
     ShopOrder,
     ShopOrderStatus,
+    ShopBindClaim,
     ShopTopup,
     ShopTopupStatus,
     ShopUser,
@@ -80,6 +81,8 @@ from app.schemas import (
     ShopBotSession,
     ShopBotSessionRequest,
     ShopBotTopupRequest,
+    ShopBindClaimRead,
+    ShopBindClaimRequest,
     ShopLinkInviteRead,
     ShopLinkInviteRequest,
     ShopLinkState,
@@ -697,6 +700,17 @@ def read_shop_link(customer_id: int, session: Session = Depends(get_session)):
     customer = session.get(Customer, customer_id)
     if not customer:
         raise HTTPException(404, "Customer not found")
+    claim = session.exec(
+        select(ShopBindClaim).where(ShopBindClaim.customer_id == customer_id, ShopBindClaim.claimed_at.is_(None))
+    ).first()
+
+    def _claim_kwargs() -> dict:
+        return {
+            "bind_claim_username": claim.telegram_username if claim else None,
+            "bind_claim_display_name": claim.display_name if claim else None,
+            "bind_claim_created_at": claim.created_at if claim else None,
+        }
+
     if customer.shop_user_id is not None:
         shop_user = session.get(ShopUser, customer.shop_user_id)
         return ShopLinkState(
@@ -706,6 +720,7 @@ def read_shop_link(customer_id: int, session: Session = Depends(get_session)):
             linked_telegram_id=shop_user.telegram_id if shop_user else None,
             linked_at=customer.shop_link_linked_at,
             accounts_linked=_linked_account_count(session, customer),
+            **_claim_kwargs(),
         )
     if customer.shop_link_token is not None:
         username = app_settings.shop_bot_username.strip().lstrip("@")
@@ -718,12 +733,82 @@ def read_shop_link(customer_id: int, session: Session = Depends(get_session)):
             # for free.
             invite_url=_shop_invite_url(customer.shop_link_token) if username else None,
             claim_expires_at=customer.shop_link_expires_at,
+            **_claim_kwargs(),
         )
     return ShopLinkState(
         customer_id=customer.id,
         customer_name=customer.name,
         status="not_linked",
+        **_claim_kwargs(),
     )
+
+
+@router.post("/bind-claim", response_model=ShopBindClaimRead)
+def create_bind_claim(body: ShopBindClaimRequest, session: Session = Depends(get_session)):
+    """Bind a customer by the identity the operator KNOWS — the owner's
+    2026-10-24 ask: typing a numeric Telegram id requires ASKING the customer
+    for a number nobody remembers. The operator types the @username (and/or
+    the exact display name as Telegram shows it); the claim sits pending and
+    the customer's FIRST message to the shop bot completes the bind — the bot
+    itself reports the numeric id (see bot_session's _try_complete_bind_claim
+    hook). Same bind guards as the direct bind run HERE, so an impossible
+    claim is refused at typing time, not discovered missing later."""
+    customer = session.get(Customer, body.customer_id)
+    if not customer:
+        raise HTTPException(404, "Customer not found")
+    username = _normalize_claim_username(body.telegram_username)
+    display = _normalize_claim_display(body.display_name)
+    if username is None and display is None:
+        raise HTTPException(400, "حداقل یکی از @username یا نام نمایشی لازم است")
+    refusal = _bind_guards(customer)
+    if refusal:
+        raise HTTPException(409, refusal)
+    if _customer_has_payg_billing(session, customer.id):
+        raise HTTPException(
+            409,
+            "این مشتری بیلینگ مصرفی (payg) دارد: تسویهٔ ماهانه از لجر برای مصرف واقعی "
+            "بیل می‌زند ولی خریدِ فروشگاه از کیف پول همان اکانت را تمدید می‌کند — دو "
+            "نظامِ پولی روی یک شمارنده سایه می‌اندازند. اتصالِ مشتریِ payg به فروشگاه رد می‌شود.",
+        )
+    if customer.shop_user_id is not None:
+        raise HTTPException(409, "این مشتری از قبل به تلگرام وصل است — اول جدا کنید (unlink)، بعد ادعای جدید بسازید.")
+    if username is not None:
+        taken = session.exec(
+            select(Customer).join(ShopUser, ShopUser.id == Customer.shop_user_id).where(
+                ShopUser.telegram_username == username, Customer.id != customer.id
+            )
+        ).first() if username else None
+        if taken is not None:
+            raise HTTPException(409, f"این @username از قبل به مشتریِ دیگری وصل است ({taken.name}).")
+    # One PENDING claim per customer — a corrected retry replaces the old
+    # one without needing a discard first.
+    for old_claim in session.exec(
+        select(ShopBindClaim).where(ShopBindClaim.customer_id == customer.id, ShopBindClaim.claimed_at.is_(None))
+    ).all():
+        session.delete(old_claim)
+    claim = ShopBindClaim(
+        customer_id=customer.id,
+        telegram_username=username,
+        display_name=display,
+    )
+    session.add(claim)
+    session.commit()
+    session.refresh(claim)
+    return claim
+
+
+@router.delete("/bind-claim/{customer_id}", response_model=ShopBindClaimRead)
+def discard_bind_claim(customer_id: int, session: Session = Depends(get_session)):
+    """Discard the customer's pending bind-by-identity claim (a typo, or the
+    operator learned the numeric id and used the direct bind instead)."""
+    claim = session.exec(
+        select(ShopBindClaim).where(ShopBindClaim.customer_id == customer_id, ShopBindClaim.claimed_at.is_(None))
+    ).first()
+    if not claim:
+        raise HTTPException(404, "No pending bind claim for this customer")
+    session.delete(claim)
+    session.commit()
+    return claim
 
 
 @router.delete("/link-invite/{customer_id}")
@@ -859,9 +944,15 @@ async def bind_shop_customer_telegram(
     customer.shop_user_id = shop_user.id
     customer.shop_link_linked_at = utcnow()
     # A pending invite is superseded by a direct bind: its token dies with
-    # the link, so a claim arriving later finds nothing and 404s.
+    # the link, so a claim arriving later finds nothing and 404s. Same for a
+    # pending bind-by-identity claim: the operator just did the bind by hand,
+    # so the claim has done its job and must not linger looking like work.
     customer.shop_link_token = None
     customer.shop_link_expires_at = None
+    for stale_claim in session.exec(
+        select(ShopBindClaim).where(ShopBindClaim.customer_id == customer.id, ShopBindClaim.claimed_at.is_(None))
+    ).all():
+        session.delete(stale_claim)
     session.add(customer)
     session.commit()
     session.refresh(customer)
@@ -904,6 +995,132 @@ async def _send_bind_confirmation(telegram_id: int, customer_name: str, accounts
 # ══════════════════════════════════════════════════════ shop-bot endpoints
 
 
+def _normalize_claim_username(value: Optional[str]) -> Optional[str]:
+    """@Ali / ali / ALI all store as "ali" — Telegram usernames are
+    case-insensitive and the operator will type them every possible way."""
+    if value is None:
+        return None
+    v = value.strip().lstrip("@").lower()
+    return v or None
+
+
+def _normalize_claim_display(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    v = " ".join(value.split()).casefold()
+    return v or None
+
+
+def _bind_guards(customer: Customer) -> Optional[str]:
+    """The direct-bind refusals, shared verbatim by the claim endpoints and
+    the session hook — a claim that could never legally bind must not sit
+    pending looking like work waiting to happen. Returns the refusal
+    sentence, or None when the customer is claimable."""
+    if customer.is_group_rep:
+        return (
+            "این مشتری نمایندهٔ گروه/خانواده است — اتصالِ سرویس‌های مشترکِ گروه به یک "
+            "تلگرامِ شخصی یعنی یک نفر همه را ببیند و تمدید کند. برای این حالت، دسترسیِ "
+            "دلیگیت جایگزین است."
+        )
+    return None
+
+
+def _try_complete_bind_claim(session: Session, shop_user: ShopUser) -> None:
+    """The session hook that makes «بایند با آیدی» work: the bot reports its
+    own numeric identity on EVERY /session call (bot/handlers/shop.py's
+    _session sends telegram_id + username + display_name), so the first
+    message from the named customer completes the bind — no operator round
+    trip, no numeric id ever asked for.
+
+    Strict on purpose: exactly ONE pending claim may match (two «علی»s bind
+    nothing), the direct-bind guards re-run at completion time (state may
+    have changed since the claim was written), and a ShopUser already bound
+    to another customer is never stolen. A claim that can no longer legally
+    bind (customer linked by hand meanwhile, turned group rep, gained payg
+    billing) is DELETED rather than left pending — a pending list that never
+    completes is a lie the operator re-reads every day. Runs synchronously
+    inside the session request; any failure here must never break the bot's
+    menu, hence the blanket except with a log."""
+    import logging
+
+    logger = logging.getLogger("app.shop.bind_claim")
+    try:
+        username = _normalize_claim_username(shop_user.telegram_username)
+        display = _normalize_claim_display(
+            " ".join(filter(None, [shop_user.display_name])) or None
+        ) if shop_user.display_name else None
+        if username is None and display is None:
+            return
+        from sqlalchemy import or_
+
+        conds = []
+        if username:
+            conds.append(ShopBindClaim.telegram_username == username)
+        if display:
+            conds.append(ShopBindClaim.display_name == display)
+        pending = session.exec(
+            select(ShopBindClaim).where(ShopBindClaim.claimed_at.is_(None), or_(*conds))
+        ).all()
+        if not pending:
+            return
+        customer_ids = {c.customer_id for c in pending}
+        if len(customer_ids) != 1:
+            # Ambiguous (two claims match this identity) — bind nothing, tell
+            # the operator via the log; the pending list still shows both.
+            logger.warning("bind-claim ambiguous for shop user %s (%s candidates)", shop_user.telegram_id, len(pending))
+            return
+        customer = session.get(Customer, customer_ids.pop())
+        if customer is None:
+            for c in pending:
+                session.delete(c)
+            session.commit()
+            return
+        refusal = _bind_guards(customer)
+        if refusal is None and _customer_has_payg_billing(session, customer.id):
+            refusal = "این مشتری بیلینگ مصرفی (payg) دارد و نمی‌تواند به فروشگاه وصل شود."
+        if refusal is not None:
+            logger.warning("bind-claim for customer %s no longer legal (%s) — discarded", customer.id, refusal[:60])
+            for c in pending:
+                if c.customer_id == customer.id:
+                    session.delete(c)
+            session.commit()
+            return
+        if customer.shop_user_id is not None:
+            # The operator bound this customer by hand while the claim sat
+            # pending — the manual bind wins, the claim has done its time.
+            for c in pending:
+                if c.customer_id == customer.id:
+                    session.delete(c)
+            session.commit()
+            return
+        collision = session.exec(
+            select(Customer).where(Customer.shop_user_id == shop_user.id, Customer.id != customer.id)
+        ).first()
+        if collision is not None:
+            logger.warning("bind-claim for customer %s: shop user already bound to %s", customer.id, collision.name)
+            return
+        customer.shop_user_id = shop_user.id
+        customer.shop_link_linked_at = utcnow()
+        customer.shop_link_token = None
+        customer.shop_link_expires_at = None
+        session.add(customer)
+        for c in pending:
+            if c.customer_id == customer.id:
+                c.claimed_at = utcnow()
+                c.claimed_telegram_id = shop_user.telegram_id
+                session.add(c)
+        session.commit()
+        session.refresh(customer)
+        logger.info(
+            "bind-claim COMPLETED: customer %s (%s) -> telegram %s via %s",
+            customer.id, customer.name, shop_user.telegram_id,
+            "username" if username else "display name",
+        )
+    except Exception:
+        session.rollback()
+        logger.exception("bind-claim completion failed (bot session continues)")
+
+
 @bot_router.post("/session", response_model=ShopBotSession)
 def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_session)):
     """Everything the bot needs to draw its menu for one customer, in one call.
@@ -918,6 +1135,12 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
         telegram_username=body.telegram_username,
         display_name=body.display_name,
     )
+    # Bind-by-identity hook (see _try_complete_bind_claim): the operator's
+    # pending claim, if this identity matches it, completes HERE — the bot
+    # itself just supplied the numeric id. The menu the customer is about to
+    # see is built AFTER this, so «سرویس‌های من» already shows their services
+    # on this very message.
+    _try_complete_bind_claim(session, user)
     settings = get_shop_settings(session)
     return ShopBotSession(
         shop_user_id=user.id,

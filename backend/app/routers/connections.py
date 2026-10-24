@@ -36,6 +36,7 @@ from app.models import (
     LedgerEntry,
     LedgerSource,
     LedgerType,
+    ShopBindClaim,
     ShopOrder,
     ShopTopup,
     ShopUser,
@@ -49,7 +50,17 @@ router = APIRouter(prefix="/api/connections", tags=["connections"], dependencies
 
 def _shop_summary(session: Session, customer: Customer) -> ShopLinkSummary:
     """The same three states GET /api/shop/link/{id} reports, per row, for the
-    whole customer list at once."""
+    whole customer list at once — plus the pending bind-by-identity claim
+    (the operator typed a @username/name; the customer's first bot message
+    completes it)."""
+    claim = session.exec(
+        select(ShopBindClaim).where(ShopBindClaim.customer_id == customer.id, ShopBindClaim.claimed_at.is_(None))
+    ).first()
+    claim_kwargs = {
+        "bind_claim_username": claim.telegram_username if claim else None,
+        "bind_claim_display_name": claim.display_name if claim else None,
+        "bind_claim_created_at": claim.created_at if claim else None,
+    }
     if customer.shop_user_id is not None:
         user = session.get(ShopUser, customer.shop_user_id)
         if user is not None:
@@ -65,14 +76,16 @@ def _shop_summary(session: Session, customer: Customer) -> ShopLinkSummary:
                 wallet_balance=wallet_balance(session, user.id),
                 last_seen_at=user.last_seen_at,
                 is_blocked=user.is_blocked,
+                **claim_kwargs,
             )
     if customer.shop_link_token is not None:
         return ShopLinkSummary(
             state="pending",
             invite_url=_shop_invite_url(customer.shop_link_token),
             claim_expires_at=customer.shop_link_expires_at,
+            **claim_kwargs,
         )
-    return ShopLinkSummary(state="none")
+    return ShopLinkSummary(state="none", **claim_kwargs)
 
 
 def _delegate_summary(delegates: list[Delegate]) -> Optional[DelegateSummary]:

@@ -697,6 +697,42 @@ class ShopOrder(SQLModel, table=True):
     force_new_service: bool = Field(default=False)
 
 
+class ShopBindClaim(SQLModel, table=True):
+    """A PENDING "bind this customer to their Telegram" instruction the
+    operator left WITHOUT knowing the numeric Telegram id (owner feedback
+    2026-10-24: «نمیشه فقط با آیدی کاربر بایند کرد که بعد از پیام کاربر خود
+    بات آیدی عددی رو بفهمه»). The operator types what they KNOW — the
+    customer's @username (or exact display name) — and the FIRST
+    /api/shop/bot/session call that arrives carrying that identity completes
+    the bind: the bot reports its own numeric telegram_id, so the operator
+    never has to ask anyone for a number.
+
+    Match rule is deliberately strict: telegram_username case-insensitive
+    EQUALS, or display_name case-insensitive EQUALS, and only when exactly
+    ONE pending claim matches — two «علی»s pending means nothing binds until
+    one claim is discarded or a username disambiguates. No money can move
+    because of a wrong match that never happens: the same bind guards as the
+    direct bind (not a group rep, no payg billing, neither side already
+    linked) are checked at creation AND re-checked at completion.
+
+    One PENDING claim per customer (a new claim replaces the old one — a
+    retry with a corrected spelling must not need a discard first); the
+    row is kept after claiming (claimed_at + claimed_telegram_id) as the
+    audit of how the link happened."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    customer_id: int = Field(foreign_key="customer.id", index=True)
+    # Stored WITHOUT the leading @ and lowercased — Telegram usernames are
+    # case-insensitive, and the operator will type them every possible way.
+    telegram_username: Optional[str] = Field(default=None, index=True)
+    display_name: Optional[str] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=utcnow)
+    # NULL while pending. claimed_telegram_id is the number the operator
+    # never had to ask for — the whole point of this table.
+    claimed_at: Optional[datetime] = None
+    claimed_telegram_id: Optional[int] = None
+
+
 class ShopSettings(SQLModel, table=True):
     """Single-row table (id is always 1), same pattern as AppSettings — the
     shop's configuration lives in the DB so the operator edits it in the

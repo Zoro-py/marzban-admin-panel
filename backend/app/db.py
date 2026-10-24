@@ -368,6 +368,10 @@ def _run_lightweight_migrations() -> None:
             conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN voided_by VARCHAR"))
             conn.execute(text("ALTER TABLE ledgerentry ADD COLUMN void_reason VARCHAR"))
 
+        # shopbindclaim is a genuinely NEW table (create_all mints it on any
+        # DB that lacks it) — nothing to ALTER; this comment is the marker that
+        # the 2026-10-24 bind-by-identity feature intentionally ships no
+        # column migration on the live shopuser/customer tables.
         existing_event = {row[1] for row in conn.execute(text("PRAGMA table_info(accountevent)"))}
         if existing_event and "created_by" not in existing_event:
             conn.execute(text("ALTER TABLE accountevent ADD COLUMN created_by VARCHAR"))
