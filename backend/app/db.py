@@ -485,6 +485,12 @@ def _run_shop_migrations() -> None:
             conn.execute(text("ALTER TABLE shopuser ADD COLUMN trial_taken_at DATETIME"))
 
         topup_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(shoptopup)"))}
+        if topup_cols and "for_debt" not in topup_cols:
+            # Council 2026-10-24 routed-books debt payment: receipts the
+            # customer designated as «پرداخت بدهی» — approved ones post a
+            # ledger credit instead of wallet credit. NULL/0 for every
+            # existing row: all historical top-ups were wallet credits.
+            conn.execute(text("ALTER TABLE shoptopup ADD COLUMN for_debt BOOLEAN NOT NULL DEFAULT 0"))
         if topup_cols and "order_id" not in topup_cols:
             conn.execute(text("ALTER TABLE shoptopup ADD COLUMN order_id INTEGER"))
         if topup_cols and "reference_code" not in topup_cols:

@@ -707,6 +707,9 @@ export interface ShopTopup {
   // Alternative to receipt_file_id (never both) — a typed tracking code
   // instead of a photo.
   receipt_text: string | null
+  // True = the customer designated this payment «پرداخت بدهی صورت‌حساب»:
+  // approving posts a LEDGER credit; the wallet is untouched.
+  for_debt?: boolean
   status: ShopTopupStatus
   reject_reason: string | null
   created_at: string

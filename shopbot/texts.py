@@ -89,6 +89,11 @@ MENU_WALLET = "💰 کیف پول"
 MENU_TOPUP = "➕ شارژ کیف پول"
 MENU_HELP = "❓ راهنما"
 MENU_SUPPORT = "💬 پشتیبانی"
+# Council 2026-10-24 (routed books): a linked customer's unpaid statement
+# debt, surfaced in the bot. Its own row ABOVE the wallet row — for someone
+# who owes, paying the debt is the primary action, and purchases are blocked
+# while wallet − debt can't cover the price.
+MENU_PAY_DEBT = "💳 پرداخت بدهی صورت‌حساب"
 
 CONFIRM_BUY = "✅ تأیید و دریافت"
 # The common sizes are buttons; this is the way out of them for someone who
@@ -422,6 +427,65 @@ def payment_status(status: str, reference: str, order_status: Optional[str],
 
 
 # ── wallet & accounts ─────────────────────────────────────────────────────
+
+
+def debt_line(debt: float) -> str:
+    """The reminder shown when a wallet top-up starts while a debt exists —
+    the owner's «موقع شارژ کیف پول بهش گفته بشه»."""
+    return f"ⓘ یادآوری: بدهی صورت‌حساب شما {money(int(debt))} است. اگر قصد پرداخت آن را دارید، از «{MENU_PAY_DEBT}» استفاده کنید."
+
+
+def debt_status(debt: float, wallet: int, eta: int) -> str:
+    """The pay-debt landing text: what they owe, what the wallet holds, what
+    they can actually spend — one place, no interpretation needed."""
+    spendable = max(0, wallet - int(debt))
+    lines = [
+        f"بدهی صورت‌حساب شما: {money(int(debt))}",
+        f"موجودی کیف پول: {money(wallet)}",
+        f"قابل خرید (کیف پول منهای بدهی): {money(spendable)}",
+        "",
+        "تا وقتی بدهی پرداخت نشود، خرید سرویس جدید ممکن نیست.",
+    ]
+    return "\n".join(lines)
+
+
+DEBT_PAY_FROM_WALLET = "پرداخت از کیف پول"
+DEBT_PAY_BY_RECEIPT = "ارسال رسید کارت‌به‌کارت"
+DEBT_PAY_WALLET_CONFIRM = "تأیید پرداخت از کیف پول"
+DEBT_NONE = "شما بدهی صورت‌حسابی ندارید ✓"
+
+
+def debt_receipt_instructions(amount: int, card: str, holder, eta: int) -> str:
+    return (
+        f"مبلغ {money(amount)} را به کارت زیر واریز کنید و رسید آن را "
+        "دقیقاً همین‌جا بفرستید. این پرداخت روی صورت‌حساب شما ثبت می‌شود "
+        "(شارژ کیف پول نمی‌شود).\n\n"
+        f"شماره کارت: `{card}`\n"
+        + (f"به نام {holder}\n" if holder else "")
+        + f"\nمعمولاً تا {fa(eta)} دقیقه بررسی می‌شود."
+    )
+
+
+def debt_receipt_done(reference, eta: int) -> str:
+    lines = ["✅ رسید پرداخت بدهی شما دریافت شد.",
+             f"معمولاً تا {fa(eta)} دقیقه بررسی و روی صورت‌حسابتان ثبت می‌شود.",
+             "لازم نیست ربات را باز نگه دارید — خبرش همین‌جا می‌آید."]
+    if reference:
+        lines.append(f"کد پیگیری این پرداخت: {reference}")
+    return "\n".join(lines)
+
+
+def debt_paid_from_wallet(paid: int, wallet: int, debt_left: float) -> str:
+    left = (
+        f"بدهی باقی‌مانده: {money(int(debt_left))}"
+        if debt_left > 0.5 else "بدهی شما کامل پرداخت شد ✓"
+    )
+    return (
+        f"✅ {money(paid)} از کیف پولتان پرداخت و روی صورت‌حسابتان ثبت شد.\n"
+        f"موجودی کیف پول: {money(wallet)}\n"
+        f"{left}"
+    )
+
 
 def wallet_summary(balance: int) -> str:
     return f"💰 موجودی کیف پولتان: {money(balance)}"

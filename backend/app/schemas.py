@@ -426,6 +426,22 @@ class ShopBindClaimRead(BaseModel):
     claimed_telegram_id: Optional[int] = None
 
 
+class ShopBotPayDebtRequest(BaseModel):
+    """POST /api/shop/bot/pay-debt-from-wallet — pay the linked customer's
+    reseller-ledger debt OUT of the shop wallet (the single sanctioned
+    cross-system write; council 2026-10-24). amount omitted = pay as much as
+    the wallet and the debt allow."""
+
+    telegram_id: int
+    amount: Optional[int] = Field(default=None, gt=0, le=1_000_000_000)
+
+
+class ShopBotPayDebtResult(BaseModel):
+    paid: int
+    wallet_balance: int
+    ledger_debt: float
+
+
 class LedgerVoidRequest(BaseModel):
     """Body of POST /api/ledger/{id}/void — the reason is mandatory and
     becomes part of the row's permanent stamp (NOT a free-text note the
@@ -773,6 +789,10 @@ class ShopTopupRead(BaseModel):
     display_name: Optional[str] = None
 
 
+    # True = designated by the customer as a debt payment: approval posts a
+    # ledger credit, not wallet credit.
+    for_debt: bool = False
+
 class ShopTopupDecision(BaseModel):
     # None on approve = credit exactly what the customer claimed. Set it to
     # credit a different figure when the receipt disagrees with the claim.
@@ -837,6 +857,14 @@ class ShopBotSession(BaseModel):
     # than hardcoded there so the operator can change what they promise
     # without a redeploy of a separate process.
     approval_eta_minutes: int = 30
+
+    # The customer's reseller-ledger debt (MoneyBook net_owed of the linked
+    # Customer — posted + not-yet-invoiced; exactly the panel's «Owes now»),
+    # 0.0 when this shop user is not linked. Displayed next to the wallet;
+    # the bot's spendable figure = max(0, balance − ledger_debt). READ-ONLY:
+    # nothing about the wallet ever writes it and vice versa (council
+    # 2026-10-24 — routed books, no transfers).
+    ledger_debt: float = 0.0
 
     # Whether to show the trial button at all, and whether THIS customer can
     # still take it. Two separate booleans on purpose: "the shop doesn't offer
@@ -959,6 +987,11 @@ class ShopBotTopupRequest(BaseModel):
     # backstop since nothing about this field is trusted just because it came
     # from the bot process.
     receipt_text: Optional[str] = Field(default=None, max_length=300)
+    # The customer DESIGNATED this payment as a debt payment («پرداخت بدهی
+    # صورت‌حساب») in the bot's ask — approving posts a LEDGER credit instead
+    # of wallet credit. Only legal with no order_id (an order is a wallet
+    # purchase by definition) and only when a linked debt actually exists.
+    for_debt: bool = False
     # The plan this payment was sent FOR, when the customer chose first.
     # Approving such a top-up credits the wallet AND delivers the plan, so the
     # customer never has to come back and place the order a second time.

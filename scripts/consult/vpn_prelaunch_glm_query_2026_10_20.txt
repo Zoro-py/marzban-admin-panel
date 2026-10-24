@@ -1,0 +1,229 @@
+You are auditing a FastAPI VPN subscription panel (backend/, bot/, shopbot/,
+delegate_bot/, frontend/) before it goes live for real end-users paying real
+money. Project root: this repository (backend app code under backend/app/).
+
+READ-ONLY consult: do not edit anything. Your job has TWO parts:
+
+  PART A — independently verify each numbered CLAIM below (findings another
+  auditor made today). For each: CONFIRM or REFUTE with exact file:line
+  evidence and, if confirmed, your own concrete step-by-step failure
+  scenario. Refuting one requires showing the code path that prevents it.
+  PART B — sweep for anything the first pass missed in the same areas.
+
+Rank everything you find by severity. If an area is clean, say so explicitly
+rather than inventing a finding.
+
+═══════════════════════════════════════════════ money model (60-second primer)
+
+- LedgerEntry is append-only; ONE OWNER PER ENTRY resolved as: account_id ->
+  that account; else group_id -> group-only; else customer_id. Roll-ups are
+  sums of the level below (services.MoneyBook). Charges positive, credits
+  negative. posted + pending = net_owed.
+- Billing modes: payg bills used_traffic - usage_baseline (metered).
+  prepay bills data_limit - billed_data_limit (the package, at sale).
+  A grouped account's EFFECTIVE mode is always its GROUP's
+  (services.effective_billing_mode); its own field only matters standalone.
+- usage_baseline is rolled ONLY by payg-side settles/resets, activation, the
+  payg cap-hit handler, external-reset detection, and delete close-out.
+  NO prepay settle path ever touches it. billed_data_limit is written by
+  prepay settles (`billed_data_limit = data_limit or 0`) and by
+  neutralize_billed_baseline (D21 guard, payg->prepay direction only).
+- QueuedPlan lifecycle: auto-queued by sync_job for effective-prepay,
+  auto_renew_enabled accounts near quota/expiry (no billing_mode stored);
+  or set by hand via POST /api/accounts/{id}/next-plan (operator, any
+  account). Activated by sync_job when Marzban reports status
+  limited/expired AND a pending plan exists — sync_job checks NEITHER
+  billing mode NOR group membership at activation time. Activation
+  auto-settles the old plan (billable_bytes at the CURRENT effective rate),
+  applies new data_limit + expire=now+duration, resets usage,
+  sets billed_data_limit=0, and optionally switches the account's own
+  billing_mode if the plan carries one.
+- Concurrency: single-process backend, SQLite. @serialise_billing
+  (asyncio billing_lock) wraps every settle/reset/money endpoint; sync_job
+  takes _sync_lock then billing_lock. PTB bots run WITHOUT
+  concurrent_updates (updates sequential). Shop purchase paths use
+  per-user asyncio locks + in-lock balance/status re-reads; topup approval
+  uses a conditional UPDATE (rowcount) against status=pending.
+- Two economies: the shop wallet and the reseller ledger are separate.
+  Shop linking is REFUSED for payg customers (routers/shop.py
+  _customer_has_payg_billing) but ALLOWED for prepay ones; a linked
+  customer's own accounts are extendable in place by shop purchases
+  (shop_service.renewable_account's linked-customer fallback).
+
+═══════════════════════════════════════════════ already fixed today (do NOT re-report; you may build on them)
+
+1. backend/app/sync_job.py, _maybe_settle_payg_cap_hit: a failed Marzban
+   reactivation after a cap-hit reset used to leave a paying customer
+   permanently blocked with no retry and a false "reconnected" admin
+   message. Fixed: retry path + honest distinct notification.
+2. backend/app/routers/accounts.py, update_billing (~line 684): switching
+   prepay->payg now calls cancel_pending_queued_plan, because a stale plan
+   queued while prepay would later be activated by sync_job's
+   mode-blind limited/expired branch and silently overwrite the payg shape.
+
+═══════════════════════════════════════════════ already audited clean today (full line-by-line pass; do not re-audit, but DO use as context)
+
+- sync_job.py auto-renew functions (auto-queue, activation, cap-hit).
+- shop_service.py purchase/provision/refund/sweep/extend (BUT see CLAIM 3 —
+  the extend-vs-ledger interaction was flagged and needs your check).
+- accounts.py settle_account; delegate_service.py create/renew/delete
+  (BUT see CLAIM 4 — the payg-scope interplay was flagged).
+- routers/groups.py settle_group / settle_group_member math (mark_paid,
+  pay_scope, prior balances, GB attribution) except where CLAIMs below touch it.
+
+═══════════════════════════════════════════════ PART A — CLAIMS TO VERIFY
+
+CLAIM 1 (HIGH) — prepay->payg flips leave a stale usage_baseline; the next
+payg settle re-bills consumption already covered by the prepaid package.
+  - No guard on the prepay->payg direction in: groups.py update_group
+    (~line 207, comment says "prepay->payg changes nothing (payg never
+    reads billed_data_limit...)"), accounts.py update_relationship
+    (~line 577), accounts.py update_billing (~line 631).
+  - services.py billable_bytes payg branch reads
+    max(0, used_traffic - usage_baseline); usage_baseline is 0 (or
+    creation/last-payg-era value) for a prepay-lived account because no
+    prepay settle rolls it.
+  - Scenario: prepay group, 60GB package at 1000T/GB, settled
+    (billed=60GB, baseline stays 0), customer burns 40GB, operator flips
+    group to payg -> pending jumps to 40,000T; next settle posts it.
+    Amplified: payg_monthly_job.py auto-settles every payg group at each
+    Jalali month end (line ~121), so the phantom charge posts unattended.
+  - Also verify: test_group_mode_flip_stress.py pins the wrong behavior
+    (asserts the post-flip figure is "real metered pending") but its
+    scenario never posts ledger rows, so it cannot distinguish covered
+    usage from genuinely-unbilled usage.
+
+CLAIM 2 (MEDIUM) — pending QueuedPlans survive prepay->payg flips on the
+two paths today's fix missed:
+  - accounts.py update_relationship (move from a prepay group into a payg
+    group) does not call cancel_pending_queued_plan.
+  - groups.py update_group flipping a whole prepay group to payg leaves
+    EVERY member's auto-queued plan pending (auto_renew_enabled defaults
+    True, so prepay members commonly carry one).
+  - On the member's next Marzban expire (prepay rows keep their expire),
+    sync_job activates the stale plan: charges the old plan at the now-payg
+    effective rate (stacking with CLAIM 1's charge), re-imposes a package
+    shape + fresh 31-day expire on a metered-billed member, resets usage.
+    When that expire passes with no plan behind it the member is
+    disconnected and _maybe_settle_payg_cap_hit cannot rescue them
+    (remaining_gb > 0; its retry path only toggles status against a
+    past-dated expire).
+  - Explicitly NOT a gap (verify you agree): settle_group /
+    settle_group_member / settle_account need no cancel_pending_queued_plan
+    — a queued plan is supposed to survive settles (activation keys on
+    Marzban limited/expired status, which a settle does not produce).
+
+CLAIM 3 (MEDIUM, conditional) — shop extension of a LINKED prepay
+customer's account grows data_limit without touching billed_data_limit:
+  - shop_service.py has ZERO occurrences of billed_data_limit (grep).
+    _extend_order (~line 1548) computes
+    target_limit = int(limit) + bytes_from_gb(order.data_limit_gb);
+    _record_extended mirrors via sync_marzban_fields only.
+  - models.py ~line 61 claims "the reseller ledger never sees them"
+    (two-economies rule); the payg link gate (routers/shop.py
+    _customer_has_payg_billing) refuses payg customers but ALLOWS prepay
+    ones; renewable_account's linked-customer fallback has no mode filter.
+  - Scenario: linked customer, 50GB prepay account, billed_data_limit=50GB,
+    pending 0. Buys +20GB in shop (wallet debited) -> data_limit=70GB,
+    billed_data_limit still 50GB -> reseller pending = 20GB x rate -> next
+    prepay settle charges it AGAIN (wallet + ledger double payment).
+  - Contrast: delegate_service.renew line ~295 DOES increment
+    billed_data_limit by the added GB — the codebase knows the pattern;
+    the shop path lacks it. This was inside today's "clean" pass for
+    extend — your task is to confirm or refute the interaction specifically.
+
+CLAIM 4 (MEDIUM, conditional) — delegate renew has no billing-mode gate;
+on a PAYG-effective scope it double-bills the same GB:
+  - delegate_service.py renew_delegate_account (~262-317) posts a charge
+    for extend_gb x effective_rate unconditionally and bumps
+    billed_data_limit (inert under payg). For a delegate scoped to a payg
+    group or a customer with standalone payg accounts, the group/standalone
+    payg settle later bills the same consumption again via
+    used_traffic - usage_baseline (renew never rolls the baseline).
+  - For prepay scopes the math is correct (charge + bump = pending stays 0).
+  - Question to answer: do payg-scope delegates need refusing, or a
+    baseline roll, or is the intended model different?
+
+CLAIM 5 (LOW) — settle_group_member has no soft-delete guard:
+  - groups.py ~523-525 checks only group membership; settle_group (line
+    ~323) and reset_group_cycle (~671) exclude deleted_at. A soft-deleted
+    PREPAY member (payg members die earlier at the Marzban reset, ~546)
+    can still be charged via a direct POST. Tension: a deleted prepay
+    member's unbilled package otherwise lingers in group_pending forever
+    (MoneyBook deliberately includes deleted accounts, services.py
+    ~267-269, while settles skip them) and this endpoint is the only way
+    to zero it. Also same missing-guard hygiene in update_relationship /
+    update_billing (deleted accounts can still be moved/flipped).
+
+CLAIM 6 (LOW) — debt console rounds "full payment" amounts via :g:
+  - bot/handlers/debt.py lines ~315 and ~361 embed the amount in
+    callback_data with f"{outstanding:g}" / f"{resolved:g}". :g keeps 6
+    significant digits: 1,234,567 -> posts 1,234,570 (over-credit 3T);
+    1,111,444 -> posts 1,111,400 (44T phantom debt after "paid in full");
+    154,321.87 -> 154,322. Fix direction: :.2f or integer Toman in
+    callback_data.
+
+CLAIM 7 (LOW) — /charge, /credit, /extend post with no confirm step and no
+idempotency, inconsistent with /wallet (pop-token confirm) and the debt
+console (confirm + 10s dedupe window):
+  - bot/handlers/customer.py ~109-113 posts /api/ledger immediately;
+    bot/handlers/account.py extend_command charges first then adjusts with
+    bill_added_gb (correct MONEY-ADJ-1 ordering, charge-failure handling
+    is good). Backend supports an Idempotency-Key header
+    (routers/ledger.py ~48-75) that none of these send. Lost-response
+    retry double-posts. Fuzzy-name risk is mitigated by resolve_customer's
+    exact-match-wins + AmbiguousMatch (bot/handlers/common.py ~49-70).
+
+CLAIM 8 (LOW) — plain wallet top-ups have no one-pending-at-a-time guard:
+  - shop_service.create_topup's pending-already guard (~654-667) applies
+    only when order_id is set. Duplicate photo receipts for a plain top-up
+    stack multiple pending approvals; find_prior_receipt_text_use only
+    flags identical TYPED text. Operator approval of both = double credit
+    for one transfer. Asymmetric with the order-bound flow's guard.
+
+CLAIM 9 (INFO) — attributable_consumed_gb (services.py ~660-668) skips the
+date filter entirely when usage_baseline_at is None (legacy rows), summing
+ALL-time consumed -> consumed_amount reporting under-counts for those rows
+(charge amounts unaffected). Also payg_monthly_job.py ~247 writes the stale
+pre-computed gb for standalone accounts into MonthlySettlementBatch (the
+money figure is fresh) — reporting-only. And _mark_period_done runs even
+when items failed — deliberate (notify says cumulative next month).
+
+═══════════════════════════════════════════════ PART B — areas the first pass found CLEAN (re-sweep only if you have reason to doubt)
+
+- routers/shop.py bot_router: client-trusted amounts/ids and idempotency
+  (server-side pricing via quote_price; ownership scoping on
+  orders/topups/wallet/status; approve guarded by conditional UPDATE;
+  pay re-checks status in-lock; trial once-per-identity before
+  provisioning; require_shop_bot fails closed, compare_digest on bytes).
+- bot/handlers/wallet.py (pop-token confirm, numeric-id-only rule),
+  topup.py (never retries on "already approved"), bill.py (read-only),
+  bulk.py (posts no ledger), delegate_admin.py (NaN/inf refused on
+  credit_limit), account.py delete (pop-token confirm).
+- shopbot client: never takes price/id from messages; clears flow state
+  before slow calls; parse_number handles هزار/میلیون multipliers.
+- All bot/ handlers registered in bot/bot.py are @admin_only-gated.
+- services.py meter math: effective_rate / effective_billing_mode
+  consistency; epoch attribution identical strictness in attributable_
+  consumed_gb and MoneyBook._epoch_consumed; every charge site computes
+  attribution before adding its own row; _activate_next_plan stamps
+  date=now explicitly; lock order always _sync_lock -> billing_lock.
+- routers/ledger.py: amount>0, NaN/inf refused, consumed_gb not
+  client-settable, no client-supplied date, Idempotency-Key with
+  fingerprint + lock, get_balance exactly-one-scope with tz normalization.
+- payg_monthly_job.py + routers/payg_monthly.py: notify-before-money gate,
+  run lock with in-lock re-check, fresh charged amounts in batch rows,
+  mark_batch_paid under billing_lock with marked_paid_at guard.
+- delegate router/bot: scope re-derived from telegram_id every call;
+  create/renew/delete under serialise_billing; delete idempotent, no
+  charge; renew in-flight guard in delegate_bot; all three PTB bots run
+  sequential updates (no concurrent_updates).
+
+═══════════════════════════════════════════════ output format
+
+For each CLAIM: verdict (CONFIRM / REFUTE / PARTIAL), file:line evidence
+with short code quotes, and (if confirmed) one concrete end-to-end failure
+scenario with real numbers. Then any NEW findings from your own sweep,
+ranked by severity, same evidence standard. End with a launch-blocking vs
+non-blocking split. Do not propose patches; this is an audit, edits happen
+in a separate pass.

@@ -1,0 +1,62 @@
+**1. Ranking & short justification**
+
+| Rank | Option | Why it wins / loses |
+|------|--------|--------------------|
+| **1** | **B – Dual‑view routed books** | Keeps the ledger 100 % intact (no transfers, no negative wallet rows). All operator‑side reports stay correct because the debt is still a ledger entry. The bot only adds a read‑only “debt” field, so the operator’s finance views need no change. The only extra UI work is a small “pay debt” button, which can be made the default when a debt exists. |
+| **2** | **C – Hybrid computed spendable** | Still preserves the ledger and never creates negative wallet rows, so operator books stay clean. The UI shows a single “spendable” number (wallet – debt) and auto‑splits top‑ups, which feels natural for the customer. The extra logic (auto‑split, computed spendable) is a bit more code‑heavy than B but still trivial compared to a full transfer. |
+| **3** | **A – Negative‑wallet import** | The idea of a single number is attractive, but it forces a *massive* change to every operator‑side report, to the unlink flow, and to any future manual ledger charge. It also introduces a risk of double‑counting if the transfer is forgotten or if a manual charge is added later. The negative‑wallet rows also interfere with the existing auto‑renew guard. |
+| **4** | **D – “Better variant” (e.g. a hybrid that keeps the ledger but adds a single‑field “debt‑balance” in the wallet table)** | This is essentially the same as C but with an extra column in the wallet table. It adds a maintenance burden (schema change, migration, extra code) without giving any real benefit over C. |
+
+> **Bottom line:** **B** is the safest, simplest to implement, and scales without touching the operator’s reporting. **C** is a nice UX improvement if you’re willing to add a little logic. **A** is the most fragile and risks breaking the existing financial reporting.
+
+---
+
+**2. Concrete actions for the winning option (B)**  
+
+| Event | What happens | Tables & rows created/updated | Notes |
+|-------|--------------|--------------------------------|-------|
+| **LINK** | The customer is marked “linked” in the panel and a new *ShopWallet* record is created with balance = 0. No ledger rows are touched. | *ShopWallet* → `INSERT INTO shop_wallet (customer_id, balance) VALUES (…, 0)` | The ledger still shows the outstanding debt (`LedgerEntry` with negative amount). The bot will read that value as a read‑only “debt” field. |
+| **TOP‑UP APPROVAL** | Operator approves a top‑up of X Toman. A single *ShopWalletEntry* is appended. | *ShopWalletEntry* → `INSERT INTO shop_wallet_entry (wallet_id, amount, type='top‑up', approved_at) VALUES (…)` | No ledger change. The wallet balance becomes `balance + X`. The debt stays in the ledger. |
+| **PURCHASE** | Customer buys a package costing Y Toman. The bot checks `wallet.balance ≥ Y`. If true, a negative *ShopWalletEntry* is appended; otherwise the purchase is blocked. | *ShopWalletEntry* → `INSERT INTO shop_wallet_entry (wallet_id, amount, type='purchase', approved_at) VALUES (…)` | The ledger is untouched. The debt remains unchanged. |
+| **UNLINK** | Customer is unlinked. The *ShopWallet* record is deleted (or marked inactive). The ledger debt stays as‑is. | *ShopWallet* → `DELETE FROM shop_wallet WHERE customer_id = …` | No ledger rows are altered, so the operator’s debt report is still accurate. |
+
+> **Key invariant** – *No ledger rows are ever moved or duplicated.* The wallet is always a separate, append‑only stream of “pre‑pay” credits/debits. The ledger continues to hold the debt; the bot simply reads it as a read‑only field.
+
+---
+
+**3. Failure modes of the negative‑wallet import (A) that proponents often miss**
+
+| Failure | Why it happens | Consequence |
+|---------|----------------|-------------|
+| **Operator reports silently lose the debt** | The transfer removes the ledger entry, so the “outstanding debt” column in the panel shows 0. | The operator never sees the debt unless they manually add “wallet deficits” to every report. |
+| **Unlinking a customer with a negative wallet** | The wallet row is deleted, but the ledger entry that was “transferred” is gone. | The debt disappears from the ledger, effectively erasing the customer’s obligation. |
+| **Manual ledger charges after linking** | A phone‑sale creates a new ledger entry for the customer. The bot still shows the old negative wallet, so the two views diverge. | The customer sees a debt that no longer exists in the ledger, while the operator sees a new debt that the bot ignores. |
+| **Re‑linking to pay‑g** | The system forbids reverting a linked customer to pay‑g, but the operator can still post ledger credits. | The ledger and wallet diverge again, breaking the invariant that “wallet = ledger debt + pre‑pay”. |
+| **Auto‑renew negative‑wallet guard** | The bot already allows a bounded negative balance for auto‑renew. Adding a negative wallet row could trigger the guard twice or in the wrong context. | The auto‑renew logic may mis‑calculate the allowed debt, leading to over‑charging or failed renewals. |
+| **Double‑counting on reconciliation** | If the transfer is accidentally performed twice (e.g., a retry), the wallet will be negative twice and the ledger will be credit‑doubled. | The customer’s balance becomes more negative than the actual debt, and the operator’s books show an inflated credit. |
+
+---
+
+**4. Auto‑split logic for C (if you choose C instead of B)**  
+
+| Scenario | What happens | Customer message |
+|---------|--------------|------------------|
+| **Approved amount < debt** | The entire approved amount is applied to the ledger debt. No wallet credit is created. | “Your top‑up of X Toman has been applied to your outstanding debt. Remaining debt: Y Toman.” |
+| **Approved amount = debt** | Same as above; the debt becomes 0, wallet remains 0. | “Your top‑up of X Toman has cleared your debt. Your wallet balance is now 0.” |
+| **Approved amount > debt** | First, a ledger credit of `debt` is posted (to clear the debt). Then a wallet credit of `approved – debt` is created. | “Your top‑up of X Toman has cleared your debt and added Y Toman to your wallet.” |
+
+> **Implementation note** – The split is performed atomically: a single transaction writes both the ledger credit and the wallet credit (or just the wallet credit if debt is already 0). The UI shows the updated debt and wallet immediately after the transaction commits.
+
+---
+
+**5. Existing design constraints that must stay intact**
+
+| Constraint | How the recommended design respects it |
+|------------|----------------------------------------|
+| **Append‑only ledger** | No ledger rows are ever deleted or moved. Linking, top‑ups, purchases, and unlinking only add rows to the *ShopWalletEntry* table. |
+| **Exactly‑once approvals** | Each top‑up or purchase creates a single row with a unique `approved_at`/`transaction_id`. The idempotency guard on the bot’s approval endpoint remains untouched. |
+| **Auto‑renew negative wallet** | The wallet can still go negative in the bounded‑debt auto‑renew case because we never create a negative row for the debt import. The auto‑renew guard still sees only the bounded negative rows it expects. |
+| **Single backend process / SQLite** | All operations are simple `INSERT` statements inside a single transaction; no background jobs or cross‑process coordination are required. |
+| **Operator‑side finance views** | The ledger continues to hold all debt, so the panel’s “Outstanding debt” column and the new “دفتر کل” page remain correct without any extra logic. |
+
+> **Bottom line:** By keeping the ledger untouched and only adding rows to the *ShopWalletEntry* stream, we preserve every existing invariant and avoid breaking any of the current flows.

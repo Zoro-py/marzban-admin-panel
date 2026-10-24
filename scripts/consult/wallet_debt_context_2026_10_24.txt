@@ -1,0 +1,36 @@
+CONTEXT — VPN reseller panel + self-serve Telegram shop bot (real money, single operator, ~90 customers, growing)
+
+TWO separate money systems by design (documented invariant):
+1) Reseller LEDGER (LedgerEntry, float Toman): what the operator is OWED. payg monthly settle charges it; operator records payments in the panel. Single-owner buckets: account → group → customer roll-ups.
+2) SHOP WALLET (ShopWalletEntry, int Toman): prepaid credit for the customer-facing bot. Purchases debit it; operator-approved card-to-card top-ups credit it. The wallet CAN already go negative in ONE case: the bot's bounded-debt auto-renew (a deliberate, capped negative with its own guards).
+
+The systems never mix: a wallet balance in the ledger would corrupt every debt figure; a ledger debt in the wallet would corrupt affordability checks.
+
+NEW SITUATION (just shipped): a reseller customer (typically with existing LEDGER DEBT, e.g. 100,000 T unpaid usage) gets LINKED to the shop bot via the panel — one-click «settle + convert + link»: accrued payg usage is settled (charge posted to the ledger), accounts flipped to prepay, then linked. After linking, the customer can buy/extend packages in the bot from their wallet.
+
+THE GAP the owner spotted: after linking, the customer's bot shows wallet = 0 and says NOTHING about the 100,000 T ledger debt they still owe. The owner's instinct: «چرا وقتی کاربر رو وصل میکنم کیف پولش منفی نشه؟ که موقع شارژ کیف پول یا موقع خرید سرویس جدید بهش گفته بشه؟» — why shouldn't the wallet go NEGATIVE at link time (debt imported), so top-ups and purchases naturally confront the customer with what they owe?
+
+DESIGN OPTIONS ON THE TABLE:
+
+A) DEBT IMPORT TO NEGATIVE WALLET (owner's instinct, strongest form): at link, post wallet entry -100,000 «debt imported» AND a ledger +100,000 credit «transferred to wallet», so the ledger zeroes and the wallet carries the debt. Customer sees ONE number: -100,000. Every top-up pays it down; purchases are blocked while unaffordable (affordability check already exists); bot already knows how to render negative wallets (auto-renew precedent).
+   RISKS: (1) the operator's finance views (outstanding, debt nudge, statements) read the LEDGER — after transfer they'd show 0 owed unless "wallet deficits" are added to every money view; (2) unlink with a negative wallet needs a reverse transfer or the debt evaporates; (3) any FUTURE manual ledger charge on a linked customer (operator sells a package by phone) re-diverges the two views unless mirrored too; (4) a payg-converted customer can never go back to payg (existing guard), but the operator CAN still post manual ledger charges — so divergence isn't hypothetical.
+
+B) DUAL VIEW, ROUTED BOOKS: bot session gains `ledger_debt` (read-only, from MoneyBook). Bot menu + top-up flow + purchase flow show «بدهی صورت‌حساب: 100,000 ت» with a «پرداخت بدهی» button. Debt payment = a receipt flow whose APPROVAL posts a LEDGER CREDIT (not wallet); wallet top-ups unchanged; purchases unchanged (wallet-only affordability). No transfers, no negative wallet, books keep single owners, reversible, works for ANY linked customer.
+   RISKS: customer sees TWO numbers (wallet + debt) — mental model cost; paying debt vs topping up wallet is a choice they must get right (mitigable: the debt button is the default when debt exists).
+
+C) HYBRID: B's routed books + A's presentation: show the wallet as ONE number where debt is displayed as «موجودی: 50,000 − بدهی: 100,000 = قابل خرید: 0» — one computed "spendable" figure (wallet minus debt), purchases blocked while debt > wallet, top-up approvals auto-split (first pay ledger debt, remainder to wallet). No negative wallet rows, no transfers; affordability uses (wallet − debt).
+
+CONSTRAINTS THAT MATTER:
+- Single operator, real money, SQLite, single backend process; the ledger is append-only; every balance is a SUM of rows (no stored balances).
+- The panel already shows ledger debt everywhere; the bot is the customer's only window.
+- Monthly payg settle, debt-nudge aging, statements, the new «دفتر کل» page — all read the ledger; silently moving debt out of it breaks them unless they learn about wallet deficits.
+- The shop's purchase/approval flows are exactly-once and idempotent-guarded; adding routing must not weaken that.
+- The owner wants the flows «منطقی و scale‌پذیر» — sensible for a customer to understand without support, and working at 10x customers without operator bookkeeping per payment.
+
+QUESTIONS:
+1) Which option (A, B, C, or a better variant you'd design) best serves BOTH the customer's clarity and the operator's books, long-term? Rank them and justify in 3-6 sentences each.
+2) For the winner: what exactly should happen at LINK time, at TOP-UP APPROVAL time, at PURCHASE time, and at UNLINK time — so no state is ever double-counted or lost? Be concrete about which table gets which row.
+3) What are the failure modes of the negative-wallet import (A) that its proponents usually miss?
+4) If you recommend C's auto-split (top-up first pays debt): what should happen when the approved amount is LESS than the debt, and how should the customer be told?
+5) Anything in the EXISTING design (auto-renew negative wallet, exactly-once approvals, append-only ledger) that the recommended design must not break?
+Answer concretely; no generic advice.

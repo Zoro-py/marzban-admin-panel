@@ -33,6 +33,13 @@ class LedgerSource(str, Enum):
     # so the audit trail can tell "I charged this" from "they triggered a
     # charge themselves" at a glance. See Delegate below.
     delegate = "delegate"
+    # Money movement that CAME THROUGH the customer-facing shop bot's debt
+    # payment flows (a receipt the customer designated «پرداخت بدهی», or the
+    # pay-from-wallet transfer) — a ledger credit the customer initiated
+    # themselves, approved/committed by the operator or the server. Distinct
+    # from `web` (operator's own panel action) and `bot` (operator bot).
+    # Additive enum value: the column is VARCHAR, old rows unaffected.
+    shop = "shop"
 
 
 class Customer(SQLModel, table=True):
@@ -498,6 +505,11 @@ class ShopWalletEntryType(str, Enum):
     purchase = "purchase"    # − spent on an order
     refund = "refund"        # + returned after a failed or refunded order
     adjust = "adjust"        # ± manual correction by the operator
+    debt_pay = "debt_pay"    # − paid OUT of the wallet against a reseller
+                             #   ledger debt (the paired ledger credit carries
+                             #   the same ref in its note — the single
+                             #   sanctioned cross-system write; see
+                             #   routers/shop.py pay_debt_from_wallet)
 
 
 class ShopUser(SQLModel, table=True):
@@ -589,6 +601,14 @@ class ShopTopup(SQLModel, table=True):
     approved_amount: Optional[int] = None
 
     receipt_file_id: Optional[str] = None
+
+    # The customer DESIGNATED this payment as «پرداخت بدهی صورت‌حساب» in the
+    # bot (council 2026-10-24): approving it posts a LEDGER CREDIT for the
+    # approved amount instead of wallet credit — the customer pays down their
+    # reseller balance through the shop bot without any money moving between
+    # the two systems. Such a top-up must never carry an order_id (an order
+    # is a wallet purchase by definition).
+    for_debt: bool = Field(default=False, index=True)
 
     # A typed tracking code/reference instead of (never both with) a photo —
     # some banking apps make a screenshot awkward, and the operator makes the

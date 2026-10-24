@@ -1,0 +1,176 @@
+# Seyed's Assessment
+
+Let me be direct: **Option B is the winner**, with one specific UX borrowing from C (the "spendable" display). Here's why, then the concrete answers.
+
+---
+
+## Q1 — Ranking and Justification
+
+### 🥇 B (Dual-View, Routed Books) — with C's "spendable" display borrowed
+
+**Why it wins:** The ledger is your operator's source of truth for every financial view that already exists — aging, statements, دفتر کل, debt nudges. Option A's core sin is that it *moves debt out of the ledger to make the bot look simpler*, then requires every existing financial view to be rewritten to compensate. You're trading one UX problem for five accounting problems. B keeps each system owning exactly what it owns. The "two numbers" mental model cost is real but solvable with UX (the debt button is prominent, the spendable figure is computed and shown). The books stay auditable in one glance because nothing moved.
+
+**The one borrow from C:** Show the customer a single computed line — `قابل خرید: X` — derived from `wallet − ledger_debt`, but *never write that subtraction into any table*. It's a display formula, not a database state. This gives the customer one actionable number without corrupting either system.
+
+---
+
+### 🥈 C (Hybrid) — close second, but auto-split is dangerous
+
+C's presentation is correct. C's auto-split top-up routing is where it gets fragile. When an approval posts, you must atomically decide how much goes to the ledger and how much to the wallet, and that split must be idempotent and auditable. It's doable but adds a new class of approval rows that are neither pure wallet credits nor pure ledger credits — your exactly-once guards need to cover a new case. If you implement B's UX cleanly, you don't need the auto-split; the customer chooses, and the choice is obvious because the debt button is the default.
+
+---
+
+### 🥉 A (Debt Import to Negative Wallet) — do not ship
+
+A solves the customer's confusion by creating operator confusion. The ledger shows zero debt after link — that's a lie until the wallet deficit is paid. Every existing financial view (aging, statements, دفتر کل) now silently under-reports outstanding debt unless you add "wallet deficit" as a new debt category to all of them. Unlink with a negative wallet requires a reverse transfer or the debt evaporates — that's a real money loss path. Future manual ledger charges on a linked customer re-diverge the two systems immediately. The auto-renew negative wallet precedent is not analogous: that negative is bounded, guarded, and *within* the wallet system. Importing ledger debt is a *cross-system transfer* with no clean reversal path.
+
+---
+
+## Q2 — Concrete State Transitions for Option B (the winner)
+
+### At LINK time
+
+```
+LEDGER:   post LedgerEntry(customer, type='payg_settle', amount=accrued_usage, note='settled at link')
+          — this is the existing settle step, already done
+WALLET:   no new rows
+CUSTOMER: flag linked=True, billing_mode='prepay'
+BOT:      on next session load, reads wallet_balance = SUM(ShopWalletEntry) 
+          AND ledger_debt = SUM(LedgerEntry) for this customer (already computable)
+          displays: موجودی کیف پول: 0 | بدهی صورت‌حساب: 100,000 ت | قابل خرید: 0
+```
+
+Nothing moves between systems. The debt already exists in the ledger. The bot just learns to read it.
+
+---
+
+### At TOP-UP APPROVAL time
+
+The operator approves a card-to-card receipt in the panel.
+
+```
+IF customer has ledger_debt > 0:
+    BOT shows before approval: «این شارژ ابتدا بدهی صورت‌حساب شما را کاهش می‌دهد»
+    OPERATOR approves in panel (no change to approval flow mechanics)
+    
+    APPROVAL posts:
+      ShopWalletEntry(customer, type='topup', amount=+approved_amount, ref=receipt_id)
+      — wallet is credited normally, exactly as before
+      
+    SEPARATELY (not auto-split, not atomic with approval):
+      Bot session now shows updated قابل خرید = wallet_balance − ledger_debt
+      If قابل خرید > 0, customer can purchase
+      If قابل خرید ≤ 0, purchases blocked, debt button prominent
+```
+
+**Why not auto-split in the approval?** Because the approval flow is exactly-once guarded on `receipt_id`. Adding a conditional ledger credit inside that guard means a new failure mode: if the ledger write succeeds but the wallet write fails (or vice versa), you have a partial split with no clean retry. Keep the approval atomic and single-system. The "debt payment" is a *separate explicit action* by the customer.
+
+---
+
+### At DEBT PAYMENT time (customer taps «پرداخت بدهی»)
+
+```
+Customer taps «پرداخت بدهی» in bot
+Bot shows: بدهی شما: 100,000 ت | موجودی کیف پول: 80,000 ت | پرداخت از کیف پول: 80,000 ت
+
+Customer confirms
+
+ATOMIC TRANSACTION:
+  ShopWalletEntry(customer, type='debt_payment', amount=-80,000, ref=generated_txn_id)
+  LedgerEntry(customer, type='wallet_debt_payment', amount=-80,000, ref=same_txn_id)
+  
+  — wallet debited, ledger credited, same reference, same transaction
+  — idempotent guard: ref=txn_id must be unique; retry is safe
+
+Bot shows: بدهی باقی‌مانده: 20,000 ت | موجودی کیف پول: 0 | قابل خرید: 0
+```
+
+This is the *only* cross-system write, and it's explicit, customer-initiated, and double-referenced. The operator sees it in both views with the same ref.
+
+---
+
+### At PURCHASE time
+
+```
+Affordability check: wallet_balance − ledger_debt ≥ package_price
+  IF false: block purchase, show «ابتدا بدهی صورت‌حساب خود را پرداخت کنید»
+  IF true: proceed
+
+Purchase posts:
+  ShopWalletEntry(customer, type='purchase', amount=-package_price, ref=order_id)
+  — ledger untouched
+  — exactly as before
+```
+
+No change to purchase mechanics. The affordability check gains one term: `ledger_debt`. That's a read, not a write.
+
+---
+
+### At UNLINK time
+
+```
+IF wallet_balance > 0:
+  operator must decide: refund or transfer to ledger credit
+  bot blocks unlink until resolved (or operator overrides with explicit note)
+
+IF ledger_debt > 0:
+  debt stays in ledger — it was always there, nothing to reverse
+  customer reverts to manual billing
+
+IF wallet_balance = 0 AND ledger_debt = 0:
+  clean unlink, flag linked=False, billing_mode='payg'
+```
+
+No reverse transfers needed because nothing was transferred at link time. The ledger debt was always in the ledger.
+
+---
+
+## Q3 — Failure Modes of Option A That Proponents Miss
+
+**1. The ledger becomes a lie the moment you link.** Every existing view — aging report, debt nudge, دفتر کل — reads the ledger. After the transfer, ledger shows 0 owed. The operator glances at the panel and thinks the customer is clean. The debt is now hidden in the wallet, which the panel doesn't read for debt purposes. You haven't solved the visibility problem; you've moved it to a place the operator doesn't look.
+
+**2. Unlink is a money destruction path.** If the customer has wallet = -60,000 (partially paid down from -100,000) and you unlink, you must post a reverse transfer: wallet +60,000, ledger -60,000 (re-open the debt). If that reverse transfer is missed — operator unlinks manually, bug, race condition — 60,000 Toman of debt evaporates. With B, unlinking a customer with ledger debt is trivial: the debt was always in the ledger, nothing to reverse.
+
+**3. Future manual ledger charges immediately re-diverge.** The operator sells a package by phone, posts a manual ledger charge. Now the ledger shows +50,000 owed, but the wallet also shows -60,000. Which number does the bot show? Which does the panel show? You now have two debt figures with no defined relationship. You'll write a "sync" job. That sync job will have bugs. Those bugs will lose money.
+
+**4. The auto-renew negative wallet precedent is not analogous.** Auto-renew goes negative *within* the wallet system, bounded, guarded, for a specific purpose (service continuity). Importing ledger debt is an unbounded, cross-system transfer with no natural ceiling. The existing guards (bounded debt cap, specific renewal context) don't apply and would need to be redesigned.
+
+**5. Audit trail breaks.** The ledger is append-only. The "transfer to wallet" entry closes the debt in the ledger. But the original debt was incurred as payg usage — the ledger correctly shows that history. Now there's a closing entry that says "transferred to wallet" — but the wallet is a prepay system. Six months later, the operator or an accountant reads the ledger and sees a debt that was "transferred to wallet" and then... what? The wallet history shows a -100,000 "debt imported" entry. These are two systems telling two different stories about the same money.
+
+---
+
+## Q4 — When Approved Top-Up Amount < Ledger Debt (C's auto-split scenario)
+
+If you implement auto-split (which I recommend against, but here's the answer if you do):
+
+**Scenario:** Debt = 100,000 T, customer tops up 40,000 T.
+
+```
+APPROVAL posts:
+  LedgerEntry(customer, type='partial_debt_payment', amount=-40,000, ref=receipt_id)
+  ShopWalletEntry(customer, type='topup', amount=+0, ref=receipt_id)
+  — entire amount goes to ledger, wallet unchanged
+
+Bot immediately shows:
+  «شارژ 40,000 تومانی شما دریافت شد و به بدهی صورت‌حساب شما اعمال شد.
+   بدهی باقی‌مانده: 60,000 ت | موجودی کیف پول: 0 | قابل خرید: 0
+   برای استفاده از سرویس، ابتدا بدهی باقی‌مانده را پرداخت کنید.»
+```
+
+**The critical rule:** The split decision must be made *at approval time* and written *atomically* — one ledger row and one wallet row, both referencing the same receipt_id. The idempotent guard checks receipt_id across *both* tables. If either write fails, the whole approval retries. This is why auto-split is fragile: you've made a single approval touch two systems atomically, and SQLite transactions can handle it, but your exactly-once guard now needs to check two tables before declaring "already processed."
+
+**Tell the customer clearly and immediately** — not in a summary screen they might skip, but as the *primary* message after approval. "Your money went to your debt, not your wallet" is surprising; say it first, not last.
+
+---
+
+## Q5 — What the Recommended Design Must Not Break
+
+**Auto-renew negative wallet:** The affordability check for auto-renew uses `wallet_balance ≥ -cap`. Under B, the affordability check for *manual purchases* uses `wallet_balance − ledger_debt ≥ price`. These are two different checks for two different flows. Do not merge them. Auto-renew's negative wallet logic is self-contained and must stay that way. The ledger_debt term must only appear in the *manual purchase* affordability path.
+
+**Exactly-once approvals:** The debt payment transaction (wallet debit + ledger credit) must be guarded by its own `txn_id`, separate from the top-up receipt flow. Never reuse a receipt_id for a debt payment. The approval flow for top-ups posts one wallet row; the debt payment flow posts one wallet row and one ledger row. These are different flows with different guards.
+
+**Append-only ledger:** The debt payment posts a *credit* row (negative amount, type='wallet_debt_payment'). It does not modify or delete any existing row. The ledger balance for the customer is always `SUM(all rows)` — the credit row reduces the outstanding balance correctly. This is already how the ledger works; the new row type is additive.
+
+**Single-owner buckets:** The ledger credit posted by a debt payment must be attributed to the correct customer → group → account hierarchy, exactly as payg charges are. Do not post it at the top level. The دفتر کل rollups must see it correctly without special-casing.
+
+**The invariant itself:** *Wallet balances never appear in ledger views; ledger debt never appears in wallet rows.* Under B, this invariant holds completely. The bot reads both systems and computes a display figure, but writes to each system independently through their own flows. The invariant is never violated.

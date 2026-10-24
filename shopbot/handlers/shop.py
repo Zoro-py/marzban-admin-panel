@@ -74,6 +74,9 @@ _PENDING_FORCE_NEW = "pending_force_new"
 SKIP_NAME = "بدون نام"
 _ORDER_ID = "order_id"
 _PENDING_AMOUNT = "pending_amount"
+# Council 2026-10-24 (routed books): the receipt being sent is the customer's
+# DESIGNATED debt payment — approval posts a ledger credit, not wallet credit.
+_PENDING_FOR_DEBT = "pending_for_debt"
 # Set while choosing a volume via MENU_NEW_SERVICE instead of MENU_BUY -
 # read once, in _handle_volume, to tell the backend not to extend whatever
 # account the customer already has.
@@ -188,6 +191,11 @@ def main_menu(session: dict | None = None) -> ReplyKeyboardMarkup:
     rows.append([KeyboardButton(texts.MENU_BUY), KeyboardButton(texts.MENU_ACCOUNTS)])
     if has_wallet or (session is not None and not trial):
         rows.append([KeyboardButton(texts.MENU_WALLET), KeyboardButton(texts.MENU_TOPUP)])
+    # Routed-books debt (council 2026-10-24): its own row ABOVE nothing and
+    # BELOW the wallet row — visible for anyone who owes, without reading as
+    # a second "start here" next to MENU_BUY.
+    if session and session.get("ledger_debt", 0) > 0:
+        rows.append([KeyboardButton(texts.MENU_PAY_DEBT)])
     # Its own row, below the common actions - deliberately not next to
     # MENU_BUY so it never reads as "the normal way to buy" (see texts.py).
     rows.append([KeyboardButton(texts.MENU_NEW_SERVICE)])
@@ -783,6 +791,13 @@ async def _confirm_wallet_purchase(update: Update, context: ContextTypes.DEFAULT
             # this text answers the question they actually hold.
             await _reply(update, texts.PURCHASE_FAILED_REFUNDED, session)
             return
+        detail = str(exc)
+        if detail.startswith("DEBT_LINE:"):
+            # The backend's refusal is already the customer's Persian
+            # sentence (council 2026-10-24) — relay it, minus the routing
+            # marker the bot keys on.
+            await _reply(update, detail[len("DEBT_LINE:"):].strip(), session)
+            return
         await _reply(update, texts.generic_error(_handle(session)), session)
         return
     # Delivery is pushed by the backend — the same path an approved card
@@ -803,8 +818,10 @@ async def start_topup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _reply(update, texts.NO_CARD, session)
         return
     context.user_data[_STATE] = _STATE_CHOOSING_TOPUP
+    debt = session.get("ledger_debt", 0)
+    prefix = (texts.debt_line(debt) + "\n\n") if debt > 0 else ""
     await update.effective_message.reply_text(
-        texts.topup_ask_amount(session["min_topup"], session["max_topup"]),
+        prefix + texts.topup_ask_amount(session["min_topup"], session["max_topup"]),
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton(texts.CANCEL)]], resize_keyboard=True),
     )
 
@@ -812,15 +829,30 @@ async def start_topup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def _handle_topup_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: float) -> None:
     session = await _session(update)
     value = int(amount)
-    if not (session["min_topup"] <= value <= session["max_topup"]):
+    for_debt = bool(context.user_data.get(_PENDING_FOR_DEBT))
+    # A debt payment has no wallet floor (min_topup is a wallet-product rule);
+    # it still respects the anti-fat-finger ceiling.
+    floor = 1000 if for_debt else session["min_topup"]
+    if not (floor <= value <= session["max_topup"]):
         await update.effective_message.reply_text(
-            texts.topup_out_of_range(session["min_topup"], session["max_topup"])
+            texts.topup_out_of_range(floor, session["max_topup"])
         )
         return
     context.user_data[_STATE] = _STATE_AWAITING_RECEIPT
     context.user_data[_PENDING_AMOUNT] = value
-    # No order attached: this is a plain wallet top-up.
+    # No order attached: this is a plain wallet top-up (or a debt payment,
+    # whose flag _PENDING_FOR_DEBT already rides user_data).
     context.user_data.pop(_ORDER_ID, None)
+    if for_debt:
+        await update.effective_message.reply_text(
+            texts.debt_receipt_instructions(
+                value, session["card_number"], session.get("card_holder"),
+                session.get("approval_eta_minutes", 30),
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=ReplyKeyboardMarkup([[KeyboardButton(texts.CANCEL)]], resize_keyboard=True),
+        )
+        return
     await update.effective_message.reply_text(
         texts.topup_instructions(
             value, session["card_number"], session.get("card_holder"),
@@ -949,6 +981,7 @@ async def _submit_receipt(
     amount = context.user_data.get(_PENDING_AMOUNT)
     order_id = context.user_data.get(_ORDER_ID)
     volume = context.user_data.get(_PENDING_VOLUME)
+    for_debt = bool(context.user_data.get(_PENDING_FOR_DEBT))
 
     # `is None`, not falsy: an amount of zero is still a live conversation.
     if context.user_data.get(_STATE) != _STATE_AWAITING_RECEIPT or amount is None:
@@ -975,6 +1008,7 @@ async def _submit_receipt(
             "receipt_file_id": receipt_file_id,
             "receipt_text": receipt_text,
             "order_id": order_id,
+            "for_debt": for_debt,
         }, timeout=60)
     except ShopApiError as exc:
         if getattr(exc, "status", 0) == 409:
@@ -989,6 +1023,13 @@ async def _submit_receipt(
         await _reply(update, texts.receipt_failed(_handle(session)), session)
         return
 
+    if for_debt:
+        await _reply(
+            update,
+            texts.debt_receipt_done(topup.get("reference_code"), session.get("approval_eta_minutes", 30)),
+            session,
+        )
+        return
     await _reply(
         update,
         _topup_submitted_text(
@@ -1003,6 +1044,105 @@ async def _submit_receipt(
 
 
 # ── wallet & accounts ─────────────────────────────────────────────────────
+
+
+# ── paying the statement debt (council 2026-10-24, routed books) ──────────
+
+
+async def start_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The debt landing: status lines, then the two ways to pay — from the
+    wallet (the single sanctioned cross-system write, one tap) or by a
+    card-to-card receipt DESIGNATED as a debt payment."""
+    context.user_data.clear()
+    session = await _session(update)
+    debt = session.get("ledger_debt", 0)
+    if debt <= 0:
+        await _reply(update, texts.DEBT_NONE, session)
+        return
+    text = texts.debt_status(debt, session["balance"], session.get("approval_eta_minutes", 30))
+    if session["balance"] > 0:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(
+                text=f"💳 پرداخت از کیف پول ({texts.money(min(session['balance'], int(debt)))})",
+                callback_data="debt:wallet",
+            )],
+            [InlineKeyboardButton(text=texts.DEBT_PAY_BY_RECEIPT, callback_data="debt:receipt")],
+        ])
+        await update.effective_message.reply_text(text, reply_markup=keyboard)
+        return
+    await _start_debt_receipt(update, context, session, debt)
+
+
+async def _start_debt_receipt(update, context, session, debt) -> None:
+    context.user_data[_STATE] = _STATE_CHOOSING_TOPUP
+    context.user_data[_PENDING_FOR_DEBT] = True
+    await update.effective_message.reply_text(
+        f"چند تومان می‌خواهید از بدهیِ {texts.money(int(debt))} بپردازید؟"
+        f"\n(حداقل ۱٬۰۰۰ — حداکثر {texts.money(session['max_topup'])})",
+        reply_markup=ReplyKeyboardMarkup([[KeyboardButton(texts.CANCEL)]], resize_keyboard=True),
+    )
+
+
+async def on_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The inline keyboard's two entries. Menu buttons cancel any ask and run
+    their own flow — the same resilience rule as the name steps."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    session = await _session(update)
+    debt = session.get("ledger_debt", 0)
+    if debt <= 0:
+        await query.edit_message_text(texts.DEBT_NONE)
+        return
+    if query.data == "debt:wallet":
+        pay = min(session["balance"], int(debt))
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+        await query.edit_message_text(
+            texts.debt_status(debt, session["balance"], session.get("approval_eta_minutes", 30))
+            + f"\n\nپرداخت {texts.money(pay)} از کیف پول؟",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(text=texts.DEBT_PAY_WALLET_CONFIRM, callback_data="debt:wallet:yes"),
+                InlineKeyboardButton(text=texts.CANCEL, callback_data="debt:cancel"),
+            ]]),
+        )
+        return
+    # debt:receipt
+    await _start_debt_receipt(update, context, session, debt)
+
+
+async def on_pay_debt_wallet_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    session = await _session(update)
+    if session.get("ledger_debt", 0) <= 0 or session["balance"] <= 0:
+        await query.edit_message_text(texts.DEBT_NONE if session.get("ledger_debt", 0) <= 0 else "کیف پولتان خالی است — از «ارسال رسید» استفاده کنید.")
+        return
+    try:
+        result = await backend.post("/api/shop/bot/pay-debt-from-wallet",
+                                    json={"telegram_id": update.effective_user.id}, timeout=60)
+    except ShopApiError as exc:
+        detail = str(exc) or ""
+        await query.edit_message_text(detail.removeprefix("ShopApiError: ") if detail else texts.generic_error(_handle(session)))
+        return
+    await query.edit_message_text(
+        texts.debt_paid_from_wallet(result["paid"], result["wallet_balance"], result["ledger_debt"])
+    )
+
+
+async def on_pay_debt_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    try:
+        session = await _session(update)
+    except ShopApiError:
+        await query.edit_message_text("انصراف شد.")
+        return
+    await query.edit_message_text("انصراف شد. منوی اصلی همین‌جاست.")
 
 
 async def show_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1249,6 +1389,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return await show_wallet(update, context)
     if text == texts.MENU_TOPUP:
         return await start_topup(update, context)
+    if text == texts.MENU_PAY_DEBT:
+        return await start_pay_debt(update, context)
     if text == texts.MENU_HELP:
         return await help_command(update, context)
     if text == texts.MENU_SUPPORT:

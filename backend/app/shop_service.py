@@ -272,7 +272,25 @@ async def purchase(session: Session, shop_user: ShopUser, data_limit_gb: float,
 
     async with _lock_for(shop_user.id):
         balance = wallet_balance(session, shop_user.id)
-        if balance < price:
+        # Council 2026-10-24: a linked customer's unpaid ledger debt reduces
+        # purchasing power (spendable = wallet − debt) — buying a new package
+        # while owing for the old one is how debt quietly compounds. The
+        # DEBT_LINE prefix is what shopbot keys its Persian copy on.
+        debt = 0.0
+        if shop_user.customer_id is not None:
+            from app.services import MoneyBook
+            from app.models import Customer as _C
+
+            _cust = session.get(_C, shop_user.customer_id)
+            if _cust is not None:
+                debt = max(0.0, MoneyBook(session).customer_net(_cust))
+        spendable = balance - int(debt)
+        if spendable < price:
+            if debt > 0:
+                raise ShopError(
+                    f"DEBT_LINE: ابتدا بدهی صورت‌حسابت را پرداخت کن — بدهی {int(debt):,} T "
+                    f"و کیف پول {balance:,} T؛ قابل خرید {spendable:,} T ولی این پلن {price:,} T است."
+                )
             raise ShopError(
                 f"Not enough balance: this plan costs {price:,} T and your wallet has {balance:,} T."
             )
@@ -755,6 +773,7 @@ def create_topup(
     receipt_file_id: Optional[str],
     order_id: Optional[int] = None,
     receipt_text: Optional[str] = None,
+    for_debt: bool = False,
 ) -> ShopTopup:
     """Records a claimed card-to-card payment.
 
@@ -776,9 +795,16 @@ def create_topup(
     settings = get_shop_settings(session)
     if shop_user.is_blocked:
         raise ShopError("This account can't top up. Contact support.")
+    if for_debt and order_id is not None:
+        # An order is a wallet purchase by definition; a debt payment can
+        # never also deliver one. The bot never sends both — this is the
+        # backstop (council 2026-10-24).
+        raise ShopError("A debt payment cannot be bound to an order.")
+    if for_debt and shop_user.customer_id is None:
+        raise ShopError("This account has no statement debt to pay (not linked).")
     if claimed_amount > settings.max_topup:
         raise ShopError(f"The largest top-up is {settings.max_topup:,} T.")
-    if order_id is None and claimed_amount < settings.min_topup:
+    if order_id is None and not for_debt and claimed_amount < settings.min_topup:
         raise ShopError(f"The smallest top-up is {settings.min_topup:,} T.")
 
     if order_id is not None:
@@ -827,6 +853,7 @@ def create_topup(
         receipt_text=receipt_text,
         order_id=order_id,
         reference_code=_generate_reference_code(session),
+        for_debt=for_debt,
     )
     session.add(topup)
     session.commit()
@@ -908,6 +935,33 @@ async def approve_topup(
         session.rollback()
         session.refresh(topup)
         raise ShopError(f"This top-up was already {topup.status.value}.")
+
+    if topup.for_debt:
+        # A payment the customer DESIGNATED «پرداخت بدهی صورت‌حساب» (council
+        # 2026-10-24, routed books): the money pays down the linked
+        # customer's reseller-ledger debt — a ledger CREDIT, exactly once,
+        # in the SAME transaction as the pending->approved move. The wallet
+        # is never touched: no transfer ever happens between the two
+        # systems, this row is simply routed to the books it belongs to.
+        shop_user = session.get(ShopUser, topup.shop_user_id)
+        customer_id = shop_user.customer_id if shop_user else None
+        if customer_id is None:
+            raise ShopError("This receipt was sent as a debt payment but the sender is not linked to a customer.")
+        from app.models import Customer, LedgerEntry, LedgerSource, LedgerType
+
+        session.add(LedgerEntry(
+            type=LedgerType.credit,
+            amount=float(amount),
+            customer_id=customer_id,
+            note=f"پرداخت بدهی از بات فروش — رسید #{topup.id}"
+                 + (f" (کد {topup.reference_code})" if topup.reference_code else ""),
+            source=LedgerSource.shop,
+            created_by=f"system:shop-debt-pay",
+        ))
+        session.commit()
+        session.refresh(topup)
+        return topup, None
+
     post_wallet_entry(
         session,
         topup.shop_user_id,

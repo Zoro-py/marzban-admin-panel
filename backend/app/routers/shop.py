@@ -79,6 +79,8 @@ from app.schemas import (
     ShopBotPhoneRequest,
     ShopBotPurchaseRequest,
     ShopBotSession,
+    ShopBotPayDebtRequest,
+    ShopBotPayDebtResult,
     ShopBotSessionRequest,
     ShopBotTopupRequest,
     ShopBindClaimRead,
@@ -649,6 +651,24 @@ _PAYG_REFUSAL_TEXT = (
     "در پنل، دکمهٔ «تسویه + تبدیل + اتصال» (مصرفِ مانده بیل و ثبت می‌شود، اکانت‌ها "
     "به پکیچی تبدیل و بعد وصل می‌شوند)."
 )
+
+
+def _linked_ledger_debt(session: Session, shop_user: ShopUser) -> float:
+    """What this shop user's linked CUSTOMER owes on the reseller ledger right
+    now — MoneyBook's net_owed (posted + not-yet-invoiced), i.e. exactly the
+    figure the panel shows as «Owes now». 0.0 for an unlinked shop user.
+
+    READ-ONLY by contract (council 2026-10-24, routed books): the wallet's
+    affordability and this debt meet only in DISPLAY and in the customer's
+    explicit payment choices — never as a bookkeeping transfer."""
+    if shop_user.customer_id is None:
+        return 0.0
+    from app.services import MoneyBook
+
+    customer = session.get(Customer, shop_user.customer_id)
+    if customer is None:
+        return 0.0
+    return round(MoneyBook(session).customer_net(customer), 2)
 
 
 def _linked_account_count(session: Session, customer: Customer) -> int:
@@ -1246,6 +1266,8 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
     # on this very message.
     _try_complete_bind_claim(session, user)
     settings = get_shop_settings(session)
+    # Routed-books debt view (council 2026-10-24): read-only, from the ledger.
+    ledger_debt = _linked_ledger_debt(session, user)
     return ShopBotSession(
         shop_user_id=user.id,
         is_blocked=user.is_blocked,
@@ -1270,6 +1292,7 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
         phone=user.phone,
         payg_enabled=bool(settings.payg_enabled and settings.payg_rate_per_gb),
         payg_rate_per_gb=settings.payg_rate_per_gb or 0,
+        ledger_debt=ledger_debt,
     )
 
 
@@ -1795,7 +1818,8 @@ async def bot_create_topup(
     reused = find_prior_receipt_text_use(session, body.receipt_text)
     try:
         topup = create_topup(session, user, body.claimed_amount, body.receipt_file_id,
-                             order_id=body.order_id, receipt_text=body.receipt_text)
+                             order_id=body.order_id, receipt_text=body.receipt_text,
+                             for_debt=body.for_debt)
     except ShopConflict as exc:
         raise HTTPException(409, str(exc))
     except ShopError as exc:
@@ -1817,9 +1841,71 @@ async def bot_create_topup(
     background_tasks.add_task(_alert_operator_to_topup, topup.id, user.telegram_id,
                               user.display_name or user.telegram_username, body.receipt_file_id,
                               topup.claimed_amount, topup.reference_code, order_summary,
-                              body.receipt_text, reused.id if reused else None)
+                              body.receipt_text, reused.id if reused else None,
+                              body.for_debt)
 
     return ShopTopupRead(**topup.model_dump(), telegram_id=user.telegram_id, display_name=user.display_name)
+
+
+@bot_router.post("/pay-debt-from-wallet", response_model=ShopBotPayDebtResult)
+async def bot_pay_debt_from_wallet(
+    body: ShopBotPayDebtRequest,
+    session: Session = Depends(get_session),
+):
+    """Pay the linked customer's reseller-ledger debt OUT of the shop wallet —
+    the single sanctioned cross-system write (council 2026-10-24: explicit,
+    customer-initiated, double-referenced). Both rows post in ONE transaction
+    under the shop's per-user lock; the amount is capped at min(request,
+    wallet, debt) re-read inside the lock, so a double-tap can never overpay
+    (the second call finds debt or wallet exhausted and refuses cleanly)."""
+    user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
+    if user is None:
+        raise HTTPException(404, "Unknown shop user — call /session first")
+    if user.is_blocked:
+        raise HTTPException(403, "This account can't move money. Contact support.")
+    if user.customer_id is None:
+        raise HTTPException(400, "این حساب بدهیِ صورت‌حسابی ندارد (به مشتری وصل نیست).")
+
+    from app.models import Customer, LedgerEntry, LedgerSource, LedgerType
+    from app.services import billing_lock
+
+    customer = session.get(Customer, user.customer_id)
+    if customer is None:
+        raise HTTPException(400, "این حساب بدهیِ صورت‌حسابی ندارد (مشتری پیدا نشد).")
+
+    async with billing_lock:
+        from app.services import MoneyBook
+
+        wallet = wallet_balance(session, user.id)
+        debt = max(0.0, MoneyBook(session).customer_net(customer))
+        pay = min(body.amount if body.amount is not None else wallet, wallet, int(debt))
+        if wallet <= 0:
+            raise HTTPException(400, "کیف پولتان خالی است — برای پرداخت بدهی رسید بفرستید (گزینهٔ «پرداخت بدهی»).")
+        if debt <= 0:
+            raise HTTPException(400, "بدهیِ صورت‌حسابی ندارید.")
+        if pay < 1000:
+            raise HTTPException(400, "مبلغ پرداخت باید حداقل ۱٬۰۰۰ تومان باشد.")
+
+        ref = f"debt-pay:shopuser:{user.id}:wallet:{wallet}:debt:{int(debt)}"
+        session.add(ShopWalletEntry(
+            shop_user_id=user.id,
+            type=ShopWalletEntryType.debt_pay,
+            amount=-pay,
+            note=f"پرداخت بدهی صورت‌حساب — {ref}",
+        ))
+        session.add(LedgerEntry(
+            type=LedgerType.credit,
+            amount=float(pay),
+            customer_id=customer.id,
+            note=f"پرداخت بدهی از کیف پول فروشگاه — {ref}",
+            source=LedgerSource.shop,
+            created_by="system:shop-debt-pay",
+        ))
+        session.commit()
+
+    wallet_after = wallet_balance(session, user.id)
+    debt_after = max(0.0, MoneyBook(session).customer_net(customer))
+    return ShopBotPayDebtResult(paid=pay, wallet_balance=wallet_after, ledger_debt=round(debt_after, 2))
 
 
 async def _grant_bridge_service(topup_id: int) -> None:
@@ -1853,6 +1939,7 @@ async def _alert_operator_to_topup(
     reference_code: Optional[str] = None,
     order_summary: Optional[str] = None,
     receipt_text: Optional[str] = None,
+    for_debt: bool = False,
     reused_from_topup_id: Optional[int] = None,
 ) -> None:
     # The reference code is shown because the customer was given it and will
@@ -1861,8 +1948,11 @@ async def _alert_operator_to_topup(
     # customer waiting for one — the operator needs to know which kind of
     # approval they are making before they tap.
     ref = f" · code {reference_code}" if reference_code else ""
-    kind = (f"\nFor: {order_summary} (approving delivers it)" if order_summary
-            else "\nFor: wallet credit only")
+    kind = (
+        (f"\nFor: {order_summary} (approving delivers it)" if order_summary else "\nFor: wallet credit only")
+        if not for_debt
+        else "\nFor: DEBT PAYMENT — approving posts a LEDGER credit, the wallet is untouched"
+    )
     # Plain text throughout this module (see notify.py) — no parse_mode is
     # ever set, so nothing the customer typed can be interpreted as
     # formatting. It's shown quoted only for visual separation from the

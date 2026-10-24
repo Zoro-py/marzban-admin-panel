@@ -213,7 +213,9 @@ function PendingTopups({ query }: { query: ReturnType<typeof useQuery<ShopTopup[
                       approving less than it costs leaves the customer waiting —
                       so the two kinds must not look the same. */}
                   <div className="text-xs">
-                    {topup.order_id ? (
+                    {topup.for_debt ? (
+                      <span className="text-destructive font-medium">پرداخت بدهی — تأیید = ثبت در حساب‌کتاب (کیف پول دست نمی‌خورد)</span>
+                    ) : topup.order_id ? (
                       <span className="text-primary">For order #{topup.order_id} — approving delivers it</span>
                     ) : (
                       <span className="text-muted-foreground">Wallet credit only</span>

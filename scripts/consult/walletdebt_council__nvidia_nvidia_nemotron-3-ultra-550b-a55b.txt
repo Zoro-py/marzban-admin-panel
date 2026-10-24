@@ -1,0 +1,132 @@
+### 1) Ranking & Justification
+
+**1. Option C (Hybrid / Computed Spendable + Auto-Split) — BEST**  
+Preserves the **Ledger as the single source of truth for Operator liabilities** (all Panel views: outstanding, nudges, statements, «دفتر کل» work unchanged) while giving the customer a single intuitive number: `Spendable = Wallet − LedgerDebt`. The auto-split on top-up approval eliminates the «two buttons» confusion of B and the bookkeeping divergence of A. Future manual Ledger charges (explicitly allowed by spec) naturally increase `LedgerDebt`, instantly reducing `Spendable` in the bot; the next top-up automatically clears it—no reconciliation daemon, no double-entry risk.
+
+**2. Option B (Dual View / Routed Books) — SAFE BUT CLUNKY**  
+Architecturally clean (strict separation), zero risk to Ledger integrity, trivial unlink. Fails the «customer clarity» test: forcing a non-technical user to distinguish «Pay Debt» (Ledger credit) vs «Top Up Wallet» (Wallet credit) causes misallocated payments and support tickets («I paid 200k but my package didn’t renew» → they paid Ledger, Wallet empty). At 10× scale the operator *will* waste time fixing these.
+
+**3. Option A (Debt Import to Negative Wallet) — DANGEROUS**  
+Violates the documented invariant («Systems never mix»). **Silently breaks the Operator’s finance stack**: Outstanding reports, Debt Nudges, Monthly Statements, and the new «دفتر کل» page all read `SUM(LedgerEntry)`; moving debt to `ShopWalletEntry` makes them report **zero** unless *every single view* is refactored to `UNION` wallet deficits. Creates permanent divergence: any future manual Ledger charge (explicitly allowed) creates a second debt bucket the wallet negative doesn’t represent, requiring a reconciliation process that doesn’t exist. Unlink becomes a financial transaction instead of a flag flip.
+
+---
+
+### 2) Winner (C) — Concrete Event Spec
+
+**State primitives**  
+`Customer { id, linked_bot: bool, billing_mode: 'PAYG'|'PREPAY' }`  
+`LedgerEntry { customer_id, amount_float, type, ref_id }` — append-only, `SUM` = debt (positive = operator owed)  
+`ShopWalletEntry { customer_id, amount_int, type, ref_id }` — append-only, `SUM` = wallet balance (int Toman)  
+`Receipt { id, customer_id, amount_int, status: 'PENDING'|'APPROVED' }` — card-to-card proof
+
+**Helpers**  
+`ledger_debt(c) = ceil(SUM(LedgerEntry.amount) for c)` — float→int ceiling, never negative  
+`wallet_bal(c) = SUM(ShopWalletEntry.amount for c)` — int, can be negative (auto-renew)  
+`spendable(c) = wallet_bal(c) - ledger_debt(c)` — **single source of truth for affordability**
+
+---
+
+#### LINK TIME (Panel: «Settle + Convert + Link»)
+1. **Settle** — run monthly settle → posts `LedgerEntry(amount=+usage, type='USAGE_CHARGE')`.  
+   *Result:* `ledger_debt = 100_000`.
+2. **Convert** — `UPDATE Customer SET billing_mode='PREPAY' WHERE id=?` (guard: never back to PAYG).
+3. **Link** — `UPDATE Customer SET linked_bot=1 WHERE id=?`.
+4. **Financial rows:** **ZERO**. No Ledger credit, no Wallet debit.  
+   *Bot next open:* `spendable = 0 - 100_000 = -100_000` → UI shows «موجودی قابل خرید: -۱۰۰,۰۰۰ (بدهی صورت‌حساب: ۱۰۰,۰۰۰)».
+
+---
+
+#### TOP-UP APPROVAL TIME (Operator approves `Receipt{id, amount_int}`)
+*Atomic SQLite transaction (`BEGIN IMMEDIATE`):*
+```python
+debt = ledger_debt(cust_id)           # e.g. 100_000
+paid = receipt.amount_int             # e.g. 200_000
+to_ledger = min(paid, debt)           # 100_000
+to_wallet = paid - to_ledger          # 100_000
+
+# 1. Credit Ledger (reduces debt)
+INSERT OR IGNORE INTO LedgerEntry (customer_id, amount, type, ref_id)
+VALUES (?, -to_ledger, 'PAYMENT_RECEIPT', receipt.id)  # negative = credit
+
+# 2. Credit Wallet (remainder)
+if to_wallet > 0:
+    INSERT OR IGNORE INTO ShopWalletEntry (customer_id, amount, type, ref_id)
+    VALUES (?, to_wallet, 'TOPUP_RECEIPT', receipt.id)
+
+# 3. Mark receipt approved
+UPDATE Receipt SET status='APPROVED' WHERE id=receipt.id
+COMMIT
+```
+*Idempotency:* `UNIQUE(ref_id, type)` on both entry tables (or `INSERT OR IGNORE` with composite key). Crash after Ledger insert → retry approves → Ledger ignored, Wallet inserted → consistent.
+
+*Result:* Ledger debt 0, Wallet 100_000, `spendable = 100_000`. Single receipt, single operator action.
+
+---
+
+#### PURCHASE TIME (Bot: customer buys package price `P`)
+```python
+if spendable(cust_id) < P:
+    REJECT «موجودی قابل خرید ناکافی است. بدهی صورت‌حساب: {ledger_debt}»
+# standard purchase flow
+INSERT INTO ShopWalletEntry (customer_id, amount, type, ref_id)
+VALUES (?, -P, 'PURCHASE', purchase_id)
+provision_service()
+```
+*Why only `spendable`?* Auto-split invariant guarantees: **`wallet_bal > 0 ⇒ ledger_debt == 0`**. If `ledger_debt > 0`, `spendable < wallet_bal` → blocked. No Ledger check needed at purchase time.
+
+---
+
+#### UNLINK TIME (Panel: «Unlink Bot»)
+1. **Guard:** `IF wallet_bal(cust_id) != 0: REJECT «کیف پول باید صفر باشد (استرداد یا مصرف) قبل از انلینک»`.
+2. `UPDATE Customer SET linked_bot=0 WHERE id=?`.
+3. **Financial rows:** **ZERO**.  
+   Ledger debt stays in Ledger (operator collects via Panel). Wallet stays in Wallet (operator refunds manually if needed). No reverse transfers, no evaporation.
+
+---
+
+### 3) Failure Modes of Negative-Wallet Import (A) That Proponents Miss
+
+1. **Ghost Debt in Operator Panel** — Debt Nudge cron, Monthly Statements, «دفتر کل» page all query `LedgerEntry`. After import, Ledger=0 → customer **vanishes from debt collection workflows**. Operator loses visibility unless *every* report is rewritten to `UNION` wallet deficits.
+2. **Manual Charge Divergence (Spec-Explicit)** — Operator sells «Extra IP» via Panel → posts `LedgerEntry +50_000`. State: Ledger Debt 50k, Wallet -100k. **Reality: 150k owed.** Bot shows -100k, Panel shows 50k. Neither shows truth. Reconciliation daemon required.
+3. **Partial Payment Invisibility** — Customer pays 50k (Wallet -100k → -50k). Ledger=0. Next Monthly Statement (Ledger-only) shows **0 activity, 0 balance**. The 50k payment and 50k remaining debt are **absent from the statement**.
+4. **Float vs Int Drift** — Ledger `FLOAT`, Wallet `INT`. Importing `100_000.50` → Wallet `-100000` or `-100001`? Rounding errors become untraceable real-money discrepancies because Source of Truth was duplicated.
+5. **Unlink = Financial Event** — In C/B unlink is a flag flip. In A, unlink *must* generate `LedgerEntry +Debt` + `WalletEntry -Debt` to restore truth. If Wallet is -50k (partial pay), unlink creates `Ledger +50k`. If operator forgets/skips → debt evaporates.
+
+---
+
+### 4) Auto-Split (C) When Approved Amount < Debt
+
+**Scenario:** `ledger_debt = 100_000`, `receipt.amount = 30_000`.
+
+**Logic:**  
+`to_ledger = 30_000`, `to_wallet = 0`.  
+**Atomic writes:**  
+1. `LedgerEntry(amount=-30_000, type='PAYMENT_RECEIPT', ref_id=receipt.id)` → Ledger Debt now 70_000.  
+2. No Wallet row.
+
+**Customer Notification (Bot push / next menu):**  
+> **«پرداخت ۳۰,۰۰۰ تومان با موفقیت ثبت شد. بدهی صورت‌حساب شما از ۱۰۰,۰۰۰ به ۷۰,۰۰۰ تومان کاهش یافت. موجودی قابل خرید: ۰ تومان.»**
+
+**UI State:** `spendable = 0 - 70_000 = -70_000`. «Add Money» button remains primary.  
+*Why correct:* The receipt *is* the payment instrument; it reduces Liability (Ledger). Wallet (Asset) only receives funds *after* Liability is zero — standard accounting (Cash → AR). Customer sees the single number «Spendable» improve from -100k to -70k.
+
+---
+
+### 5) Existing Design Invariants the Design Must Not Break
+
+1. **Auto-Renew Bounded Negative Wallet** — Wallet *already* supports `balance < 0` for auto-renew (capped, guarded).  
+   **Constraint:** `spendable = wallet_bal - ledger_debt` must **not** conflate the two negatives.  
+   - Wallet `-20k` (auto-renew), Ledger `0` → `spendable = -20k` (block purchases, allow auto-renew logic).  
+   - Wallet `50k`, Ledger `100k` → `spendable = -50k` (block purchases).  
+   - Wallet `-20k`, Ledger `100k` → `spendable = -120k` (block purchases).  
+   Auto-renew logic checks `wallet_bal >= -CAP` **ignoring LedgerDebt** — correct: auto-renew is a *Wallet* feature (service continuity), Ledger Debt is a *Billing* feature. They run in parallel.
+
+2. **Exactly-Once / Idempotent Approvals** — Top-Up Approval now writes **two tables** (Ledger + Wallet).  
+   **Requirement:** Single SQLite transaction (`BEGIN IMMEDIATE`/`COMMIT`). Idempotency key = `ReceiptID` for *both* inserts (`INSERT OR IGNORE ... WHERE ref_id=ReceiptID AND type=...`). Crash after Ledger insert → retry succeeds.
+
+3. **Append-Only Ledger** — Design C **only adds rows** (`PAYMENT_RECEIPT` credits). Never updates/deletes existing `LedgerEntry`. Preserves audit trail, statement integrity, debt aging.
+
+4. **Monthly PayG Settle** — Guard: «PayG converted customer can never go back to PayG».  
+   Link step flips `billing_mode = PREPAY`. Settle Cron checks `billing_mode`; linked customers skipped. **Preserved.**
+
+5. **Single Operator / SQLite / Single Process** — Dual-write in Approval is a single local DB transaction. No distributed saga, no eventual consistency. **Fits perfectly.**
