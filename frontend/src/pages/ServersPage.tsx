@@ -160,6 +160,10 @@ export function ServersPage() {
   const events = (eventsQuery.data ?? []).filter((e) =>
     severityFilter === 'all' ? true : e.severity !== 'info',
   )
+  // The old build silently rendered 30 of the fetched 100 — a timeline that
+  // lies by omission. First 15 rows, then an explicit "show all" button.
+  const [showAllEvents, setShowAllEvents] = React.useState(false)
+  const shownEvents = showAllEvents ? events : events.slice(0, 15)
 
   return (
     <div className="flex flex-col gap-4">
@@ -216,7 +220,7 @@ export function ServersPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {events.slice(0, 30).map((e, i) => (
+                {shownEvents.map((e, i) => (
                   <TableRow key={e.ts + e.type + i}>
                     <TableCell className="text-xs text-muted-foreground">{formatAgo(e.ts)}</TableCell>
                     <TableCell>
@@ -229,6 +233,17 @@ export function ServersPage() {
                 ))}
               </TableBody>
             </Table>
+          )}
+          {events.length > 15 && (
+            <button
+              type="button"
+              onClick={() => setShowAllEvents((v) => !v)}
+              className="mt-2 w-full py-1.5 text-center text-xs text-muted-foreground hover:text-foreground hover:underline"
+            >
+              {showAllEvents
+                ? 'نمایش کمتر'
+                : `نمایش همهٔ ${events.length} رویداد (${events.length - 15} مورد دیگر)`}
+            </button>
           )}
         </CardContent>
       </Card>

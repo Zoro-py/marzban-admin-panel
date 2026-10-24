@@ -4,7 +4,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
   Building2,
+  BookOpen,
+  CalendarCheck,
+  History,
   LayoutDashboard,
+  MessageCircle,
+  Store,
   Moon,
   Network,
   RefreshCw,
@@ -99,7 +104,12 @@ export function CommandPalette() {
       { id: 'p-cust', label: 'Customers', icon: Users, keywords: 'customers people billing contacts', run: () => { navigate('/customers'); close() } },
       { id: 'p-grp', label: 'Groups', icon: Building2, keywords: 'groups companies', run: () => { navigate('/groups'); close() } },
       { id: 'p-acct', label: 'Accounts', icon: Network, keywords: 'accounts users marzban', run: () => { navigate('/accounts'); close() } },
-      { id: 'p-fin', label: 'Finance', icon: Wallet, keywords: 'finance money revenue ledger rates', run: () => { navigate('/finance'); close() } },
+      { id: 'p-fin', label: 'مالی / Finance', icon: Wallet, keywords: 'finance money revenue ledger rates مالی پول درامد', run: () => { navigate('/finance'); close() } },
+      { id: 'p-ledger', label: 'دفتر کل / Ledger', icon: BookOpen, keywords: 'ledger book deposit void باطل واریز دفتر حساب', run: () => { navigate('/ledger'); close() } },
+      { id: 'p-conn', label: 'اتصال تلگرام / Connections', icon: MessageCircle, keywords: 'telegram connections bot link اتصال تلگرام بات دعوت', run: () => { navigate('/connections'); close() } },
+      { id: 'p-history', label: 'تاریخچهٔ شارژ / History', icon: History, keywords: 'history charges timeline cumulative تاریخچه شارژ', run: () => { navigate('/history'); close() } },
+      { id: 'p-shop', label: 'فروشگاه / Shop', icon: Store, keywords: 'shop orders topups wallet store فروشگاه سفارش', run: () => { navigate('/shop'); close() } },
+      { id: 'p-monthly', label: 'تسویهٔ ماهانه / Monthly Settlements', icon: CalendarCheck, keywords: 'monthly settlements payg jalali تسویه ماهانه', run: () => { navigate('/monthly-settlements'); close() } },
       { id: 'p-delegate', label: 'Delegates', icon: UserCog, keywords: 'delegates grants self-service delegate_bot telegram resellers', run: () => { navigate('/delegates'); close() } },
       { id: 'p-servers', label: 'Servers', icon: Server, keywords: 'servers monitoring health cpu steal dallas france nodes outages flaps', run: () => { navigate('/servers'); close() } },
     ]

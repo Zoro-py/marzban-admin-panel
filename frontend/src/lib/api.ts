@@ -10,7 +10,9 @@ import type {
   BulkAccountPreview,
   BulkAccountRequest,
   BulkAccountResult,
+  BotHistoryItem,
   ChargeHistory,
+  ConnectionRow,
   Customer,
   CustomerWithBalance,
   Delegate,
@@ -22,6 +24,7 @@ import type {
   GroupWithBalance,
   HistoryAccount,
   LedgerEntry,
+  LedgerVoidResult,
   MonitorEvent,
   MonthlySettlementBatch,
   MonthlySettlementRunResult,
@@ -224,8 +227,28 @@ export const accountsApi = {
 
 // ---- ledger ----
 export const ledgerApi = {
-  list: async (params?: { customer_id?: number; group_id?: number; account_id?: number }) =>
+  list: async (params?: {
+    customer_id?: number
+    group_id?: number
+    account_id?: number
+    type?: 'charge' | 'credit'
+    source?: 'web' | 'bot' | 'sync' | 'delegate'
+    q?: string
+    since?: string
+    until?: string
+    include_voided?: boolean
+    offset?: number
+    limit?: number
+  }) =>
     (await api.get<LedgerEntry[]>('/api/ledger', { params })).data,
+  // Withdraw a mistaken entry (mandatory reason becomes the permanent stamp).
+  // The result carries the owning scope's balance before/after so the dialog
+  // can show exactly what the void did to the books.
+  void: async (id: number, reason: string) =>
+    (await api.post<LedgerVoidResult>(`/api/ledger/${id}/void`, { reason })).data,
+  // Undo a mistaken void — clears the stamp, the row counts again.
+  unvoid: async (id: number) =>
+    (await api.post<LedgerVoidResult>(`/api/ledger/${id}/unvoid`)).data,
   create: async (body: {
     type: 'charge' | 'credit'
     amount: number
@@ -379,6 +402,15 @@ export const shopApi = {
   // false is not an error — see ShopTelegramBindResult.
   bindTelegram: async (customerId: number, body: { telegram_id: number; telegram_username?: string; display_name?: string }) =>
     (await api.post<ShopTelegramBindResult>(`/api/shop/link/${customerId}/telegram`, body)).data,
+}
+
+// ---- telegram connections (shop-bot link + delegate grant per customer) ----
+export const connectionsApi = {
+  list: async () => (await api.get<ConnectionRow[]>('/api/connections')).data,
+  // The merged per-customer bot timeline (orders/topups/wallet + delegate
+  // and operator-bot traces), newest first.
+  botHistory: async (customerId: number) =>
+    (await api.get<BotHistoryItem[]>(`/api/connections/${customerId}/bot-history`)).data,
 }
 
 // ---- server monitoring (dashboard view of scripts/monitor agents) ----

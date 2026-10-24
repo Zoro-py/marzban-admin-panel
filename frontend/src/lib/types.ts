@@ -157,6 +157,11 @@ export type UsageConfidence = 'insufficient_data' | 'preliminary' | 'full'
 export interface AccountRow extends Account {
   customer_name: string | null
   group_name: string | null
+  // Where this account came from: "web" (operator, detail = their login),
+  // "bulk" (family batch), "shop" (shop bot, detail = order ref), "delegate"
+  // (delegate self-service), "sync" (adopted from Marzban). null = unknown.
+  created_via?: 'web' | 'bulk' | 'shop' | 'delegate' | 'sync' | null
+  created_via_detail?: string | null
   effective_rate: number
   // Whether effective_rate came from an actual configured value somewhere in
   // the chain, vs. falling through to 0 because nothing was ever set — an
@@ -231,6 +236,16 @@ export interface LedgerEntry {
   source: LedgerSource
   // Raw login username of the operator — web-sourced rows only.
   created_by: string | null
+  // GB the charge bills for (null = unknown/never recorded — never 0).
+  // The backend always sent these; the frontend type simply never had them.
+  gb_amount: number | null
+  consumed_gb: number | null
+  consumed_amount: number | null
+  // Void stamp (2026-10-24): a withdrawn mistaken entry. Excluded from every
+  // balance/sum; still listed, struck through, with who/when/why.
+  voided_at: string | null
+  voided_by: string | null
+  void_reason: string | null
 }
 
 export interface Balance {
@@ -540,6 +555,9 @@ export interface FinanceTransaction {
   note: string | null
   customer_name: string | null
   group_name: string | null
+  // Void flag (2026-10-24): shown struck through; excluded from money figures.
+  voided?: boolean
+  void_reason?: string | null
 }
 
 export interface RateOverviewRow {
@@ -906,6 +924,9 @@ export interface HistoryEntry {
   source: LedgerSource
   created_by: string | null
   note: string | null
+  // True = withdrawn by the operator (struck through; excluded from totals).
+  voided?: boolean
+  void_reason?: string | null
 }
 
 export interface HistoryPackage {
@@ -942,4 +963,66 @@ export interface ChargeHistory {
   markers: HistoryMarker[]
   summaries: Record<string, HistorySummary>
   totals: HistorySummary
+}
+
+// ════════════════════════════════ telegram connections (2026-10-24) ════════
+
+export interface ShopLinkSummary {
+  state: 'linked' | 'pending' | 'none'
+  invite_url: string | null
+  claim_expires_at: string | null
+  linked_at: string | null
+  shop_user_id: number | null
+  telegram_id: number | null
+  telegram_username: string | null
+  display_name: string | null
+  wallet_balance: number | null
+  last_seen_at: string | null
+  is_blocked: boolean
+}
+
+export interface DelegateSummary {
+  id: number
+  state: 'claimed' | 'pending' | 'revoked'
+  telegram_id: number | null
+  label: string | null
+  credit_limit: number | null
+  claim_expires_at: string | null
+  is_active: boolean
+}
+
+// One row of GET /api/connections — a customer with both telegram touchpoints
+// (shop-bot link + delegate grant) side by side.
+export interface ConnectionRow {
+  customer_id: number
+  name: string
+  kind: 'individual' | 'family'
+  contact: string | null
+  accounts_count: number
+  shop: ShopLinkSummary
+  delegate: DelegateSummary | null
+}
+
+export type BotHistoryKind = 'order' | 'topup' | 'wallet' | 'account_event' | 'ledger'
+
+// One merged-timeline row of GET /api/connections/{id}/bot-history —
+// assembled from rows the shop/delegate/operator-bot flows already wrote.
+export interface BotHistoryItem {
+  ts: string
+  kind: BotHistoryKind
+  title: string
+  detail: string | null
+  amount: number | null
+  account_username: string | null
+}
+
+// Response of POST /api/ledger/{id}/void + /unvoid — the stamped entry plus
+// the owning scope's posted balance before/after, so the operator sees what
+// the void did to the books in the same response that did it.
+export interface LedgerVoidResult {
+  entry: LedgerEntry
+  scope: 'customer' | 'group' | 'account'
+  scope_id: number
+  scope_balance_before: number
+  scope_balance_after: number
 }

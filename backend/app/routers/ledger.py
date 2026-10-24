@@ -2,12 +2,12 @@ import threading
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlmodel import Session, select
 
 from app.auth import require_auth
 from app.db import get_session
-from app.models import Account, Customer, Group, LedgerEntry
+from app.models import Account, Customer, Group, LedgerEntry, LedgerSource, LedgerType
 from app.schemas import (
     BalanceRead,
     LedgerCreate,
@@ -44,17 +44,41 @@ def list_ledger(
     customer_id: Optional[int] = None,
     group_id: Optional[int] = None,
     account_id: Optional[int] = None,
+    # Ledger-page filters (2026-10-24): the full-book view needs type/source/
+    # window/note filters the per-scope pages never asked for. `q` is a
+    # case-insensitive substring over the note — notes are written for humans
+    # and searched by humans.
+    type: Optional[LedgerType] = None,
+    source: Optional[LedgerSource] = None,
+    q: Optional[str] = None,
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    include_voided: bool = True,
     offset: int = 0,
-    limit: int = 200,
+    limit: int = Query(200, ge=1, le=1000),
     session: Session = Depends(get_session),
 ):
+    # Voided rows are part of the book's history — listed (struck through in
+    # the UI) unless the caller asks for live-only.
     stmt = select(LedgerEntry).order_by(LedgerEntry.date.desc()).offset(offset).limit(limit)
+    if not include_voided:
+        stmt = stmt.where(LedgerEntry.voided_at.is_(None))
     if customer_id is not None:
         stmt = stmt.where(LedgerEntry.customer_id == customer_id)
     if group_id is not None:
         stmt = stmt.where(LedgerEntry.group_id == group_id)
     if account_id is not None:
         stmt = stmt.where(LedgerEntry.account_id == account_id)
+    if type is not None:
+        stmt = stmt.where(LedgerEntry.type == type)
+    if source is not None:
+        stmt = stmt.where(LedgerEntry.source == source)
+    if q:
+        stmt = stmt.where(LedgerEntry.note.ilike(f"%{q}%"))
+    if since is not None:
+        stmt = stmt.where(LedgerEntry.date >= since)
+    if until is not None:
+        stmt = stmt.where(LedgerEntry.date <= until)
     return session.exec(stmt).all()
 
 

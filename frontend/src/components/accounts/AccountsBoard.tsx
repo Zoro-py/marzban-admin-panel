@@ -128,21 +128,6 @@ export function AccountsBoard({ accounts, groups, isLoading }: AccountsBoardProp
     mutation.mutate({ accountId: account.id, groupId: targetGroupId })
   }
 
-  if (isLoading) {
-    return (
-      <div className="flex gap-4 overflow-x-auto pb-2">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="flex w-72 shrink-0 flex-col gap-2 rounded-lg border border-border bg-card p-4">
-            <Skeleton className="mb-2 h-5 w-1/2" />
-            <Skeleton className="h-16 w-full rounded-lg" />
-            <Skeleton className="h-16 w-full rounded-lg" />
-            <Skeleton className="h-16 w-full rounded-lg" />
-          </div>
-        ))}
-      </div>
-    )
-  }
-
   const { byGroup, ungrouped } = React.useMemo(() => {
     const byGroup = new Map<number, Account[]>()
     const ungrouped: Account[] = []
@@ -160,6 +145,24 @@ export function AccountsBoard({ accounts, groups, isLoading }: AccountsBoardProp
     }
     return { byGroup, ungrouped }
   }, [accounts])
+
+  // BELOW every hook — the early return used to sit before the useMemo above,
+  // a conditional-hook violation that only avoided breaking because isLoading
+  // never flipped back to true in practice.
+  if (isLoading) {
+    return (
+      <div className="flex gap-4 overflow-x-auto pb-2">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="flex w-72 shrink-0 flex-col gap-2 rounded-lg border border-border bg-card p-4">
+            <Skeleton className="mb-2 h-5 w-1/2" />
+            <Skeleton className="h-16 w-full rounded-lg" />
+            <Skeleton className="h-16 w-full rounded-lg" />
+            <Skeleton className="h-16 w-full rounded-lg" />
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <DndContext onDragStart={handleDragStart} onDragEnd={handleDragEnd}>

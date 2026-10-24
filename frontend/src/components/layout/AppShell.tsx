@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { Building2, CalendarCheck, History, LayoutDashboard, LogOut, Menu, Moon, Network, RefreshCw, Search, Server, Store, Sun, UserCog, Users, Wallet } from 'lucide-react'
+import { BookOpen, Building2, CalendarCheck, History, LayoutDashboard, LogOut, Menu, MessageCircle, Moon, Network, RefreshCw, Search, Server, Store, Sun, UserCog, Users, Wallet } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { useAuth } from '@/lib/auth'
@@ -15,16 +15,18 @@ import { AccountInspector } from '@/components/accounts/AccountInspector'
 import { cn, formatAgo } from '@/lib/utils'
 
 const NAV_ITEMS = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/customers', label: 'Customers', icon: Users },
-  { to: '/groups', label: 'Groups', icon: Building2 },
-  { to: '/accounts', label: 'Accounts', icon: Network },
-  { to: '/finance', label: 'Finance', icon: Wallet },
-  { to: '/history', label: 'History', icon: History },
-  { to: '/shop', label: 'Shop', icon: Store },
-  { to: '/monthly-settlements', label: 'Monthly Settlements', icon: CalendarCheck },
-  { to: '/delegates', label: 'Delegates', icon: UserCog },
-  { to: '/servers', label: 'Servers', icon: Server },
+  { to: '/', label: 'داشبورد', icon: LayoutDashboard, end: true },
+  { to: '/accounts', label: 'اکانت‌ها', icon: Network },
+  { to: '/customers', label: 'مشتری‌ها', icon: Users },
+  { to: '/groups', label: 'گروه‌ها', icon: Building2 },
+  { to: '/connections', label: 'اتصال تلگرام', icon: MessageCircle },
+  { to: '/finance', label: 'مالی', icon: Wallet },
+  { to: '/ledger', label: 'دفتر کل', icon: BookOpen },
+  { to: '/history', label: 'تاریخچهٔ شارژ', icon: History },
+  { to: '/monthly-settlements', label: 'تسویهٔ ماهانه', icon: CalendarCheck },
+  { to: '/shop', label: 'فروشگاه', icon: Store },
+  { to: '/delegates', label: 'نماینده‌ها', icon: UserCog },
+  { to: '/servers', label: 'سرورها', icon: Server },
 ]
 
 function openCommandPalette() {

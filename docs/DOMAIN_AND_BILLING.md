@@ -12,7 +12,7 @@ failure modes in this exact codebase and the discipline required around money lo
 | `Account` | Mirrors one Marzban user. Carries local billing fields Marzban has no concept of: `billing_mode`, `rate_per_gb`, `usage_baseline` (payg meter start point), `billed_data_limit` (prepay meter start point), `customer_id`/`group_id` (ownership). |
 | `Customer` | The person you actually deal with. Owns standalone accounts and/or represents a `Group`. Carries a label-only `kind`: `individual` (default) or `family` — one payer owning several accounts (see "Families" below). |
 | `Group` | A pay-as-you-go-or-prepay billing unit — several accounts billed together against one representative `Customer`, on a shared cycle. A group's `billing_mode` governs every member's billing regardless of that member's own field (see §2). |
-| `LedgerEntry` | Append-only. `type` is `charge` (debt owed to you) or `credit` (payment received). Never edited or deleted — a balance is always a live sum, not a stored field. |
+| `LedgerEntry` | Append-only. `type` is `charge` (debt owed to you) or `credit` (payment received). Never edited or deleted — a balance is always a live sum, not a stored field. A mistaken entry is **voided**, not deleted (see "Voiding" below). |
 | `QueuedPlan` | A next-plan "pending" row — see §4.2. |
 | `MonthlySettlementBatch` | One row per group/account settled by a single monthly payg run — see §4.4. |
 | `AppSettings` | Singleton row (`id=1`). Holds `default_rate_per_gb` and `last_payg_monthly_settlement` (the self-healing marker, §4.4). |
@@ -33,6 +33,29 @@ into a balance at more than one level — an entry counted twice is exactly how 
 payment could flip a whole group's balance. Roll-ups (group balance, customer balance) are
 sums of the level below, never independent re-queries. See `app/services.py` (`MoneyBook`,
 `account_posted_balance`, `group_only_posted_balance`) for the actual balance math.
+
+### Voiding a mistaken entry (2026-10-24)
+
+`POST /api/ledger/{id}/void` (reason mandatory) stamps the row with
+`voided_at`/`voided_by`/`void_reason`; `POST .../unvoid` clears the stamp. The append-only
+rule is NOT relaxed — the row is never deleted and its amount never edited. A voided row:
+
+- is excluded from **every** money computation: MoneyBook (posted/credits/GB/charge-meta per
+  scope, epoch-consumed attribution), `account_posted_balance`, `group_only_posted_balance`,
+  `attributable_consumed_gb`, the statement, the finance buckets/month totals, the debt-nudge
+  replay, the audit external-change inputs, and charge-history summaries/totals;
+- stays visible in ledger/history/finance **listings**, struck through with its reason and
+  operator — the audit trail is the stamp itself;
+- is NOT compensated with a mirror entry (a mirror would double the noise a mistaken deposit
+  already caused; the stamp keeps the trail while every sum drops it — locked exhaustively by
+  `tests/test_ledger_void.py`, which greps-locks the full sum-site list).
+
+What voiding deliberately does NOT undo: side effects outside the ledger. A voided payg
+settle's charge does not re-open the meter epoch that closed when it posted (the GB were
+really consumed and really reset — re-opening would re-bill them), and a voided mark-paid
+credit does not un-check the `MonthlySettlementBatch` row (un-mark it by hand if the pairing
+matters). The void response carries the owning scope's balance before/after — that is where
+the operator sees the effect.
 
 ## 2. Billing modes
 

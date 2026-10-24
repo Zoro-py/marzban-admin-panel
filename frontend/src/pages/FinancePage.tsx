@@ -124,7 +124,7 @@ export function FinancePage() {
         </div>
         <RangePicker value={range} onChange={patchRange} />
         <div className="mt-3">
-          <RevenueChart collected={data.revenue_by_day} charged={data.charged_by_day} />
+          <RevenueChart collected={data.revenue_by_day} charged={data.charged_by_day} windowLabel={`${window.since} → ${window.until}`} />
         </div>
       </div>
 

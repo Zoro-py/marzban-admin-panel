@@ -103,6 +103,16 @@ export function AccountInspector() {
   )
 }
 
+// Where this account came from (see backend enrich_accounts) — the operator's
+// «کدوم خودم زدم کدوم باته» answer, in the inspector header.
+const ORIGIN_LABEL: Record<string, string> = {
+  web: 'وب — خودم',
+  bulk: 'وب — دسته',
+  shop: 'بات فروش',
+  delegate: 'نماینده',
+  sync: 'از مرزبان',
+}
+
 function InspectorBody({ account, onClose }: { account: AccountRow; onClose: () => void }) {
   const canBill = !!(account.customer_id || account.group_id)
   const days = daysUntil(account.expire)
@@ -118,6 +128,11 @@ function InspectorBody({ account, onClose }: { account: AccountRow; onClose: () 
               {account.effective_billing_mode === 'payg' ? 'pay-as-you-go' : 'prepay'}
             </Badge>
             {!account.auto_renew_enabled && <Badge variant="outline">auto-renew off</Badge>}
+            {account.created_via && (
+              <Badge variant="outline" title={account.created_via_detail ?? undefined}>
+                {ORIGIN_LABEL[account.created_via] ?? account.created_via}
+              </Badge>
+            )}
           </div>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">
             {account.customer_id ? (

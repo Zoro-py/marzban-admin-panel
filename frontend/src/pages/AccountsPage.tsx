@@ -27,6 +27,23 @@ import { cn, daysUntil, formatDate, formatToman } from '@/lib/utils'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Search } from 'lucide-react'
 
+// Where the account came from (backend derives it — see enrich_accounts).
+// The operator's «کدوم خودم زدم کدوم باته» answer, one glance per row.
+const ORIGIN_LABEL: Record<string, string> = {
+  web: 'وب — خودم',
+  bulk: 'وب — دسته',
+  shop: 'بات فروش',
+  delegate: 'نماینده',
+  sync: 'از مرزبان',
+}
+const ORIGIN_TONE: Record<string, string> = {
+  web: 'border-primary/25 bg-primary/10 text-primary',
+  bulk: 'border-primary/25 bg-primary/10 text-primary',
+  shop: 'border-success/25 bg-success/10 text-success',
+  delegate: 'border-credit/25 bg-credit/10 text-credit',
+  sync: 'border-border bg-muted text-muted-foreground',
+}
+
 type View = 'all' | 'attention' | 'unassigned' | 'debt' | 'payg' | 'no_rate' | 'disabled' | 'deleted'
 
 // Independent, combinable narrowing on top of the (single-select) View tabs
@@ -115,10 +132,11 @@ export function AccountsPage() {
   const [search, setSearch] = React.useState('')
   const [view, setView] = React.useState<View>('all')
   const [statusFilter, setStatusFilter] = React.useState<StatusFilter>('all')
+  const [originFilter, setOriginFilter] = React.useState<'all' | 'web' | 'bulk' | 'shop' | 'delegate' | 'sync'>('all')
   const [modeFilter, setModeFilter] = React.useState<ModeFilter>('all')
   const [autoRenewFilter, setAutoRenewFilter] = React.useState<AutoRenewFilter>('all')
   const [sort, setSort] = React.useState<SortState | null>(null)
-  const filtersActive = statusFilter !== 'all' || modeFilter !== 'all' || autoRenewFilter !== 'all'
+  const filtersActive = statusFilter !== 'all' || modeFilter !== 'all' || autoRenewFilter !== 'all' || originFilter !== 'all'
   const [selectedIds, setSelectedIds] = React.useState<Set<number>>(new Set())
 
   // Back-compat: old deep links used ?highlight=<id> — same intent, new surface.
@@ -166,6 +184,7 @@ export function AccountsPage() {
     }
     rows = rows.filter((a) => matchesView(a, view))
     rows = rows.filter((a) => matchesStatusFilter(a, statusFilter))
+    if (originFilter !== 'all') rows = rows.filter((a) => a.created_via === originFilter)
     if (modeFilter !== 'all') rows = rows.filter((a) => a.effective_billing_mode === modeFilter)
     if (autoRenewFilter !== 'all') {
       rows = rows.filter((a) => (autoRenewFilter === 'on' ? a.auto_renew_enabled : !a.auto_renew_enabled))
@@ -176,7 +195,7 @@ export function AccountsPage() {
       rows = [...rows].sort((a, b) => dir * compareBy(sort.key, a, b))
     }
     return rows
-  }, [accountsQuery.data, search, view, statusFilter, modeFilter, autoRenewFilter, sort])
+  }, [accountsQuery.data, search, view, statusFilter, modeFilter, autoRenewFilter, originFilter, sort])
 
   // Selection is general (any row in the current view): it drives bulk
   // settle for rows that have something owed AND the batch auto-renew
@@ -302,6 +321,20 @@ export function AccountsPage() {
               </SelectContent>
             </Select>
 
+            <Select value={originFilter} onValueChange={(v) => setOriginFilter(v as typeof originFilter)}>
+              <SelectTrigger className="w-[150px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">سازنده: همه</SelectItem>
+                <SelectItem value="web">ساختهٔ خودم (وب)</SelectItem>
+                <SelectItem value="bulk">دستهٔ خانواده</SelectItem>
+                <SelectItem value="shop">بات فروش</SelectItem>
+                <SelectItem value="delegate">نماینده</SelectItem>
+                <SelectItem value="sync">از مرزبان</SelectItem>
+              </SelectContent>
+            </Select>
+
             {filtersActive && (
               <button
                 type="button"
@@ -309,6 +342,7 @@ export function AccountsPage() {
                   setStatusFilter('all')
                   setModeFilter('all')
                   setAutoRenewFilter('all')
+                  setOriginFilter('all')
                 }}
                 className="text-xs text-muted-foreground hover:text-foreground hover:underline"
               >
@@ -464,6 +498,21 @@ function AccountTableRow({
             {a.service_name && (
               <span className="truncate text-[11px] text-primary" title={`Customer nickname: ${a.service_name}`}>
                 «{a.service_name}»
+              </span>
+            )}
+            {a.created_via && (
+              <span
+                className={cn(
+                  'shrink-0 whitespace-nowrap rounded border px-1 py-px text-[10px] leading-4',
+                  ORIGIN_TONE[a.created_via] ?? 'border-border bg-muted text-muted-foreground',
+                )}
+                title={
+                  a.created_via_detail
+                    ? `ساخته‌شده توسط: ${ORIGIN_LABEL[a.created_via]} (${a.created_via_detail})`
+                    : `ساخته‌شده توسط: ${ORIGIN_LABEL[a.created_via]}`
+                }
+              >
+                {ORIGIN_LABEL[a.created_via]}
               </span>
             )}
           </span>

@@ -12,9 +12,9 @@ interface MetricChartProps {
   /** One shared value axis (same unit) — mirror of RevenueChart's rule:
    * pair series that answer one question (cpu with steal, rx with tx). */
   series: Series[]
-  /** Value→label for the hover tooltip and y-max caption. */
+  /** Value→label for the hover tooltip and the y-axis tick labels. */
   format: (v: number) => string
-  /** Sample timestamps, parallel to series values. */
+  /** Sample timestamps (ISO), parallel to series values. */
   times: string[]
   height?: number
   /** Fixed y-max (e.g. 100 for percents) so spikes don't rescale history. */
@@ -22,7 +22,9 @@ interface MetricChartProps {
 }
 
 const WIDTH = 720
-const PAD_LEFT = 8
+// Room for the y-axis tick labels (the rebuild's answer to "max N" being the
+// only readable reference — the operator had to do mental math per series).
+const PAD_LEFT = 56
 const PAD_RIGHT = 8
 const PAD_TOP = 10
 const PAD_BOTTOM = 20
@@ -32,8 +34,34 @@ const PAD_BOTTOM = 20
 export const SERIES_BLUE = { light: '#2a78d6', dark: '#3987e5' }
 export const SERIES_AQUA = { light: '#1baf7a', dark: '#199e70' }
 
+// The old chart sliced the raw ISO string (`t.slice(11,16)`) — UTC clock
+// labels sitting inside a panel where every other chart converts to browser
+// local time. Every label now goes through a Date parse.
+function tickLabel(t: string, multiDay: boolean): string {
+  const d = new Date(t.endsWith('Z') || t.includes('+') ? t : t + 'Z')
+  if (Number.isNaN(d.getTime())) return t.slice(11, 16)
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  if (!multiDay) return `${hh}:${mm}`
+  return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${hh}:${mm}`
+}
+
+function tooltipLabel(t: string): string {
+  const d = new Date(t.endsWith('Z') || t.includes('+') ? t : t + 'Z')
+  if (Number.isNaN(d.getTime())) return t.slice(5, 16).replace('T', ' ')
+  return `${formatJalaliShort(d)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function formatJalaliShort(d: Date): string {
+  // MM/DD is enough in a tooltip header (the full Jalali conversion lives in
+  // lib/jalali; importing it here would pull the whole module for a label).
+  return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
+}
+
 /** Multi-series line chart for the server history views. Bespoke SVG like
- * RevenueChart — no chart library in the bundle for three small graphs. */
+ * RevenueChart — no chart library in the bundle for three small graphs.
+ * 2026-10-24 rebuild: real y-axis ticks (3 gridlines, readable without
+ * hovering), local-time x labels, day-aware tick format. */
 export function MetricChart({ series, format, times, height = 180, yMax }: MetricChartProps) {
   const [hoverIndex, setHoverIndex] = React.useState<number | null>(null)
   const { resolved } = useTheme()
@@ -45,6 +73,7 @@ export function MetricChart({ series, format, times, height = 180, yMax }: Metri
   const numeric = series.flatMap((s) => s.values.filter((v): v is number => v != null))
   const max = yMax ?? Math.max(1, ...numeric)
   const n = times.length
+  const multiDay = n >= 2 && new Date(times[n - 1]).getTime() - new Date(times[0]).getTime() > 48 * 3600 * 1000
 
   if (n === 0 || numeric.length === 0) {
     return (
@@ -59,6 +88,10 @@ export function MetricChart({ series, format, times, height = 180, yMax }: Metri
 
   const labelEvery = Math.max(1, Math.ceil(n / 6))
   const hovered = hoverIndex !== null ? times[hoverIndex] : null
+
+  // Three evenly-spaced gridlines (¼, ½, ¾ of max) + the baseline — enough to
+  // read a value's magnitude without stealing plot area from the series.
+  const gridlines = [0.25, 0.5, 0.75].map((f) => f * max)
 
   return (
     <div className="flex flex-col gap-2">
@@ -77,11 +110,32 @@ export function MetricChart({ series, format, times, height = 180, yMax }: Metri
 
       <div className="relative">
         <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="w-full" role="img" aria-label={series.map((s) => s.label).join(' and ')}>
+          {/* y-axis tick labels + gridlines */}
+          {gridlines.map((v) => (
+            <g key={v}>
+              <line
+                x1={PAD_LEFT}
+                y1={yFor(v)}
+                x2={WIDTH - PAD_RIGHT}
+                y2={yFor(v)}
+                className="stroke-border"
+                strokeWidth={1}
+                strokeDasharray="3 4"
+                opacity={0.6}
+              />
+              <text x={PAD_LEFT - 6} y={yFor(v) + 3} textAnchor="end" className="fill-muted-foreground text-[9px] tabular-nums">
+                {format(v)}
+              </text>
+            </g>
+          ))}
+          <text x={PAD_LEFT - 6} y={HEIGHT - PAD_BOTTOM + 3} textAnchor="end" className="fill-muted-foreground text-[9px] tabular-nums">
+            {format(0)}
+          </text>
           <line x1={PAD_LEFT} y1={HEIGHT - PAD_BOTTOM} x2={WIDTH - PAD_RIGHT} y2={HEIGHT - PAD_BOTTOM} className="stroke-border" strokeWidth={1} />
           {times.map((t, i) =>
             i % labelEvery === 0 ? (
               <text key={t + i} x={xFor(i)} y={HEIGHT - 6} textAnchor="middle" className="fill-muted-foreground text-[9px]">
-                {t.slice(11, 16)}
+                {tickLabel(t, multiDay)}
               </text>
             ) : null,
           )}
@@ -124,7 +178,7 @@ export function MetricChart({ series, format, times, height = 180, yMax }: Metri
             className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full rounded-md border border-border bg-popover px-2.5 py-1.5 text-xs shadow-md"
             style={{ left: `${(xFor(hoverIndex) / WIDTH) * 100}%`, top: `${(PAD_TOP / HEIGHT) * 100}%` }}
           >
-            <div className="mb-1 text-[10px] text-muted-foreground">{hovered.slice(5, 16).replace('T', ' ')}</div>
+            <div className="mb-1 text-[10px] text-muted-foreground">{tooltipLabel(hovered)}</div>
             {series.map((s) => (
               <div key={s.label} className="flex items-center gap-1.5 whitespace-nowrap">
                 <span className="h-0.5 w-2.5 rounded" style={{ background: s.color[resolved] }} />

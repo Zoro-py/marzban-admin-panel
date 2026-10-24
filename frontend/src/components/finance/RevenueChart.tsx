@@ -5,6 +5,9 @@ import { formatToman } from '@/lib/utils'
 interface RevenueChartProps {
   collected: { date: string; amount: number }[]
   charged: { date: string; amount: number }[]
+  /** Human caption for the window actually shown — the old chart hardcoded
+   * "last 30 days" while the page passed 90d/6m/custom windows. */
+  windowLabel?: string
 }
 
 const WIDTH = 720
@@ -24,10 +27,10 @@ const SERIES = {
   dark: { collected: '#3987e5', charged: '#199e70' },
 }
 
-/** Charged vs collected, per day, last 30 days — two thin bars per day from
+/** Charged vs collected, per day, for the page's chosen window — two thin bars per day from
  * one baseline (same unit, one axis). "Billed a lot this week but nothing
  * came in yet" is the question this pairing answers. */
-export function RevenueChart({ collected, charged }: RevenueChartProps) {
+export function RevenueChart({ collected, charged, windowLabel = '۳۰ روز گذشته' }: RevenueChartProps) {
   const [hoverIndex, setHoverIndex] = React.useState<number | null>(null)
   const { resolved } = useTheme()
   const colors = SERIES[resolved]
@@ -49,7 +52,7 @@ export function RevenueChart({ collected, charged }: RevenueChartProps) {
   if (total === 0) {
     return (
       <div className="flex h-[220px] items-center justify-center rounded-md border border-dashed border-border text-xs text-muted-foreground">
-        No money recorded in the last 30 days.
+        {`در این بازه پولی ثبت نشده — بازه: ${windowLabel}.`}
       </div>
     )
   }
@@ -77,7 +80,7 @@ export function RevenueChart({ collected, charged }: RevenueChartProps) {
       </div>
 
       <div className="relative">
-        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="w-full" role="img" aria-label="Charged vs collected, last 30 days">
+        <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="w-full" role="img" aria-label={`Charged vs collected, ${windowLabel}`}>
           {/* recessive baseline */}
           <line
             x1={PAD_LEFT}

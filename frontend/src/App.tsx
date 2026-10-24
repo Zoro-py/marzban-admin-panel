@@ -17,6 +17,8 @@ const ChargeHistoryPage = recoverableLazy(() => import('@/pages/ChargeHistoryPag
 const MonthlySettlementsPage = recoverableLazy(() => import('@/pages/MonthlySettlementsPage').then(m => ({ default: m.MonthlySettlementsPage })))
 const ShopPage = recoverableLazy(() => import('@/pages/ShopPage').then(m => ({ default: m.ShopPage })))
 const DelegatesPage = recoverableLazy(() => import('@/pages/DelegatesPage').then(m => ({ default: m.DelegatesPage })))
+const LedgerPage = recoverableLazy(() => import('@/pages/LedgerPage').then(m => ({ default: m.LedgerPage })))
+const ConnectionsPage = recoverableLazy(() => import('@/pages/ConnectionsPage').then(m => ({ default: m.ConnectionsPage })))
 const ServersPage = recoverableLazy(() => import('@/pages/ServersPage').then(m => ({ default: m.ServersPage })))
 const ServerDetailPage = recoverableLazy(() => import('@/pages/ServerDetailPage').then(m => ({ default: m.ServerDetailPage })))
 
@@ -63,9 +65,11 @@ function App() {
             <Route path="/groups/:id" element={<GroupDetailPage />} />
             <Route path="/accounts" element={<AccountsPage />} />
             <Route path="/finance" element={<FinancePage />} />
+            <Route path="/ledger" element={<LedgerPage />} />
             <Route path="/history" element={<ChargeHistoryPage />} />
             <Route path="/shop" element={<ShopPage />} />
             <Route path="/delegates" element={<DelegatesPage />} />
+            <Route path="/connections" element={<ConnectionsPage />} />
             <Route path="/servers" element={<ServersPage />} />
             <Route path="/servers/:serverId" element={<ServerDetailPage />} />
             <Route path="/monthly-settlements" element={<MonthlySettlementsPage />} />
