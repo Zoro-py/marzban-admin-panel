@@ -79,6 +79,22 @@ services:
       - backend
     restart: unless-stopped
 
+  # The operator's dedicated PAYMENTS inbox (owner, 2026-10-24: receipts to
+  # approve arrive HERE, everything else stays in `bot`). The backend relays
+  # each customer receipt via RECEIPTS_BOT_TOKEN (backend/.env — same token
+  # as this service's), so the inline approve/reject buttons land in this
+  # bot's chat and this process answers them. Holds the operator's Marzban
+  # login because approving credits real money — same trust as bot/.
+  receipts_bot:
+    logging: *default-logging
+    build: ./receipts_bot
+    env_file: ./receipts_bot/.env
+    environment:
+      API_BASE_URL: http://backend:8000
+    depends_on:
+      - backend
+    restart: unless-stopped
+
   frontend:
     logging: *default-logging
     build:

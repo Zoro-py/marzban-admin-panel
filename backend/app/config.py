@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     # that topic in Telegram (chat must be a supergroup with Topics enabled
     # for the id to mean anything — a non-topic chat ignores it silently).
     bot_receipts_thread_id: Optional[int] = None
+    # The dedicated PAYMENTS bot's token (owner 2026-10-24): when set, every
+    # customer receipt relay goes out through THIS bot so the operator's
+    # approve/reject taps land in a clean payments-only chat. Unset = the
+    # old behavior (receipts ride the operator's own bot). The receipts_bot/
+    # service must hold the SAME token — it is what answers the taps.
+    receipts_bot_token: str = ""
 
     # How often the sync job runs — also how long a customer whose plan just
     # ran out stays disconnected before the next-plan feature can react, so

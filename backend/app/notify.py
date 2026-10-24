@@ -225,6 +225,12 @@ async def relay_shop_photo_to_admin(file_id: str, caption: str, reply_markup: di
             raise RuntimeError(f"Could not download the receipt ({blob.status_code})")
 
     data = {"chat_id": settings.bot_admin_chat_id, "caption": _truncate_caption(caption)}
+    # The message goes out through the DEDICATED payments bot when one is
+    # configured (owner 2026-10-24: a clean receipts-only inbox) — its taps
+    # are answered by the receipts_bot/ service. Unset = the operator's own
+    # bot, as always. The download above stays on the SHOP bot's token either
+    # way: the file_id is only meaningful to the bot that received it.
+    upload_bot_token = settings.receipts_bot_token or settings.bot_token
     if reply_markup is not None:
         # multipart, so the markup travels as a JSON string rather than a dict.
         data["reply_markup"] = json.dumps(reply_markup)
@@ -233,7 +239,7 @@ async def relay_shop_photo_to_admin(file_id: str, caption: str, reply_markup: di
     filename = file_path.rsplit("/", 1)[-1] or "receipt.jpg"
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(
-            f"https://api.telegram.org/bot{settings.bot_token}/sendPhoto",
+            f"https://api.telegram.org/bot{upload_bot_token}/sendPhoto",
             data=data,
             files={"photo": (filename, blob.content, "image/jpeg")},
         )
