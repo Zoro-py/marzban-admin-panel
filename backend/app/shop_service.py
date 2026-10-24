@@ -277,13 +277,22 @@ async def purchase(session: Session, shop_user: ShopUser, data_limit_gb: float,
         # while owing for the old one is how debt quietly compounds. The
         # DEBT_LINE prefix is what shopbot keys its Persian copy on.
         debt = 0.0
-        if shop_user.customer_id is not None:
-            from app.services import MoneyBook
-            from app.models import Customer as _C
+        # Two-way link resolution (see routers/shop.py::_linked_customer):
+        # the live link is Customer.shop_user_id; ShopUser.customer_id is a
+        # sometimes-absent annotation. Reading only the annotation side made
+        # this check silently inert for every real link (found live).
+        from app.services import MoneyBook
+        from app.models import Customer as _C
 
+        _cust = None
+        if shop_user.customer_id is not None:
             _cust = session.get(_C, shop_user.customer_id)
-            if _cust is not None:
-                debt = max(0.0, MoneyBook(session).customer_net(_cust))
+        if _cust is None or _cust.shop_user_id != shop_user.id:
+            _cust = session.exec(
+                select(_C).where(_C.shop_user_id == shop_user.id)
+            ).first()
+        if _cust is not None:
+            debt = max(0.0, MoneyBook(session).customer_net(_cust))
         spendable = balance - int(debt)
         if spendable < price:
             if debt > 0:
@@ -766,6 +775,18 @@ def _generate_reference_code(session: Session) -> str:
     return f"R{secrets.token_hex(3).upper()}"
 
 
+def _shop_user_linked_customer_id(session: Session, shop_user: ShopUser) -> Optional[int]:
+    """Two-way link resolution (see routers/shop.py::_linked_customer): the
+    live link is Customer.shop_user_id; ShopUser.customer_id is a
+    sometimes-absent annotation."""
+    if shop_user.customer_id is not None:
+        cust = session.get(Customer, shop_user.customer_id)
+        if cust is not None and cust.shop_user_id == shop_user.id:
+            return cust.id
+    cust = session.exec(select(Customer).where(Customer.shop_user_id == shop_user.id)).first()
+    return cust.id if cust is not None else None
+
+
 def create_topup(
     session: Session,
     shop_user: ShopUser,
@@ -800,7 +821,7 @@ def create_topup(
         # never also deliver one. The bot never sends both — this is the
         # backstop (council 2026-10-24).
         raise ShopError("A debt payment cannot be bound to an order.")
-    if for_debt and shop_user.customer_id is None:
+    if for_debt and _shop_user_linked_customer_id(session, shop_user) is None:
         raise ShopError("This account has no statement debt to pay (not linked).")
     if claimed_amount > settings.max_topup:
         raise ShopError(f"The largest top-up is {settings.max_topup:,} T.")
@@ -944,7 +965,7 @@ async def approve_topup(
         # is never touched: no transfer ever happens between the two
         # systems, this row is simply routed to the books it belongs to.
         shop_user = session.get(ShopUser, topup.shop_user_id)
-        customer_id = shop_user.customer_id if shop_user else None
+        customer_id = _shop_user_linked_customer_id(session, shop_user) if shop_user else None
         if customer_id is None:
             raise ShopError("This receipt was sent as a debt payment but the sender is not linked to a customer.")
         from app.models import Customer, LedgerEntry, LedgerSource, LedgerType

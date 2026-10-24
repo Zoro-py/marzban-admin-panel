@@ -82,8 +82,10 @@ with Session(engine) as s:
     s.flush()
     s.add(LedgerEntry(type=LedgerType.charge, amount=100000.0, account_id=acc.id,
                       customer_id=cust.id, note="package sold"))
-    su = ShopUser(telegram_id=555001, telegram_username="debtor", display_name="بدهکار",
-                  customer_id=cust.id)
+    # The REAL live link shape (found on production 2026-10-24): only the
+    # CUSTOMER side carries it — ShopUser.customer_id stays NULL. The fixture
+    # must match production or the two-way resolution is never exercised.
+    su = ShopUser(telegram_id=555001, telegram_username="debtor", display_name="بدهکار")
     s.add(su)
     s.flush()
     cust.shop_user_id = su.id

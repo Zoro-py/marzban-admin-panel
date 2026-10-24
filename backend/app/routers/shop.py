@@ -653,21 +653,35 @@ _PAYG_REFUSAL_TEXT = (
 )
 
 
+def _linked_customer(session: Session, shop_user: ShopUser) -> Optional[Customer]:
+    """The customer this shop user is linked to — resolving BOTH link
+    directions, because only one is authoritative in the live data: the
+    bind/claim flows write Customer.shop_user_id (the live link), while
+    ShopUser.customer_id is a reporting-only annotation some rows carry and
+    most do not. Found-live (2026-10-24): reading only the annotation side
+    made the debt feature silently inert for every real link."""
+    if shop_user.customer_id is not None:
+        customer = session.get(Customer, shop_user.customer_id)
+        if customer is not None and customer.shop_user_id == shop_user.id:
+            return customer
+    return session.exec(
+        select(Customer).where(Customer.shop_user_id == shop_user.id)
+    ).first()
+
+
 def _linked_ledger_debt(session: Session, shop_user: ShopUser) -> float:
     """What this shop user's linked CUSTOMER owes on the reseller ledger right
     now — MoneyBook's net_owed (posted + not-yet-invoiced), i.e. exactly the
     figure the panel shows as «Owes now». 0.0 for an unlinked shop user.
 
-    READ-ONLY by contract (council 2026-10-24, routed books): the wallet's
+    READ-ONLY by contract (council 2026-24, routed books): the wallet's
     affordability and this debt meet only in DISPLAY and in the customer's
     explicit payment choices — never as a bookkeeping transfer."""
-    if shop_user.customer_id is None:
+    customer = _linked_customer(session, shop_user)
+    if customer is None:
         return 0.0
     from app.services import MoneyBook
 
-    customer = session.get(Customer, shop_user.customer_id)
-    if customer is None:
-        return 0.0
     return round(MoneyBook(session).customer_net(customer), 2)
 
 
@@ -1863,15 +1877,13 @@ async def bot_pay_debt_from_wallet(
         raise HTTPException(404, "Unknown shop user — call /session first")
     if user.is_blocked:
         raise HTTPException(403, "This account can't move money. Contact support.")
-    if user.customer_id is None:
-        raise HTTPException(400, "این حساب بدهیِ صورت‌حسابی ندارد (به مشتری وصل نیست).")
 
     from app.models import Customer, LedgerEntry, LedgerSource, LedgerType
     from app.services import billing_lock
 
-    customer = session.get(Customer, user.customer_id)
+    customer = _linked_customer(session, user)
     if customer is None:
-        raise HTTPException(400, "این حساب بدهیِ صورت‌حسابی ندارد (مشتری پیدا نشد).")
+        raise HTTPException(400, "این حساب بدهیِ صورت‌حسابی ندارد (به مشتری وصل نیست).")
 
     async with billing_lock:
         from app.services import MoneyBook
