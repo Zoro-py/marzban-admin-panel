@@ -873,6 +873,15 @@ class ShopAutoRenewResult(BaseModel):
     grace_days: int
 
 
+class ShopPaygStartRequest(BaseModel):
+    telegram_id: int
+    telegram_username: Optional[str] = None
+    display_name: Optional[str] = None
+    # Optional customer-chosen Marzban username (Latin 3-30); pattern- and
+    # availability-checked in the router, same as the package-buy flow.
+    marzban_username: Optional[str] = Field(default=None, max_length=30)
+
+
 class ShopPaygStartResult(BaseModel):
     """Response for the "📊 سرویس مصرفی" button — no data_limit_gb/
     duration_days to report, since a payg service has neither."""

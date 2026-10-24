@@ -229,6 +229,7 @@ def payg_intro(rate_per_gb: int) -> str:
 
 
 PAYG_UNAVAILABLE = "سرویس مصرفی الان فعال نیست."
+PAYG_STARTED_CONFIRM = "✅ سرویس مصرفی‌تان فعال شد — مصرف روزانه از کیف پولتان کم می‌شود."
 
 PAYG_ALREADY_HAS_SERVICE = (
     "شما همین الان یک سرویس فعال دارید.\n"

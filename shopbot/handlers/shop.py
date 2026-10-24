@@ -62,6 +62,8 @@ _STATE_CONFIRMING_PAYG_START = "confirming_payg_start"
 _STATE_CHOOSING_TOPUP = "choosing_topup"
 _STATE_AWAITING_RECEIPT = "awaiting_receipt"
 _STATE_AWAITING_OPTIONAL_USERNAME = "awaiting_optional_username"
+_STATE_AWAITING_PAYG_USERNAME = "awaiting_payg_username"
+_PENDING_PAYG_PAYLOAD = "pending_payg_payload"
 _PENDING_INTENT = "pending_intent"
 _STATE_AWAITING_SERVICE_NAME = "awaiting_service_name"
 _SERVICE_NAME_ACCOUNT = "service_name_account_id"
@@ -398,14 +400,84 @@ async def start_payg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await _reply(update, texts.PAYG_UNAVAILABLE, session)
         return
 
-    context.user_data[_STATE] = _STATE_CONFIRMING_PAYG_START
+    context.user_data[_STATE] = _STATE_AWAITING_PAYG_USERNAME
+    context.user_data[_PENDING_PAYG_PAYLOAD] = {
+        "telegram_username": update.effective_user.username,
+        "display_name": " ".join(filter(None, [update.effective_user.first_name,
+                                               update.effective_user.last_name])) or None,
+    }
+    # The username ask rides the SAME screen as the billing intro: one
+    # message, one optional answer, same named-escape discipline.
     await update.effective_message.reply_text(
-        texts.payg_intro(session["payg_rate_per_gb"]),
+        texts.payg_intro(session["payg_rate_per_gb"]) + "\n\n" + texts.ASK_OPTIONAL_USERNAME,
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton(texts.CONFIRM_BUY)], [KeyboardButton(texts.CANCEL)]],
+            [[KeyboardButton(texts.SKIP_NAME)], [KeyboardButton(texts.CANCEL)]],
             resize_keyboard=True,
         ),
     )
+
+
+async def _payg_username_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The answer to the PAYG username ask: skip = auto shop{id}, a Latin
+    name = the customer's own. Anything else is the answer — the state
+    branch runs before the menu dispatch, so a stray tap cannot wipe it."""
+    text = (update.message.text or "").strip()
+    payload = context.user_data.get(_PENDING_PAYG_PAYLOAD) or {}
+    if text == texts.CANCEL:
+        context.user_data.clear()
+        session = None
+        try:
+            session = await _session(update)
+        except ShopApiError:
+            pass
+        await update.effective_message.reply_text(
+            texts.PURCHASE_CANCELLED,
+            reply_markup=main_menu(session),
+        )
+        return
+    if text in (texts.MENU_BUY, texts.MENU_NEW_SERVICE, texts.MENU_ACCOUNTS,
+                texts.MENU_WALLET, texts.MENU_TOPUP, texts.MENU_PAYG,
+                texts.MENU_TRIAL, texts.MENU_HELP):
+        context.user_data.clear()
+        return await handle_text(update, context)  # re-dispatch as a menu tap
+    chosen = None if text == texts.SKIP_NAME else text.strip()
+    if chosen and not re.match(r"^[a-zA-Z0-9_-]{3,30}$", chosen):
+        await update.effective_message.reply_text(texts.USERNAME_INVALID)
+        return
+    payload["marzban_username"] = chosen
+    context.user_data.clear()
+    session = None
+    try:
+        session = await _session(update)
+    except ShopApiError:
+        pass
+    await update.effective_message.reply_text(texts.BUY_WORKING,
+                                              reply_markup=main_menu(session))
+    user = update.effective_user
+    payload.update({"telegram_id": user.id, "telegram_username": user.username,
+                    "display_name": " ".join(filter(None, [user.first_name, user.last_name])) or None})
+    try:
+        await backend.post("/api/shop/bot/payg/start", json=payload, timeout=90)
+    except ShopApiError as exc:
+        t = str(exc)
+        if "ALREADY_HAS_SERVICE" in t:
+            await _reply(update, texts.PAYG_ALREADY_HAS_SERVICE, session)
+        elif "PAYG_NOT_AVAILABLE" in t:
+            await _reply(update, texts.PAYG_UNAVAILABLE, session)
+        elif "نام کاربری" in t:
+            # taken/invalid — the ask re-opens with the reason
+            await update.effective_message.reply_text(t)
+            context.user_data[_STATE] = _STATE_AWAITING_PAYG_USERNAME
+            context.user_data[_PENDING_PAYG_PAYLOAD] = {
+                "telegram_username": user.username,
+                "display_name": " ".join(filter(None, [user.first_name, user.last_name])) or None,
+            }
+            return
+        else:
+            logger.exception("Payg start failed for %s", user.id)
+            await _reply(update, texts.generic_error(_handle(session)), session)
+        return
+    await update.effective_message.reply_text(texts.PAYG_STARTED_CONFIRM)
 
 
 async def _confirm_payg_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1089,6 +1161,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.user_data[_ORDER_ID] = order_id
         context.user_data[_PENDING_INTENT] = intent
         return await _payment_screens(update, context, intent)
+
+    if context.user_data.get(_STATE) == _STATE_AWAITING_PAYG_USERNAME:
+        return await _payg_username_answer(update, context)
 
     # The ✏️ rename ask ALSO answers before the menu dispatch — the same
     # live report: a «سرویس‌های من» tap mid-rename wiped the ask silently.

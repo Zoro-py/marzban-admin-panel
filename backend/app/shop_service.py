@@ -2046,7 +2046,8 @@ PAYG_START_DURATION_DAYS = 3650
 PAYG_LOW_BALANCE_DAYS_WARNING = 2
 
 
-async def start_payg_service(session: Session, shop_user: ShopUser) -> ShopOrder:
+async def start_payg_service(session: Session, shop_user: ShopUser,
+                            marzban_username: Optional[str] = None) -> ShopOrder:
     """The "📊 سرویس مصرفی" button: creates a metered account with no fixed
     volume. Takes no money up front — the first charge happens on the next
     meter tick, for whatever gets used between now and then.
@@ -2106,7 +2107,9 @@ async def start_payg_service(session: Session, shop_user: ShopUser) -> ShopOrder
     session.commit()
     session.refresh(order)
 
-    username = f"{settings.username_prefix}{order.id}"
+    # The customer's chosen username (optional ask in the bot) wins over the
+    # auto shop{id} name — same rule as the package-buy flow.
+    username = marzban_username or f"{settings.username_prefix}{order.id}"
     payload = {
         "username": username,
         "expire": int(utcnow().timestamp()) + PAYG_START_DURATION_DAYS * SECONDS_IN_DAY,

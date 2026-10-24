@@ -89,6 +89,7 @@ from app.schemas import (
     ShopAutoRenewResult,
     ShopOrderIntent,
     ShopOrderRead,
+    ShopPaygStartRequest,
     ShopPaygStartResult,
     ShopPurchaseResult,
     ShopSettingsRead,
@@ -1350,7 +1351,7 @@ async def bot_grant_trial(body: ShopBotSessionRequest, session: Session = Depend
 
 
 @bot_router.post("/payg/start", response_model=ShopPaygStartResult)
-async def bot_start_payg(body: ShopBotSessionRequest, session: Session = Depends(get_session)):
+async def bot_start_payg(body: ShopPaygStartRequest, session: Session = Depends(get_session)):
     """The "📊 سرویس مصرفی" button: starts a metered account with no fixed
     volume, no money up front. See shop_service.start_payg_service's
     docstring for the billing design.
@@ -1362,7 +1363,14 @@ async def bot_start_payg(body: ShopBotSessionRequest, session: Session = Depends
         display_name=body.display_name,
     )
     try:
-        order = await start_payg_service(session, user)
+        chosen = _clean_chosen_username(body.marzban_username)
+        await _ensure_username_available(chosen)
+    except ShopError as exc:
+        # Invalid pattern -> 400, taken -> 409; both carry the Persian
+        # sentence the bot shows verbatim so the customer can retry.
+        raise HTTPException(409 if "قبلاً گرفته شده" in str(exc) else 400, str(exc))
+    try:
+        order = await start_payg_service(session, user, marzban_username=chosen)
     except ShopError as exc:
         raise HTTPException(
             409 if str(exc).startswith(("PAYG_NOT_AVAILABLE", "ALREADY_HAS_SERVICE")) else 400, str(exc),
