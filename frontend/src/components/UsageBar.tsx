@@ -19,14 +19,22 @@ function toneFor(pct: number | null): { bar: string; track: string; text: string
 
 /** Data consumption meter, used everywhere an account's usage shows up.
  * compact: single line (bar + terse figures) for dense tables;
- * full: figures above the bar, for detail surfaces. */
+ * full: figures above the bar, for detail surfaces.
+ * Both variants carry a hover title with the full arithmetic — owner
+ * feedback 2026-10-24: «وقتی روی حجم‌ها هاور می‌کنم نمیگه از چند گیگ چند گیگ
+ * مونده» — the % alone never said used / limit / remaining. */
 export function UsageBar({ used, limit, className, compact = false }: UsageBarProps) {
   const pct = limit ? Math.min(100, (used / limit) * 100) : null
   const tone = toneFor(pct)
 
+  const title =
+    limit && limit > 0
+      ? `${formatBytes(used)} از ${formatBytes(limit)} مصرف شده — ${formatBytes(Math.max(0, limit - used))} مانده`
+      : `${formatBytes(used)} مصرف — بدون سقف حجمی`
+
   if (compact) {
     return (
-      <div className={cn('flex items-center gap-2', className)}>
+      <div className={cn('flex items-center gap-2', className)} title={title}>
         <div className={cn('h-1 w-16 shrink-0 overflow-hidden rounded-full', tone.track)}>
           <div className={cn('h-full rounded-full', tone.bar)} style={{ width: pct === null ? '100%' : `${Math.max(2, pct)}%` }} />
         </div>
@@ -38,7 +46,7 @@ export function UsageBar({ used, limit, className, compact = false }: UsageBarPr
   }
 
   return (
-    <div className={cn('flex min-w-[7rem] flex-col gap-1', className)}>
+    <div className={cn('flex min-w-[7rem] flex-col gap-1', className)} title={title}>
       <div className="flex items-baseline justify-between gap-2 text-xs">
         <span className="font-mono tabular-nums text-foreground">{formatBytes(used)}</span>
         <span className={cn('font-mono tabular-nums', tone.text)}>

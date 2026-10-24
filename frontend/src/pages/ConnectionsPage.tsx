@@ -2,7 +2,7 @@ import * as React from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Bot, Clock, Link2, MessageCircle, Search, UserCog } from 'lucide-react'
-import { connectionsApi } from '@/lib/api'
+import { accountsApi, connectionsApi } from '@/lib/api'
 import type { BotHistoryItem, ConnectionRow } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -104,6 +104,21 @@ export function ConnectionsPage() {
   const [tab, setTab] = React.useState<'all' | 'linked' | 'pending' | 'none'>('all')
   const [historyRow, setHistoryRow] = React.useState<ConnectionRow | null>(null)
 
+  // R4 (owner feedback): "to connect account X I have to find its owner
+  // first" — so the search here matches ACCOUNT USERNAMES too, and each row
+  // names the accounts that matched. One query, cached with the palette key.
+  const accountsQuery = useQuery({ queryKey: ['accounts', 'palette'], queryFn: () => accountsApi.list() })
+  const usernamesByCustomer = React.useMemo(() => {
+    const m = new Map<number, string[]>()
+    for (const a of accountsQuery.data ?? []) {
+      if (a.customer_id === null) continue
+      const list = m.get(a.customer_id) ?? []
+      list.push(a.marzban_username)
+      m.set(a.customer_id, list)
+    }
+    return m
+  }, [accountsQuery.data])
+
   const rows = data ?? []
   const linkedCount = rows.filter((r) => r.shop.state === 'linked').length
   const pendingCount = rows.filter((r) => r.shop.state === 'pending').length
@@ -116,7 +131,7 @@ export function ConnectionsPage() {
     const q = search.trim().toLowerCase()
     let out = rows
     if (tab === 'linked') out = out.filter((r) => r.shop.state === 'linked')
-    if (tab === 'pending') out = out.filter((r) => r.shop.state === 'pending')
+    if (tab === 'pending') out = out.filter((r) => r.shop.state === 'pending' || r.shop.bind_claim_username || r.shop.bind_claim_display_name)
     if (tab === 'none') out = out.filter((r) => r.shop.state === 'none')
     if (!q) return out
     return out.filter(
@@ -124,7 +139,8 @@ export function ConnectionsPage() {
         r.name.toLowerCase().includes(q) ||
         r.contact?.toLowerCase().includes(q) ||
         (r.shop.telegram_username ?? '').toLowerCase().includes(q) ||
-        String(r.shop.telegram_id ?? '').includes(q),
+        String(r.shop.telegram_id ?? '').includes(q) ||
+        (usernamesByCustomer.get(r.customer_id) ?? []).some((u) => u.toLowerCase().includes(q)),
     )
   })()
 
@@ -216,6 +232,11 @@ export function ConnectionsPage() {
                   </Link>
                   {r.kind === 'family' && <Badge variant="secondary" className="ml-1.5 text-[10px]">خانواده</Badge>}
                   {r.contact && <p className="text-[11px] text-muted-foreground">{r.contact}</p>}
+                  {search.trim().length > 0 && (usernamesByCustomer.get(r.customer_id) ?? []).length > 0 && (
+                    <p className="truncate text-[10px] text-muted-foreground/80" dir="ltr">
+                      {(usernamesByCustomer.get(r.customer_id) ?? []).slice(0, 4).join(', ')}
+                    </p>
+                  )}
                 </TableCell>
                 <TableCell>
                   {r.shop.state === 'linked' && (
@@ -237,7 +258,19 @@ export function ConnectionsPage() {
                       <p className="text-[10px] text-muted-foreground">مهلت: {fmtDate(r.shop.claim_expires_at)}</p>
                     </div>
                   )}
-                  {r.shop.state === 'none' && <span className="text-xs text-muted-foreground">—</span>}
+                  {r.shop.state === 'none' && !r.shop.bind_claim_username && !r.shop.bind_claim_display_name && (
+                    <span className="text-xs text-muted-foreground">—</span>
+                  )}
+                  {(r.shop.bind_claim_username || r.shop.bind_claim_display_name) && (
+                    <div>
+                      <p className="inline-flex items-center gap-1 text-xs font-medium text-warning">
+                        <Clock className="h-3 w-3" /> منتظر اولین پیام
+                      </p>
+                      <p className="text-[11px] text-muted-foreground" dir="ltr">
+                        {r.shop.bind_claim_username ? `@${r.shop.bind_claim_username}` : r.shop.bind_claim_display_name}
+                      </p>
+                    </div>
+                  )}
                 </TableCell>
                 <TableCell className="hidden md:table-cell">
                   {r.shop.state === 'linked' && r.shop.wallet_balance !== null ? (

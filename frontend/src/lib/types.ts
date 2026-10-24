@@ -761,6 +761,12 @@ export interface ShopLinkState {
   // How many of the customer's accounts the bot now shows (live accounts —
   // deleted-from-Marzban ones are excluded server-side).
   accounts_linked: number
+  // Pending bind-by-identity claim (2026-10-24): the operator typed a
+  // @username/name without a numeric id; the customer's first bot message
+  // completes the bind. NULL = no pending claim.
+  bind_claim_username: string | null
+  bind_claim_display_name: string | null
+  bind_claim_created_at: string | null
 }
 
 // Response of POST /api/shop/link-invite (mirrors schemas.ShopLinkInviteRead —
@@ -979,6 +985,11 @@ export interface ShopLinkSummary {
   wallet_balance: number | null
   last_seen_at: string | null
   is_blocked: boolean
+  // Pending bind-by-identity claim — the operator typed a @username/name
+  // and is waiting for the customer's first bot message.
+  bind_claim_username: string | null
+  bind_claim_display_name: string | null
+  bind_claim_created_at: string | null
 }
 
 export interface DelegateSummary {
@@ -1025,4 +1036,15 @@ export interface LedgerVoidResult {
   scope_id: number
   scope_balance_before: number
   scope_balance_after: number
+}
+
+// One pending bind-by-identity claim (see ShopLinkState.bind_claim_*).
+export interface ShopBindClaimRead {
+  id: number
+  customer_id: number
+  telegram_username: string | null
+  display_name: string | null
+  created_at: string
+  claimed_at: string | null
+  claimed_telegram_id: number | null
 }

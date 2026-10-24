@@ -33,6 +33,7 @@ import { Badge } from '@/components/ui/badge'
 import { UsageBar } from '@/components/UsageBar'
 import { Money } from '@/components/Money'
 import { StatusDot } from '@/components/StatusDot'
+import { ShopLinkCard } from '@/components/shop/ShopLinkCard'
 import { cn, daysUntil, formatAgo, formatDate, formatToman } from '@/lib/utils'
 
 const NONE = '__none__'
@@ -274,6 +275,11 @@ function InspectorBody({ account, onClose }: { account: AccountRow; onClose: () 
         <BillingSection account={account} />
         <NextPlanSection account={account} />
         <OwnershipSection account={account} />
+        {account.customer_id !== null && (
+          <div className="px-1">
+            <ShopLinkCard customerId={account.customer_id} />
+          </div>
+        )}
         <HistorySection account={account} />
         <DangerSection account={account} onClose={onClose} />
       </div>

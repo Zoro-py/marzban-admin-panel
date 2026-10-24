@@ -1,22 +1,62 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { toast } from 'sonner'
-import { Clock, Link2, MessageCircle, ShieldCheck } from 'lucide-react'
+import { Clock, Link2, MessageCircle, ShieldCheck, UserPlus } from 'lucide-react'
 import { apiErrorMessage, shopApi } from '@/lib/api'
 import type { ShopLinkState } from '@/lib/types'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Label } from '@/components/ui/label'
 import { formatDate } from '@/lib/utils'
 
 // Same inline copy flow as every other surface (no shared clipboard helper
 // exists — see DelegatesPage's copyInviteLink).
 function copyInviteLink(text: string) {
   navigator.clipboard?.writeText(text).then(
-    () => toast.success('Invite link copied — send it to the customer'),
-    () => toast.error('Could not copy — select the link and copy it manually'),
+    () => toast.success('لینک دعوت کپی شد — برای مشتری بفرست'),
+    () => toast.error('کپی نشد — لینک را دستی انتخاب و کپی کن'),
+  )
+}
+
+// The operator's pending bind-by-identity claim, rendered on every card
+// state: what they typed, and that the customer's FIRST message to the bot
+// completes the bind (the bot reports its own numeric id — nobody ever has
+// to ask for one). Discardable everywhere.
+function BindClaimLine({ state }: { state: ShopLinkState }) {
+  const queryClient = useQueryClient()
+  const discard = useMutation({
+    mutationFn: () => shopApi.discardBindClaim(state.customer_id),
+    onSuccess: () => {
+      toast.success('ادعای معلق حذف شد')
+      queryClient.invalidateQueries({ queryKey: ['shop-link', state.customer_id] })
+      queryClient.invalidateQueries({ queryKey: ['connections'] })
+    },
+    onError: (err) => toast.error(apiErrorMessage(err)),
+  })
+  const what = state.bind_claim_username
+    ? `@${state.bind_claim_username}`
+    : state.bind_claim_display_name || '—'
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/25 bg-warning/10 px-3 py-2">
+      <p className="text-xs">
+        <span className="inline-flex items-center gap-1 font-medium text-warning">
+          <Clock className="h-3 w-3" /> منتظر اولین پیام مشتری در بات
+        </span>
+        <span className="ml-1.5 text-muted-foreground">
+          هر کسی که با <span className="font-medium text-foreground" dir="ltr">{what}</span> وارد بات شود، همان لحظه به این مشتری وصل می‌شود.
+        </span>
+      </p>
+      <Button
+        size="sm"
+        variant="ghost"
+        className="h-7 shrink-0 text-xs text-destructive hover:text-destructive"
+        disabled={discard.isPending}
+        onClick={() => discard.mutate()}
+      >
+        انصراف
+      </Button>
+    </div>
   )
 }
 
@@ -25,7 +65,7 @@ function PendingBody({ state }: { state: ShopLinkState }) {
   const discard = useMutation({
     mutationFn: () => shopApi.discardLinkInvite(state.customer_id),
     onSuccess: () => {
-      toast.success('Pending invite discarded — the link no longer works.')
+      toast.success('دعوت معلق حذف شد — لینک دیگر کار نمی‌کند.')
       queryClient.invalidateQueries({ queryKey: ['shop-link', state.customer_id] })
     },
     onError: (err) => toast.error(apiErrorMessage(err)),
@@ -34,11 +74,11 @@ function PendingBody({ state }: { state: ShopLinkState }) {
   return (
     <div className="flex flex-col gap-2">
       <p className="text-xs text-muted-foreground">
-        One-time invite live — the first Telegram account that opens this link claims it. It expires{' '}
+        دعوت یک‌بارمصرف فعال است — اولین اکانت تلگرامی که لینک را باز کند آن را تصاحب می‌کند. مهلت:{' '}
         {formatDate(state.claim_expires_at)}.
       </p>
       <div className="flex items-center gap-2">
-        <Input readOnly value={state.invite_url ?? ''} onFocus={(e) => e.currentTarget.select()} className="h-8 font-mono text-xs" />
+        <Input readOnly value={state.invite_url ?? ''} onFocus={(e) => e.currentTarget.select()} className="h-8 font-mono text-xs" dir="ltr" />
         <Button
           size="sm"
           variant="outline"
@@ -48,7 +88,7 @@ function PendingBody({ state }: { state: ShopLinkState }) {
             if (state.invite_url) copyInviteLink(state.invite_url)
           }}
         >
-          <Link2 className="h-3.5 w-3.5" /> Copy
+          <Link2 className="h-3.5 w-3.5" /> کپی
         </Button>
         <Button
           size="sm"
@@ -58,14 +98,14 @@ function PendingBody({ state }: { state: ShopLinkState }) {
           onClick={() => {
             if (
               window.confirm(
-                `Discard the pending shop-bot invite for ${state.customer_name}?\n\nThe link stops working immediately — nobody has claimed it yet, so nothing else changes.`,
+                `دعوت معلقِ ${state.customer_name} حذف شود؟\n\nلینک بلافاصله از کار می‌افتد — هنوز کسی آن را برنداشته، پس چیز دیگری عوض نمی‌شود.`,
               )
             ) {
               discard.mutate()
             }
           }}
         >
-          Discard
+          حذف
         </Button>
       </div>
     </div>
@@ -77,12 +117,17 @@ function PendingBody({ state }: { state: ShopLinkState }) {
 // existing accounts appear in «سرویس‌های من» and a purchase renews their
 // real account in place. Minting a link moves no money — this card binds
 // identities, never balances.
-// The not_linked state offers BOTH ways to connect a customer: the classic
-// one-time invite (the customer consents by tapping it) and the operator's
-// DIRECT bind — type their Telegram id, done. The direct form states whose
-// services the Telegram account will see BEFORE it connects (the fear here
-// is handing access to the wrong person), validates the id locally, and
-// reports the confirmation-DM outcome honestly afterwards.
+//
+// ONE smart input (owner feedback 2026-10-24 — the numeric id forced an
+// awkward "go ask the customer for a number" round trip):
+//   pure digits      -> direct bind (the classic operator path)
+//   starts with @    -> bind-by-identity claim on the username
+//   anything else    -> bind-by-identity claim on the exact display name
+// The claim sits pending and the customer's FIRST message to the bot
+// completes the bind — the bot reports its own numeric telegram id (see
+// backend bot_session's _try_complete_bind_claim). Nothing binds on a guess:
+// exactly one pending claim may match, and the same bind guards (group rep,
+// payg, already-linked) run at typing time AND at completion time.
 function NotLinkedBody({ customerName, customerId }: { customerName: string; customerId: number }) {
   const queryClient = useQueryClient()
   const invite = useMutation({
@@ -91,100 +136,72 @@ function NotLinkedBody({ customerName, customerId }: { customerName: string; cus
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
-  const [showBind, setShowBind] = useState(false)
-  const [telegramId, setTelegramId] = useState('')
-  const [username, setUsername] = useState('')
+  const [identity, setIdentity] = useState('')
+  const v = identity.trim()
 
-  const bind = useMutation({
-    mutationFn: () =>
-      shopApi.bindTelegram(customerId, {
-        telegram_id: Number(telegramId),
-        telegram_username: username.trim() ? username.trim().replace(/^@/, '') : undefined,
-      }),
-    onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ['shop-link', customerId] })
-      if (res.notification_delivered) {
-        toast.success(`Connected — a confirmation message was delivered to Telegram id ${res.linked_telegram_id}`)
-      } else {
-        toast.warning(
-          `Connected, but no confirmation message could be delivered yet — this customer has probably never opened the shop bot. ` +
-            `The binding works; they see everything on their first /start.` +
-            (res.notification_note ? ` (${res.notification_note})` : ''),
-        )
+  // Numeric id = the operator actually knows the number; anything else goes
+  // to the pending-claim path. The mode drives both the mutation and the
+  // sentence under the input.
+  const mode: 'id' | 'username' | 'name' | 'none' =
+    /^\d{4,20}$/.test(v) ? 'id' : v.startsWith('@') && v.length >= 4 ? 'username' : v.length >= 2 ? 'name' : 'none'
+
+  const connect = useMutation({
+    mutationFn: () => {
+      if (mode === 'id') {
+        return shopApi.bindTelegram(customerId, { telegram_id: Number(v) }).then(() => 'bind' as const)
       }
-      setShowBind(false)
+      return shopApi
+        .createBindClaim(customerId, mode === 'username' ? { telegram_username: v.replace(/^@/, '') } : { display_name: v })
+        .then(() => 'claim' as const)
+    },
+    onSuccess: (kind) => {
+      queryClient.invalidateQueries({ queryKey: ['shop-link', customerId] })
+      queryClient.invalidateQueries({ queryKey: ['connections'] })
+      if (kind === 'bind') {
+        toast.success(`وصل شد — سرویس‌های ${customerName} حالا در بات دیده می‌شوند`)
+      } else {
+        toast.success('ثبت شد — با اولین پیام مشتری در بات، اتصال خودکار انجام می‌شود')
+      }
+      setIdentity('')
     },
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
-  // Telegram user ids are pure digits (authorization header style); anything
-  // else is a typo'd @handle pasted by mistake — refuse locally, instantly.
-  const idValid = /^\d{4,20}$/.test(telegramId.trim())
+  const hint =
+    mode === 'id'
+      ? `آیدی عددی ${v} مستقیم وصل می‌شود — دسترسی واقعی می‌دهد، عدد را چک کن.`
+      : mode === 'username'
+        ? `هر کسی با @${v.replace(/^@/, '')} وارد بات شود، خودکار به ${customerName} وصل می‌شود.`
+        : mode === 'name'
+          ? `هر کسی در تلگرام دقیقاً با نام «${v}» وارد بات شود، خودکار به ${customerName} وصل می‌شود. اگر دو نفر هم‌نام‌اند، وصل نمی‌شود — از @username استفاده کن.`
+          : 'یکی از این‌ها: @username، یا نام دقیقِ تلگرام، یا آیدی عددی.'
 
   return (
     <div className="flex flex-col gap-3 pt-1">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs text-muted-foreground">
-          Not connected. Once connected, this customer sees their existing accounts in the shop bot, can top up a
-          wallet, and renew in place — paid from their shop wallet, not this ledger.
-        </p>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button size="sm" variant="outline" className="h-8 gap-1.5" disabled={invite.isPending} onClick={() => invite.mutate()}>
-            <Link2 className="h-3.5 w-3.5" /> Create invite
-          </Button>
-          <Button
-            size="sm"
-            variant={showBind ? 'ghost' : 'secondary'}
-            className="h-8"
-            onClick={() => setShowBind((v) => !v)}
-          >
-            {showBind ? 'Cancel' : 'Bind by Telegram ID'}
-          </Button>
-        </div>
-      </div>
+      <p className="text-xs text-muted-foreground">
+        با وصل‌کردن، مشتری سرویس‌های موجودش را داخل بات می‌بیند، کیف پول شارژ می‌کند و همان سرویس را تمدید می‌کند — پول از کیف پولِ فروشگاه است، نه این لجر.
+      </p>
 
-      {showBind && (
-        <div className="flex flex-col gap-2.5 rounded-md border border-border bg-background/40 p-3">
-          <p className="text-xs">
-            <span className="font-medium">{customerName}</span>'s services become visible to Telegram id{' '}
-            <span className="font-mono tabular-nums">{telegramId.trim() || '…'}</span> immediately — the wallet,
-            renewals and every account they own. Double-check the number: it grants real access.
-          </p>
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="flex flex-col gap-1">
-              <Label className="text-xs">Telegram ID</Label>
-              <Input
-                autoFocus
-                inputMode="numeric"
-                placeholder="e.g. 1999634605"
-                value={telegramId}
-                onChange={(e) => setTelegramId(e.currentTarget.value.replace(/[^\d]/g, ''))}
-                className="h-8 w-48 font-mono tabular-nums"
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <Label className="text-xs">@username (optional)</Label>
-              <Input
-                placeholder="@handle"
-                value={username}
-                onChange={(e) => setUsername(e.currentTarget.value)}
-                className="h-8 w-40"
-              />
-            </div>
-            <Button
-              size="sm"
-              className="h-8"
-              disabled={!idValid || bind.isPending}
-              onClick={() => bind.mutate()}
-            >
-              {bind.isPending ? 'Connecting…' : 'Connect'}
-            </Button>
-          </div>
-          {!idValid && telegramId.trim().length > 0 && (
-            <p className="text-xs text-muted-foreground">The Telegram ID is the numeric id only — no @, no letters.</p>
-          )}
-        </div>
-      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          value={identity}
+          onChange={(e) => setIdentity(e.currentTarget.value)}
+          placeholder="@username یا نام تلگرام یا آیدی عددی…"
+          className="h-8 w-64"
+          dir="ltr"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && mode !== 'none' && !connect.isPending) connect.mutate()
+          }}
+        />
+        <Button size="sm" className="h-8 gap-1.5" disabled={mode === 'none' || connect.isPending} onClick={() => connect.mutate()}>
+          <UserPlus className="h-3.5 w-3.5" />
+          {connect.isPending ? 'در حال وصل…' : 'وصل کن'}
+        </Button>
+        <Button size="sm" variant="outline" className="h-8 gap-1.5" disabled={invite.isPending} onClick={() => invite.mutate()}>
+          <Link2 className="h-3.5 w-3.5" /> لینک دعوت
+        </Button>
+      </div>
+      <p className="text-[11px] text-muted-foreground">{hint}</p>
     </div>
   )
 }
@@ -199,30 +216,35 @@ export function ShopLinkCard({ customerId }: { customerId: number }) {
   const unlink = useMutation({
     mutationFn: () => shopApi.unlinkLink(customerId),
     onSuccess: () => {
-      toast.success('Shop-bot link removed — the customer loses bot access; their wallet, orders and accounts are untouched.')
+      toast.success('اتصال برداشته شد — مشتری دیگر به بات دسترسی ندارد؛ کیف پول، سفارش‌ها و اکانت‌ها دست‌نخورده می‌مانند.')
       queryClient.invalidateQueries({ queryKey: ['shop-link', customerId] })
+      queryClient.invalidateQueries({ queryKey: ['connections'] })
     },
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
+
+  const hasPendingClaim = !!(state?.bind_claim_username || state?.bind_claim_display_name)
 
   return (
     <div className="rounded-lg border border-border bg-card px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="flex items-center gap-1.5 text-[13px] font-semibold">
-          <MessageCircle className="h-3.5 w-3.5 text-muted-foreground" /> Shop bot
+          <MessageCircle className="h-3.5 w-3.5 text-muted-foreground" /> بات فروش
         </h2>
         {isLoading && <Skeleton className="h-5 w-24" />}
         {state?.status === 'linked' && (
-          <Badge>
-            <ShieldCheck className="h-3 w-3" /> connected
+          <Badge variant="success">
+            <ShieldCheck className="h-3 w-3" /> وصل است
           </Badge>
         )}
         {state?.status === 'pending' && (
           <Badge variant="secondary">
-            <Clock className="h-3 w-3" /> pending invite
+            <Clock className="h-3 w-3" /> دعوت معلق
           </Badge>
         )}
       </div>
+
+      {!isLoading && hasPendingClaim && state && <div className="pt-1"><BindClaimLine state={state} /></div>}
 
       {!isLoading && state?.status === 'not_linked' && (
         <NotLinkedBody
@@ -231,14 +253,14 @@ export function ShopLinkCard({ customerId }: { customerId: number }) {
         />
       )}
 
-      {!isLoading && state?.status === 'pending' && <div className="pt-1">{<PendingBody state={state} />}</div>}
+      {!isLoading && state?.status === 'pending' && <div className="pt-1"><PendingBody state={state} /></div>}
 
       {!isLoading && state?.status === 'linked' && (
         <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
           <p className="text-xs text-muted-foreground">
-            Connected since {formatDate(state.linked_at)} — Telegram id{' '}
-            <span className="font-mono tabular-nums">{state.linked_telegram_id}</span>, {state.accounts_linked}{' '}
-            {state.accounts_linked === 1 ? 'service' : 'services'} visible in the bot.
+            وصل از {formatDate(state.linked_at)} — آیدی تلگرام{' '}
+            <span className="font-mono tabular-nums" dir="ltr">{state.linked_telegram_id}</span>، {state.accounts_linked}{' '}
+            سرویس در بات دیده می‌شود.
           </p>
           <Button
             size="sm"
@@ -248,15 +270,14 @@ export function ShopLinkCard({ customerId }: { customerId: number }) {
             onClick={() => {
               if (
                 window.confirm(
-                  `Unlink ${state.customer_name} from the shop bot?\n\n` +
-                    'They lose bot access immediately. Their shop wallet, past orders and every account are untouched.',
+                  `اتصال ${state.customer_name} به بات فروش برداشته شود؟\n\nدسترسی بلافاصله قطع می‌شود. کیف پول، سفارش‌های گذشته و همهٔ اکانت‌ها دست‌نخورده می‌مانند.`,
                 )
               ) {
                 unlink.mutate()
               }
             }}
           >
-            Unlink
+            قطع اتصال
           </Button>
         </div>
       )}

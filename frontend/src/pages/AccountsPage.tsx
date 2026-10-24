@@ -479,16 +479,6 @@ function AccountTableRow({
                   Next ▸
                 </span>
               )}
-              {!a.auto_renew_enabled && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="inline-flex shrink-0 items-center rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
-                      no auto-renew
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>Excluded from the near-quota/near-expiry auto-renew queue.</TooltipContent>
-                </Tooltip>
-              )}
             </span>
             {/* Owner moves in here once its own column is hidden, so a phone
                 still answers "whose account is this?". */}
@@ -500,7 +490,7 @@ function AccountTableRow({
                 «{a.service_name}»
               </span>
             )}
-            {a.created_via && (
+            {a.created_via && a.created_via !== 'sync' && (
               <span
                 className={cn(
                   'shrink-0 whitespace-nowrap rounded border px-1 py-px text-[10px] leading-4',

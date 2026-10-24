@@ -33,6 +33,7 @@ import type {
   OnlineHistoryRange,
   RateChange,
   ReportSummary,
+  ShopBindClaimRead,
   ShopOrder,
   ShopInboundsResponse,
   ShopIssues,
@@ -402,6 +403,14 @@ export const shopApi = {
   // false is not an error — see ShopTelegramBindResult.
   bindTelegram: async (customerId: number, body: { telegram_id: number; telegram_username?: string; display_name?: string }) =>
     (await api.post<ShopTelegramBindResult>(`/api/shop/link/${customerId}/telegram`, body)).data,
+  // Bind-by-identity (2026-10-24): the operator types the @username or exact
+  // display name they KNOW — the customer's first message to the shop bot
+  // completes the bind with the numeric id the bot itself reports.
+  createBindClaim: async (customerId: number, body: { telegram_username?: string; display_name?: string }) =>
+    (await api.post<ShopBindClaimRead>('/api/shop/bind-claim', { customer_id: customerId, ...body })).data,
+  // Discard the customer's pending bind-by-identity claim.
+  discardBindClaim: async (customerId: number) =>
+    (await api.delete<ShopBindClaimRead>(`/api/shop/bind-claim/${customerId}`)).data,
 }
 
 // ---- telegram connections (shop-bot link + delegate grant per customer) ----
