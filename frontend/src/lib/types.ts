@@ -767,6 +767,13 @@ export interface ShopLinkState {
   bind_claim_username: string | null
   bind_claim_display_name: string | null
   bind_claim_created_at: string | null
+
+  // Payg preview: standalone payg accounts can be converted+linked in one
+  // click (what the conversion will charge, approximately); payg coming from
+  // groups is not convertible here (flip the group first).
+  has_payg: boolean
+  payg_pending_amount: number
+  payg_group_names: string[]
 }
 
 // Response of POST /api/shop/link-invite (mirrors schemas.ShopLinkInviteRead —
@@ -790,6 +797,10 @@ export interface ShopTelegramBindResult {
   accounts_linked: number
   notification_delivered: boolean
   notification_note: string | null
+  // The one-click conversion report (convert_payg): how many standalone payg
+  // accounts were settled+flipped to prepay, and the total charge posted.
+  converted_payg_accounts?: number
+  settled_amount?: number
 }
 
 // ---- delegates (operator-granted self-service via delegate_bot) ----

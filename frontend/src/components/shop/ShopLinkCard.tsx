@@ -128,7 +128,19 @@ function PendingBody({ state }: { state: ShopLinkState }) {
 // backend bot_session's _try_complete_bind_claim). Nothing binds on a guess:
 // exactly one pending claim may match, and the same bind guards (group rep,
 // payg, already-linked) run at typing time AND at completion time.
-function NotLinkedBody({ customerName, customerId }: { customerName: string; customerId: number }) {
+function NotLinkedBody({
+  customerName,
+  customerId,
+  hasPayg,
+  paygPendingAmount,
+  paygGroupNames,
+}: {
+  customerName: string
+  customerId: number
+  hasPayg: boolean
+  paygPendingAmount: number
+  paygGroupNames: string[]
+}) {
   const queryClient = useQueryClient()
   const invite = useMutation({
     mutationFn: () => shopApi.inviteLink(customerId),
@@ -167,6 +179,42 @@ function NotLinkedBody({ customerName, customerId }: { customerName: string; cus
     onError: (err) => toast.error(apiErrorMessage(err)),
   })
 
+  // The one-click payg support path (owner 2026-10-24: these customers must
+  // be SUPPORTED): settle each standalone payg account (the charge for
+  // accrued usage becomes real), flip them to prepay, then bind — all
+  // server-side, through the same guarded endpoints as the panel's own
+  // editors. Requires the NUMERIC telegram id (a money decision the operator
+  // makes while watching, never a bot-message-triggered identity claim).
+  const convert = useMutation({
+    mutationFn: () => shopApi.bindTelegram(customerId, { telegram_id: Number(v), convert_payg: true }),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['shop-link', customerId] })
+      queryClient.invalidateQueries({ queryKey: ['connections'] })
+      queryClient.invalidateQueries({ queryKey: ['accounts'] })
+      queryClient.invalidateQueries({ queryKey: ['customers'] })
+      toast.success(
+        `وصل شد — ${res.converted_payg_accounts ?? 0} اکانتِ مصرفی تسویه و به پکیجی تبدیل شد` +
+          (res.settled_amount ? ` (شارژ ${res.settled_amount.toLocaleString('en-US')} ت ثبت شد)` : ''),
+      )
+      setIdentity('')
+    },
+    onError: (err) => toast.error(apiErrorMessage(err)),
+  })
+
+  function confirmConvert() {
+    if (mode !== 'id') return
+    if (
+      window.confirm(
+        `تسویه + تبدیل + اتصالِ ${customerName}؟\n\n` +
+          `مصرفِ ماندهٔ اکانت‌های مصرفی‌اش همین حالا بیل و ثبت می‌شود (≈ ${paygPendingAmount.toLocaleString('en-US')} تومان بدهی می‌شود)، ` +
+          `اکانت‌ها به پکیجی (prepay) تبدیل می‌شوند و بعد به آیدی ${v} وصل می‌شوند.\n` +
+          `برگشتِ به مصرفی بعد از اتصال ممکن نیست (تداخلِ دو نظامِ پولی).`,
+      )
+    ) {
+      convert.mutate()
+    }
+  }
+
   const hint =
     mode === 'id'
       ? `آیدی عددی ${v} مستقیم وصل می‌شود — دسترسی واقعی می‌دهد، عدد را چک کن.`
@@ -181,6 +229,35 @@ function NotLinkedBody({ customerName, customerId }: { customerName: string; cus
       <p className="text-xs text-muted-foreground">
         با وصل‌کردن، مشتری سرویس‌های موجودش را داخل بات می‌بیند، کیف پول شارژ می‌کند و همان سرویس را تمدید می‌کند — پول از کیف پولِ فروشگاه است، نه این لجر.
       </p>
+
+      {paygGroupNames.length > 0 && (
+        <div className="rounded-md border border-warning/25 bg-warning/10 px-3 py-2 text-xs">
+          <span className="font-medium text-warning">بیلینگ مصرفی از گروه:</span>{' '}
+          اکانت‌هایی از این مشتری داخل گروه(های) <span className="font-medium">{paygGroupNames.join('، ')}</span> است که مصرفی حساب می‌شود —
+          حالتِ گروه را جداگانه prepay کن (صفحهٔ گروه ← تنظیمات؛ همهٔ اعضا را عوض می‌کند)، بعد دوباره بیا.
+        </div>
+      )}
+
+      {hasPayg && paygGroupNames.length === 0 && (
+        <div className="flex flex-col gap-2 rounded-md border border-warning/25 bg-warning/10 px-3 py-2">
+          <p className="text-xs">
+            <span className="font-medium text-warning">این مشتری بیلینگ مصرفی (payg) دارد.</span>{' '}
+            برای اتصال، یک کلیک: مصرفِ مانده بیل و ثبت می‌شود (≈{' '}
+            <span className="font-medium tabular-nums">{paygPendingAmount.toLocaleString('en-US')} تومان</span> بدهی)،
+            اکانت‌ها به پکیچی تبدیل و بعد وصل می‌شوند. برگشتِ به مصرفی بعد از اتصال بسته است.
+          </p>
+          {mode === 'id' ? (
+            <Button size="sm" className="h-8 w-fit gap-1.5" disabled={convert.isPending} onClick={confirmConvert}>
+              <UserPlus className="h-3.5 w-3.5" />
+              {convert.isPending ? 'در حال تسویه و تبدیل…' : 'تسویه + تبدیل + اتصال'}
+            </Button>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">
+              برای این مسیر، آیدی عددیِ تلگرام را در کادر بالا بنویس — دکمهٔ تبدیل ظاهر می‌شود.
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <Input
@@ -250,6 +327,9 @@ export function ShopLinkCard({ customerId }: { customerId: number }) {
         <NotLinkedBody
           customerName={state.customer_name}
           customerId={state.customer_id}
+          hasPayg={state.has_payg}
+          paygPendingAmount={state.payg_pending_amount}
+          paygGroupNames={state.payg_group_names}
         />
       )}
 

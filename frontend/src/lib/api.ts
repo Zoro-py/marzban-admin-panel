@@ -401,8 +401,10 @@ export const shopApi = {
   // round-trip. 409s (group rep, payg billing, either side already bound)
   // arrive as detail text and are shown verbatim. notification_delivered
   // false is not an error — see ShopTelegramBindResult.
-  bindTelegram: async (customerId: number, body: { telegram_id: number; telegram_username?: string; display_name?: string }) =>
-    (await api.post<ShopTelegramBindResult>(`/api/shop/link/${customerId}/telegram`, body)).data,
+  bindTelegram: async (
+    customerId: number,
+    body: { telegram_id: number; telegram_username?: string; display_name?: string; convert_payg?: boolean },
+  ) => (await api.post<ShopTelegramBindResult>(`/api/shop/link/${customerId}/telegram`, body)).data,
   // Bind-by-identity (2026-10-24): the operator types the @username or exact
   // display name they KNOW — the customer's first message to the shop bot
   // completes the bind with the numeric id the bot itself reports.

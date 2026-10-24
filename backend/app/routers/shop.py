@@ -615,6 +615,42 @@ def _customer_has_payg_billing(session: Session, customer_id: int) -> bool:
     return False
 
 
+def _payg_partition(session: Session, customer: Customer) -> tuple[list[Account], list[str]]:
+    """The link-blocking payg surface of this customer, split by WHO can fix
+    it (owner 2026-10-24: payg customers must be SUPPORTED, not refused):
+
+      * standalone payg accounts (customer_id is this customer, no group) —
+        convertible right here: settle the accrued usage, flip to prepay via
+        the same guarded endpoint the panel's billing editor uses, then link.
+      * group members whose GROUP bills payg — NOT convertible here: flipping
+        the group reprices every member (a group-wide decision the operator
+        makes in the group's own settings); returns the group NAMES so the
+        refusal can say exactly what to go flip.
+
+    The one source both the refusals and the one-click conversion read, so
+    the rule can never drift between them."""
+    standalone: list[Account] = []
+    group_names: list[str] = []
+    accounts = session.exec(select(Account).where(Account.customer_id == customer.id)).all()
+    for account in accounts:
+        if account.group_id is not None:
+            group = session.get(Group, account.group_id)
+            if group is not None and group.billing_mode == BillingMode.payg and group.name not in group_names:
+                group_names.append(group.name)
+        elif account.billing_mode == BillingMode.payg:
+            standalone.append(account)
+    return standalone, group_names
+
+
+_PAYG_REFUSAL_TEXT = (
+    "این مشتری بیلینگ مصرفی (payg) دارد: تسویهٔ ماهانه از لجر برای مصرف واقعی بیل "
+    "می‌زند ولی خریدِ فروشگاه از کیف پول همان اکانت را تمدید می‌کند — دو نظامِ پولی "
+    "روی یک شمارنده سایه می‌اندازند و مشتری دو بار پول می‌دهد. مسیر پشتیبانی‌شده: "
+    "در پنل، دکمهٔ «تسویه + تبدیل + اتصال» (مصرفِ مانده بیل و ثبت می‌شود، اکانت‌ها "
+    "به پکیچی تبدیل و بعد وصل می‌شوند)."
+)
+
+
 def _linked_account_count(session: Session, customer: Customer) -> int:
     """How many of the customer's accounts the shop will show once linked —
     the same set bot_list_accounts merges in: every directly-owned account
@@ -656,14 +692,7 @@ def create_shop_link_invite(body: ShopLinkInviteRequest, session: Session = Depe
             "that case instead.",
         )
     if _customer_has_payg_billing(session, customer.id):
-        raise HTTPException(
-            409,
-            "This customer has pay-as-you-go billing: the monthly settle keeps "
-            "charging their ledger from real usage, while a shop purchase would "
-            "debit their shop wallet and extend the same account — the two money "
-            "systems would silently shadow each other. Shop linking is refused "
-            "for payg customers.",
-        )
+        raise HTTPException(409, _PAYG_REFUSAL_TEXT)
     if customer.shop_user_id is not None:
         shop_user = session.get(ShopUser, customer.shop_user_id)
         bound = f"telegram id {shop_user.telegram_id}" if shop_user else "an unknown shop user"
@@ -711,6 +740,26 @@ def read_shop_link(customer_id: int, session: Session = Depends(get_session)):
             "bind_claim_created_at": claim.created_at if claim else None,
         }
 
+    def _payg_kwargs() -> dict:
+        # The one-click preview: what the conversion would bill (standalone
+        # accounts' pending, one MoneyBook snapshot) and whether any of the
+        # payg comes from groups (not convertible here). For a LINKED
+        # customer this is always empty/false — the flip guard keeps linked
+        # customers prepay — but computing it anyway keeps the payload honest
+        # if that invariant is ever violated.
+        from app.services import MoneyBook
+
+        standalone, group_names = _payg_partition(session, customer)
+        if not standalone and not group_names:
+            return {"has_payg": False, "payg_pending_amount": 0.0, "payg_group_names": []}
+        book = MoneyBook(session)
+        pending = round(sum(book.account_pending(a) for a in standalone), 2)
+        return {
+            "has_payg": True,
+            "payg_pending_amount": pending,
+            "payg_group_names": group_names,
+        }
+
     if customer.shop_user_id is not None:
         shop_user = session.get(ShopUser, customer.shop_user_id)
         return ShopLinkState(
@@ -721,6 +770,7 @@ def read_shop_link(customer_id: int, session: Session = Depends(get_session)):
             linked_at=customer.shop_link_linked_at,
             accounts_linked=_linked_account_count(session, customer),
             **_claim_kwargs(),
+            **_payg_kwargs(),
         )
     if customer.shop_link_token is not None:
         username = app_settings.shop_bot_username.strip().lstrip("@")
@@ -734,12 +784,14 @@ def read_shop_link(customer_id: int, session: Session = Depends(get_session)):
             invite_url=_shop_invite_url(customer.shop_link_token) if username else None,
             claim_expires_at=customer.shop_link_expires_at,
             **_claim_kwargs(),
+            **_payg_kwargs(),
         )
     return ShopLinkState(
         customer_id=customer.id,
         customer_name=customer.name,
         status="not_linked",
         **_claim_kwargs(),
+        **_payg_kwargs(),
     )
 
 
@@ -764,13 +816,12 @@ def create_bind_claim(body: ShopBindClaimRequest, session: Session = Depends(get
     if refusal:
         raise HTTPException(409, refusal)
     if _customer_has_payg_billing(session, customer.id):
+        # Claims never convert money state — conversion happens only where the
+        # operator is watching (the direct bind's convert_payg path).
         raise HTTPException(
             409,
-            "این مشتری بیلینگ مصرفی (payg) دارد: تسویهٔ ماهانه از لجر برای مصرف واقعی "
-            "بیل می‌زند ولی خریدِ فروشگاه از کیف پول همان اکانت را تمدید می‌کند — دو "
-            "نظامِ پولی روی یک شمارنده سایه می‌اندازند. اتصالِ مشتریِ payg به فروشگاه رد می‌شود. "
-            "برای اتصال: اول اکانت‌هایش را تسویه کن، بعد در اینسپکتورِ اکانت (بخش نرخ و حالت صورتحساب) "
-            "به prepay برگردان — اگر گروهی است، حالتِ خودِ گروه — و بعد دوباره وصل کن.",
+            _PAYG_REFUSAL_TEXT + " اتصالِ هویتی (با @username) برای مشتریِ مصرفی ممکن نیست "
+            "— از آیدی عددی با گزینهٔ تبدیل، یا بعد از تبدیل، استفاده کن.",
         )
     if customer.shop_user_id is not None:
         raise HTTPException(409, "این مشتری از قبل به تلگرام وصل است — اول جدا کنید (unlink)، بعد ادعای جدید بسازید.")
@@ -862,6 +913,9 @@ async def bind_shop_customer_telegram(
     customer_id: int,
     body: ShopTelegramBindRequest,
     session: Session = Depends(get_session),
+    # Injected for the convert_payg path: the settle/flip calls below write
+    # ledger rows and AccountEvents that must carry WHO decided the conversion.
+    operator: str = Depends(require_auth),
 ):
     """The operator types the customer's Telegram id straight into the panel —
     the direct counterpart of the invite-link flow, for when the operator
@@ -892,15 +946,57 @@ async def bind_shop_customer_telegram(
             "تلگرامِ شخصی یعنی یک نفر همه را ببیند و تمدید کند. برای این حالت، دسترسیِ "
             "دلیگیت جایگزین است.",
         )
-    if _customer_has_payg_billing(session, customer.id):
-        raise HTTPException(
-            409,
-            "این مشتری بیلینگ مصرفی (payg) دارد: تسویهٔ ماهانه از لجر برای مصرف واقعی "
-            "بیل می‌زند ولی خریدِ فروشگاه از کیف پول همان اکانت را تمدید می‌کند — دو "
-            "نظامِ پولی روی یک شمارنده سایه می‌اندازند. اتصالِ مشتریِ payg به فروشگاه رد می‌شود. "
-            "برای اتصال: اول اکانت‌هایش را تسویه کن، بعد در اینسپکتورِ اکانت (بخش نرخ و حالت صورتحساب) "
-            "به prepay برگردان — اگر گروهی است، حالتِ خودِ گروه — و بعد دوباره وصل کن.",
-        )
+    converted_payg_accounts = 0
+    settled_amount = 0.0
+    payg_standalone, payg_groups = _payg_partition(session, customer)
+    if payg_standalone or payg_groups:
+        if payg_groups:
+            # A group flip reprices EVERY member — that decision belongs to
+            # the group's own settings screen, not inside a bind call.
+            raise HTTPException(
+                409,
+                f"بیلینگِ مصرفیِ این مشتری از گروه می‌آید ({'، '.join(payg_groups)}) — "
+                "حالتِ گروه را جداگانه prepay کن (صفحهٔ گروه ← تنظیمات؛ این تصمیم همهٔ "
+                "اعضا را عوض می‌کند)، بعد دوباره وصل کن.",
+            )
+        if not body.convert_payg:
+            raise HTTPException(409, _PAYG_REFUSAL_TEXT)
+        # The supported path (owner 2026-10-24): settle each standalone payg
+        # account (the charge for accrued usage becomes real — visible debt,
+        # never forgiven), flip it to prepay through the SAME guarded endpoint
+        # the panel's billing editor uses (the D21 billed-baseline
+        # neutralization rides along), then fall through to the ordinary
+        # bind. settle_account / update_billing are called DIRECTLY — zero
+        # money logic duplicated here. Each takes the billing lock internally,
+        # so this endpoint must never hold it (the lock is not reentrant).
+        from app.routers.accounts import settle_account as _settle_account
+        from app.routers.accounts import update_billing as _update_billing
+        from app.schemas import AccountSettleRequest, AccountBillingUpdate
+
+        for account in payg_standalone:
+            try:
+                result = await _settle_account(
+                    account.id, AccountSettleRequest(), session, operator
+                )
+                settled_amount += float(result.get("charged_amount") or 0.0)
+                await _update_billing(
+                    account.id,
+                    AccountBillingUpdate(billing_mode=BillingMode.prepay),
+                    session,
+                    operator,
+                )
+                converted_payg_accounts += 1
+            except HTTPException as exc:
+                # Partial failure is RESUMABLE, not rolled back: accounts
+                # already settled+converted are genuinely converted (their
+                # charges are real and their meters were really reset), and a
+                # retry skips them (no longer payg). Name the account so the
+                # operator knows exactly where it stopped.
+                raise HTTPException(
+                    exc.status_code,
+                    f"تبدیل اکانت {account.marzban_username} نشست: {exc.detail} "
+                    "— اکانت‌های قبلی تبدیل شده‌اند؛ دوباره تلاش کن، از همان‌جا ادامه می‌دهد.",
+                ) from exc
 
     shop_user = get_or_create_shop_user(
         session,
@@ -923,6 +1019,8 @@ async def bind_shop_customer_telegram(
                 accounts_linked=accounts_linked,
                 notification_delivered=delivered,
                 notification_note=note,
+                converted_payg_accounts=converted_payg_accounts,
+                settled_amount=round(settled_amount, 2),
             )
         other = session.get(ShopUser, customer.shop_user_id)
         bound = f"telegram id {other.telegram_id}" if other else "an unknown shop user"
@@ -969,6 +1067,8 @@ async def bind_shop_customer_telegram(
         accounts_linked=accounts_linked,
         notification_delivered=delivered,
         notification_note=note,
+        converted_payg_accounts=converted_payg_accounts,
+        settled_amount=round(settled_amount, 2),
     )
 
 
@@ -1081,7 +1181,7 @@ def _try_complete_bind_claim(session: Session, shop_user: ShopUser) -> None:
             return
         refusal = _bind_guards(customer)
         if refusal is None and _customer_has_payg_billing(session, customer.id):
-            refusal = "این مشتری بیلینگ مصرفی (payg) دارد و نمی‌تواند به فروشگاه وصل شود."
+            refusal = "این مشتری بیلینگ مصرفی (payg) دارد — از پنل با «تسویه + تبدیل + اتصال» وصلش کن."
         if refusal is not None:
             logger.warning("bind-claim for customer %s no longer legal (%s) — discarded", customer.id, refusal[:60])
             for c in pending:

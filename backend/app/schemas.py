@@ -1050,6 +1050,18 @@ class ShopLinkState(BaseModel):
     linked_telegram_id: Optional[int] = None
     linked_at: Optional[datetime] = None
     accounts_linked: int = 0
+    # Payg preview (2026-10-24): can this customer be linked as-is, via the
+    # one-click convert, or not until their group is flipped? Populated on
+    # every state; has_payg is False for linked customers by the invariant
+    # (the prepay->payg flip guard refuses linked customers).
+    has_payg: bool = False
+    # Sum of the standalone payg accounts' pending (accrued, unbilled) — what
+    # the one-click conversion will charge, approximately.
+    payg_pending_amount: float = 0.0
+    # Payg coming from GROUPS the customer's accounts belong to: not
+    # convertible here (flipping a group reprices every member — a decision
+    # the operator makes in the group's own settings, not inside a bind).
+    payg_group_names: list[str] = []
     # The operator's pending bind-by-identity claim (2026-10-24): what they
     # typed instead of a numeric telegram id, waiting for the customer's
     # first message to the bot to complete the bind. NULL = no pending claim.
@@ -1066,7 +1078,12 @@ class ShopTelegramBindRequest(BaseModel):
     telegram_id: int = Field(gt=0)
     telegram_username: Optional[str] = None
     display_name: Optional[str] = None
-
+    # (2026-10-24) One-click "settle + convert + link" for payg customers:
+    # settles each standalone payg account's accrued usage (posts the charge),
+    # flips it to prepay (through the same guarded endpoint as the panel's
+    # billing editor — including the D21 neutralization), THEN binds. Without
+    # the flag a payg customer is still refused (the two-economies rule).
+    convert_payg: bool = False
 
 class ShopTelegramBindResult(BaseModel):
     customer_id: int
@@ -1079,7 +1096,11 @@ class ShopTelegramBindResult(BaseModel):
     # still works and they see everything on their first /start.
     notification_delivered: bool = False
     notification_note: Optional[str] = None
-
+    # How many standalone payg accounts were settled+converted as part of
+    # this bind (convert_payg=True), and the total charge posted for their
+    # accrued usage — the operator sees exactly what the conversion billed.
+    converted_payg_accounts: int = 0
+    settled_amount: float = 0.0
 
 class ShopBotServiceNameRequest(BaseModel):
     """shopbot only (POST /api/shop/bot/accounts/{id}/name): the customer names
