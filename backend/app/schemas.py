@@ -1101,6 +1101,12 @@ class ShopLinkState(BaseModel):
     bind_claim_username: Optional[str] = None
     bind_claim_display_name: Optional[str] = None
     bind_claim_created_at: Optional[datetime] = None
+    # A payg customer's claim never binds by itself: when the person writes to
+    # the bot, only their numeric id/name is recorded here for the operator's
+    # one-click settle+convert+link (the id comes from their own message).
+    bind_claim_arrived_telegram_id: Optional[int] = None
+    bind_claim_arrived_name: Optional[str] = None
+    bind_claim_arrived_username: Optional[str] = None
 
 
 class ShopTelegramBindRequest(BaseModel):

@@ -780,6 +780,13 @@ function BillingSection({ account }: { account: AccountRow }) {
             <SelectItem value="payg">Pay-as-you-go — reset suggests a charge for actual usage</SelectItem>
           </SelectContent>
         </Select>
+        {account.effective_billing_mode !== account.billing_mode && (
+          <p className="text-[11px] leading-relaxed font-medium text-warning">
+            This account is billed as {BILLING_MODE_LABEL[account.effective_billing_mode]} right now: a grouped account
+            always follows its group's mode, so the field above is inert until it leaves the group. Change the mode in
+            the group's settings.
+          </p>
+        )}
       </div>
       <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-muted/40 p-2.5 text-xs">
         <Checkbox checked={autoRenewEnabled} onCheckedChange={(v) => setAutoRenewEnabled(v === true)} className="mt-0.5" />

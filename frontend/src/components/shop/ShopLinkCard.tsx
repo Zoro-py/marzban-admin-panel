@@ -44,7 +44,15 @@ function BindClaimLine({ state }: { state: ShopLinkState }) {
           <Clock className="h-3 w-3" /> منتظر اولین پیام مشتری در بات
         </span>
         <span className="ml-1.5 text-muted-foreground">
-          هر کسی که با <span className="font-medium text-foreground" dir="ltr">{what}</span> وارد بات شود، همان لحظه به این مشتری وصل می‌شود.
+          {state.has_payg ? (
+            <>
+              هر کسی که با <span className="font-medium text-foreground" dir="ltr">{what}</span> پیام بدهد، فقط آیدی‌اش ثبت می‌شود — وصل‌شدن و تسویه با تأیید خودت در دکمهٔ پایین است.
+            </>
+          ) : (
+            <>
+              هر کسی که با <span className="font-medium text-foreground" dir="ltr">{what}</span> وارد بات شود، همان لحظه به این مشتری وصل می‌شود.
+            </>
+          )}
         </span>
       </p>
       <Button
@@ -134,12 +142,18 @@ function NotLinkedBody({
   hasPayg,
   paygPendingAmount,
   paygGroupNames,
+  claimArrivedId,
+  claimArrivedName,
+  claimArrivedUsername,
 }: {
   customerName: string
   customerId: number
   hasPayg: boolean
   paygPendingAmount: number
   paygGroupNames: string[]
+  claimArrivedId: number | null
+  claimArrivedName: string | null
+  claimArrivedUsername: string | null
 }) {
   const queryClient = useQueryClient()
   const invite = useMutation({
@@ -156,6 +170,14 @@ function NotLinkedBody({
   // sentence under the input.
   const mode: 'id' | 'username' | 'name' | 'none' =
     /^\d{4,20}$/.test(v) ? 'id' : v.startsWith('@') && v.length >= 4 ? 'username' : v.length >= 2 ? 'name' : 'none'
+
+  // A payg customer is linked only through the one-click conversion, which
+  // needs a numeric id. Two ways to get it, both operator-confirmed: type it,
+  // or type the @username/name and wait - the person's FIRST message to the bot
+  // records their numeric id on the claim (it comes from their own Telegram
+  // client), and the button below then appears for exactly that id.
+  const arrivedId = claimArrivedId ?? null
+  const convertId = mode === 'id' ? Number(v) : arrivedId
 
   const connect = useMutation({
     mutationFn: () => {
@@ -186,7 +208,14 @@ function NotLinkedBody({
   // editors. Requires the NUMERIC telegram id (a money decision the operator
   // makes while watching, never a bot-message-triggered identity claim).
   const convert = useMutation({
-    mutationFn: () => shopApi.bindTelegram(customerId, { telegram_id: Number(v), convert_payg: true }),
+    mutationFn: () =>
+      shopApi.bindTelegram(customerId, {
+        telegram_id: convertId as number,
+        convert_payg: true,
+        ...(mode !== 'id' && arrivedId !== null
+          ? { telegram_username: claimArrivedUsername ?? undefined, display_name: claimArrivedName ?? undefined }
+          : {}),
+      }),
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['shop-link', customerId] })
       queryClient.invalidateQueries({ queryKey: ['connections'] })
@@ -202,12 +231,15 @@ function NotLinkedBody({
   })
 
   function confirmConvert() {
-    if (mode !== 'id') return
+    if (convertId === null) return
+    const who = mode !== 'id' && arrivedId !== null
+      ? `${convertId} (${claimArrivedName ?? '—'}${claimArrivedUsername ? ` @${claimArrivedUsername}` : ''})`
+      : String(convertId)
     if (
       window.confirm(
         `تسویه + تبدیل + اتصالِ ${customerName}؟\n\n` +
           `مصرفِ ماندهٔ اکانت‌های مصرفی‌اش همین حالا بیل و ثبت می‌شود (≈ ${paygPendingAmount.toLocaleString('en-US')} تومان بدهی می‌شود)، ` +
-          `اکانت‌ها به پکیجی (prepay) تبدیل می‌شوند و بعد به آیدی ${v} وصل می‌شوند.\n` +
+          `اکانت‌ها به پکیجی (prepay) تبدیل می‌شوند و بعد به آیدی ${who} وصل می‌شوند.\n` +
           `برگشتِ به مصرفی بعد از اتصال ممکن نیست (تداخلِ دو نظامِ پولی).`,
       )
     ) {
@@ -246,14 +278,23 @@ function NotLinkedBody({
             <span className="font-medium tabular-nums">{paygPendingAmount.toLocaleString('en-US')} تومان</span> بدهی)،
             اکانت‌ها به پکیچی تبدیل و بعد وصل می‌شوند. برگشتِ به مصرفی بعد از اتصال بسته است.
           </p>
-          {mode === 'id' ? (
-            <Button size="sm" className="h-8 w-fit gap-1.5" disabled={convert.isPending} onClick={confirmConvert}>
-              <UserPlus className="h-3.5 w-3.5" />
-              {convert.isPending ? 'در حال تسویه و تبدیل…' : 'تسویه + تبدیل + اتصال'}
-            </Button>
+          {convertId !== null ? (
+            <div className="flex flex-col gap-1.5">
+              {mode !== 'id' && arrivedId !== null && (
+                <p className="text-[11px] text-muted-foreground">
+                  پیام داد: <span className="font-medium text-foreground">{claimArrivedName ?? '—'}</span>
+                  {claimArrivedUsername ? <> (@{claimArrivedUsername})</> : null} — آیدی{' '}
+                  <span className="font-mono tabular-nums" dir="ltr">{arrivedId}</span>. اگر همان آدم است ادامه بده.
+                </p>
+              )}
+              <Button size="sm" className="h-8 w-fit gap-1.5" disabled={convert.isPending} onClick={confirmConvert}>
+                <UserPlus className="h-3.5 w-3.5" />
+                {convert.isPending ? 'در حال تسویه و تبدیل…' : 'تسویه + تبدیل + اتصال'}
+              </Button>
+            </div>
           ) : (
             <p className="text-[11px] text-muted-foreground">
-              برای این مسیر، آیدی عددیِ تلگرام را در کادر بالا بنویس — دکمهٔ تبدیل ظاهر می‌شود.
+              @username یا نام تلگرامِ مشتری را در کادر بالا بنویس و «وصل کن» بزن؛ وقتی اولین پیامش را به بات بدهد، آیدی‌اش اینجا می‌آید و دکمهٔ تبدیل ظاهر می‌شود. یا آیدی عددی را مستقیم بنویس.
             </p>
           )}
         </div>
@@ -330,6 +371,9 @@ export function ShopLinkCard({ customerId }: { customerId: number }) {
           hasPayg={state.has_payg}
           paygPendingAmount={state.payg_pending_amount}
           paygGroupNames={state.payg_group_names}
+          claimArrivedId={state.bind_claim_arrived_telegram_id}
+          claimArrivedName={state.bind_claim_arrived_name}
+          claimArrivedUsername={state.bind_claim_arrived_username}
         />
       )}
 

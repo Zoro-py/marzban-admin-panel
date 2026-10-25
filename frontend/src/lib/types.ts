@@ -770,6 +770,11 @@ export interface ShopLinkState {
   bind_claim_username: string | null
   bind_claim_display_name: string | null
   bind_claim_created_at: string | null
+  // Payg customers: the person who wrote to the bot under the claimed
+  // identity (id from their own message) - waits for the operator's confirm.
+  bind_claim_arrived_telegram_id: number | null
+  bind_claim_arrived_name: string | null
+  bind_claim_arrived_username: string | null
 
   // Payg preview: standalone payg accounts can be converted+linked in one
   // click (what the conversion will charge, approximately); payg coming from

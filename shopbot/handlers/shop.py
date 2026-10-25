@@ -1173,6 +1173,19 @@ async def show_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _reply(update, "\n".join(lines), session)
 
 
+def _display_service_name(row: dict) -> str | None:
+    """The title a service is listed under: the customer's own nickname, else
+    the account's panel username. Linked reseller accounts never had a
+    nickname set, so every one of them was an anonymous «سرویس ۳۰ گیگ» —
+    indistinguishable when a customer owns several (owner report 2026-10-25).
+    «—» is the backend's placeholder for an order with no panel user yet."""
+    nick = (row.get("service_name") or "").strip()
+    if nick:
+        return nick
+    username = (row.get("marzban_username") or "").strip()
+    return username if username and username != "—" else None
+
+
 async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
     try:
@@ -1202,7 +1215,7 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # left" that secretly connects to nothing. Passing it changes nothing
         # for active/limited/expired rows (see account_line's default).
         lines = [texts.account_line(limit_gb, used_gb, days_left,
-                                     status=row.get("status"), name=row.get("service_name"))]
+                                     status=row.get("status"), name=_display_service_name(row))]
         # An inline URL BUTTON, not the raw link: subscription URLs churn on
         # every panel-side modify (live 2026-10-01 — three different tokens
         # in one hour), and a Latin URL printed inside Persian text gets

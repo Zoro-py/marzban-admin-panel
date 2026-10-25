@@ -772,6 +772,20 @@ def read_shop_link(customer_id: int, session: Session = Depends(get_session)):
             "bind_claim_username": claim.telegram_username if claim else None,
             "bind_claim_display_name": claim.display_name if claim else None,
             "bind_claim_created_at": claim.created_at if claim else None,
+            **_arrival_kwargs(),
+        }
+
+    def _arrival_kwargs() -> dict:
+        # The person who actually wrote to the bot under the claimed identity
+        # (payg claims wait here for the operator's confirm - see
+        # _try_complete_bind_claim).
+        if claim is None or claim.claimed_telegram_id is None:
+            return {"bind_claim_arrived_telegram_id": None, "bind_claim_arrived_name": None, "bind_claim_arrived_username": None}
+        arrived = session.exec(select(ShopUser).where(ShopUser.telegram_id == claim.claimed_telegram_id)).first()
+        return {
+            "bind_claim_arrived_telegram_id": claim.claimed_telegram_id,
+            "bind_claim_arrived_name": arrived.display_name if arrived else None,
+            "bind_claim_arrived_username": arrived.telegram_username if arrived else None,
         }
 
     def _payg_kwargs() -> dict:
@@ -849,14 +863,20 @@ def create_bind_claim(body: ShopBindClaimRequest, session: Session = Depends(get
     refusal = _bind_guards(customer)
     if refusal:
         raise HTTPException(409, refusal)
-    if _customer_has_payg_billing(session, customer.id):
-        # Claims never convert money state — conversion happens only where the
-        # operator is watching (the direct bind's convert_payg path).
+    _standalone_payg, payg_group_names = _payg_partition(session, customer)
+    if payg_group_names:
+        # A group flip reprices every member - that decision lives in the
+        # group's own settings, never inside a bind (same rule as the direct bind).
         raise HTTPException(
             409,
-            _PAYG_REFUSAL_TEXT + " اتصالِ هویتی (با @username) برای مشتریِ مصرفی ممکن نیست "
-            "— از آیدی عددی با گزینهٔ تبدیل، یا بعد از تبدیل، استفاده کن.",
+            f"بیلینگِ مصرفیِ این مشتری از گروه می‌آید ({'، '.join(payg_group_names)}) — "
+            "حالتِ گروه را جداگانه prepay کن (صفحهٔ گروه ← تنظیمات)، بعد دوباره امتحان کن.",
         )
+    # A standalone-payg customer MAY hold a claim: the claim never binds and
+    # never converts. When the person writes to the bot, only their numeric id
+    # is RECORDED (_try_complete_bind_claim); the operator then confirms the
+    # settle+convert+link in the panel, watching the amount (owner rule: money
+    # steps are never triggered by a bot message). Council 2026-10-25.
     if customer.shop_user_id is not None:
         raise HTTPException(409, "این مشتری از قبل به تلگرام وصل است — اول جدا کنید (unlink)، بعد ادعای جدید بسازید.")
     if username is not None:
@@ -980,6 +1000,38 @@ async def bind_shop_customer_telegram(
             "تلگرامِ شخصی یعنی یک نفر همه را ببیند و تمدید کند. برای این حالت، دسترسیِ "
             "دلیگیت جایگزین است.",
         )
+    # Every refusal that does NOT depend on the conversion runs BEFORE it:
+    # the settle+flip below writes ledger rows, resets the Marzban meter and
+    # flips billing modes, none of which a later 409 can undo. Found by
+    # tests/test_shop_payg_link_edges.py E1/E2 (2026-10-25): an id already
+    # bound to another customer used to bill 100,000 T and flip the account to
+    # prepay, THEN answer 409 — money moved, nothing linked.
+    existing_shop_user = session.exec(
+        select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)
+    ).first()
+    if customer.shop_user_id is not None and (
+        existing_shop_user is None or customer.shop_user_id != existing_shop_user.id
+    ):
+        other = session.get(ShopUser, customer.shop_user_id)
+        bound = f"telegram id {other.telegram_id}" if other else "an unknown shop user"
+        raise HTTPException(
+            409,
+            f"این مشتری از قبل به تلگرامِ دیگری وصل است ({bound}) — اول با "
+            f"DELETE /api/shop/link/{customer.id} جدا کنید، بعد دوباره ببندید.",
+        )
+    if existing_shop_user is not None:
+        early_collision = session.exec(
+            select(Customer).where(
+                Customer.shop_user_id == existing_shop_user.id,
+                Customer.id != customer.id,
+            )
+        ).first()
+        if early_collision is not None:
+            raise HTTPException(
+                409,
+                f"این آیدی تلگرام از قبل به مشتریِ دیگری وصل است ({early_collision.name}) — "
+                "اول آن را جدا کنید؛ یک تلگرام فقط سرویس‌های یک مشتری را می‌بیند.",
+            )
     converted_payg_accounts = 0
     settled_amount = 0.0
     payg_standalone, payg_groups = _payg_partition(session, customer)
@@ -1214,8 +1266,26 @@ def _try_complete_bind_claim(session: Session, shop_user: ShopUser) -> None:
             session.commit()
             return
         refusal = _bind_guards(customer)
-        if refusal is None and _customer_has_payg_billing(session, customer.id):
-            refusal = "این مشتری بیلینگ مصرفی (payg) دارد — از پنل با «تسویه + تبدیل + اتصال» وصلش کن."
+        payg_standalone, payg_groups = _payg_partition(session, customer)
+        if refusal is None and payg_groups:
+            refusal = "بیلینگ مصرفی از گروه — حالت گروه را prepay کن."
+        if refusal is None and payg_standalone and customer.shop_user_id is None:
+            # ARRIVAL, not a bind (council 2026-10-25): a payg customer is never
+            # linked/converted by a bot message. Record WHO wrote - the numeric
+            # id comes from the sender's own Telegram client, so it is the
+            # person holding that @username right now, not a stale snapshot -
+            # and leave the claim pending. The panel then offers the operator
+            # the one-click settle+convert+link for exactly this id.
+            for c in pending:
+                if c.customer_id == customer.id:
+                    c.claimed_telegram_id = shop_user.telegram_id
+                    session.add(c)
+            session.commit()
+            logger.info(
+                "bind-claim ARRIVED (payg, awaiting operator): customer %s <- telegram %s",
+                customer.id, shop_user.telegram_id,
+            )
+            return
         if refusal is not None:
             logger.warning("bind-claim for customer %s no longer legal (%s) — discarded", customer.id, refusal[:60])
             for c in pending:

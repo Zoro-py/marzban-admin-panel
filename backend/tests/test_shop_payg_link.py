@@ -194,7 +194,7 @@ with Session(engine) as s:
     s.commit()
     C2 = c2.id
 r7 = client.post("/api/shop/bind-claim", json={"customer_id": C2, "telegram_username": "claimant"})
-check("claim: payg customer still refused (no money moves on identity)", r7.status_code == 409, r7.text[:150])
+check("claim: standalone-payg customer may HOLD a claim (it never binds/converts by itself - see edges C-tests)", r7.status_code == 200, r7.text[:150])
 
 # 8) standalone-ONLY payg customer: the general refusal names the one-click
 r8 = client.post(f"/api/shop/link/{C2}/telegram", json={"telegram_id": 600002})
