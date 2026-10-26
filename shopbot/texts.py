@@ -519,8 +519,10 @@ def usage_bar(used_gb: float, total_gb: float, width: int = 10) -> str:
 STATUS_SUSPENDED_BADGE = "⚪️ موقتاً متوقف — با شارژ کیف پول یا پس از رفع بدهی دوباره وصل می‌شود"
 
 # ── naming a service (the customer's own nickname) ────────────────────────
+# ONE string: a stray comma here once made this a tuple, and python-telegram-bot
+# sent its JSON repr («["نام …"]») to a customer (2026-10-26).
 ASK_SERVICE_NAME = (
-    "نام سرویس را بفرست — هر اسمی که برایت مفهوم است، مثلاً «گوشی علی» یا «لپ‌تاپ کار».",
+    "نام سرویس را بفرست — هر اسمی که برایت مفهوم است، مثلاً «گوشی علی» یا «لپ‌تاپ کار».\n"
     "برای حذفِ نام فعلی، «حذف» را بفرست."
 )
 SERVICE_NAME_SAVED = "✅ ثبت شد — از این به بعد سرویست با همین نام نشان داده می‌شود."
