@@ -58,7 +58,6 @@ from app.services import (
     roll_usage_baseline_on_payg_entry,
     roll_payg_baseline_after_reset,
     serialise_billing,
-    shop_linked_customer_blocks_payg,
     sync_marzban_fields,
 )
 
@@ -597,22 +596,8 @@ async def update_relationship(account_id: int, body: AccountRelationshipUpdate, 
         # mechanism -- same gap neutralize_billed_baseline above closes for
         # the opposite direction.
         elif mode_before == BillingMode.prepay and mode_after == BillingMode.payg:
-            # N1 (2026-10-20): the shop's own link-time guard
-            # (_customer_has_payg_billing) only runs once, when the link is
-            # created — it never re-checks a LATER flip like this one. The
-            # relevant customer is whichever one this account now bills
-            # through: its own customer_id standalone, or the group's
-            # representative once grouped.
-            shop_customer_id = account.customer_id
-            if account.group_id is not None:
-                flip_group = session.get(Group, account.group_id)
-                shop_customer_id = flip_group.representative_customer_id if flip_group else None
-            if shop_linked_customer_blocks_payg(session, shop_customer_id):
-                raise HTTPException(
-                    409,
-                    "این مشتری به فروشگاه (شاپ‌بات) متصل است — نمی‌توان این اکانت/گروه را payg کرد، "
-                    "چون خریدهای فروشگاه و بیلینگ مصرفی روی یک شمارنده تداخل پیدا می‌کنند.",
-                )
+            # (2026-10-26) a shop-linked customer MAY be payg: the bot shows one balance
+            # (wallet - debt) and refuses package purchases on a payg service.
             roll_usage_baseline_on_payg_entry(
                 session,
                 account,
@@ -701,15 +686,6 @@ async def update_billing(account_id: int, body: AccountBillingUpdate, session: S
         and old_billing_mode != BillingMode.payg
         and not account.group_id
     ):
-        # N1 (2026-10-20): same shop-link check as update_relationship —
-        # refuse BEFORE touching Marzban, not after, so a refused flip never
-        # mutates the remote account.
-        if shop_linked_customer_blocks_payg(session, account.customer_id):
-            raise HTTPException(
-                409,
-                "این مشتری به فروشگاه (شاپ‌بات) متصل است — نمی‌توان این اکانت را payg کرد، "
-                "چون خریدهای فروشگاه و بیلینگ مصرفی روی یک شمارنده تداخل پیدا می‌کنند.",
-            )
         try:
             marzban_user = await marzban_client.modify_user(
                 account.marzban_username,

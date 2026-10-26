@@ -488,8 +488,20 @@ def debt_paid_from_wallet(paid: int, wallet: int, debt_left: float) -> str:
     )
 
 
-def wallet_summary(balance: int) -> str:
-    return f"💰 موجودی کیف پولتان: {money(balance)}"
+def wallet_summary(balance: int, debt: float = 0, breakdown=None) -> str:
+    """ONE number (owner 2026-10-26): usage makes it negative, a top-up makes it
+    positive. Without debt this is exactly the old line."""
+    if debt <= 0.5:
+        return f"💰 موجودی کیف پولتان: {money(balance)}"
+    net = balance - int(debt)
+    lines = [
+        f"💰 کیف پول: {money(balance)}",
+        f"🧾 بدهی صورت‌حساب: {money(int(debt))}",
+        *[f"   • {row['name']}: {money(int(row['debt']))}" for row in (breakdown or [])],
+        (f"⚠️ مانده شما: منفی {money(-net)} — با شارژ، اول بدهی پرداخت می‌شود"
+         if net < 0 else f"✅ مانده شما: {money(net)}"),
+    ]
+    return "\n".join(lines)
 
 
 WALLET_EMPTY = (

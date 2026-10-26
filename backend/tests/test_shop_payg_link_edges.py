@@ -210,50 +210,20 @@ def state(cid):
     return client.get(f"/api/shop/link/{cid}").json()
 
 
+# payg customers link by claim EXACTLY like prepay ones now (2026-10-26): the first
+# message binds, nothing converts, nothing is charged, accounts stay payg.
 az, (az1,) = new_customer("Azno", [("azno_payg", P, 8, 12000.0, {})])
 r = claim(az, telegram_username="@TajikMH")
 check("C1: payg customer can hold a claim", r.status_code == 200, r.text[:160])
-check("C1: state: pending, nobody arrived yet", state(az)["bind_claim_username"] == "tajikmh" and state(az)["bind_claim_arrived_telegram_id"] is None, state(az))
-
 say(720001, username="someone_else", name="Not Azno")
-check("C2: unrelated sender -> no arrival", state(az)["bind_claim_arrived_telegram_id"] is None)
-
+check("C2: unrelated sender -> nothing happens", state(az)["status"] == "not_linked")
 say(720002, username="tajikmh", name="Tajik M")
 st = state(az)
-check("C3: arrival recorded with the sender's numeric id + name", st["bind_claim_arrived_telegram_id"] == 720002 and st["bind_claim_arrived_name"] == "Tajik M", st)
-check("C3: NOT linked, still payg, nothing charged, claim still pending", st["status"] == "not_linked" and mode_of(az1) == P and charges_for([az1]) == 0.0 and st["bind_claim_username"] == "tajikmh", st)
+check("C3: first message BINDS the payg customer", st["status"] == "linked" and st["linked_telegram_id"] == 720002, st)
+check("C3: ...account still payg, nothing charged, meter untouched", mode_of(az1) == P and charges_for([az1]) == 0.0)
+rows = client.get("/api/shop/bot/accounts", params={"telegram_id": 720002}, headers=BOT_HEADERS).json() if "BOT_HEADERS" in globals() else None
 
-say(720002, username="tajikmh", name="Tajik M")
-check("C4: same person writes again -> idempotent", state(az)["bind_claim_arrived_telegram_id"] == 720002 and mode_of(az1) == P and charges_for([az1]) == 0.0)
-
-# username changed hands: the LATEST sender shows; the operator's confirm
-# carries an explicit id, so a swap between view and click cannot redirect it.
-say(720003, username="tajikmh", name="Different Person")
-check("C5: new holder of the username replaces the arrival (operator sees the name)", state(az)["bind_claim_arrived_telegram_id"] == 720003 and state(az)["bind_claim_arrived_name"] == "Different Person")
-
-# operator confirms the id he actually saw (720002): converts + links THAT id.
-r = bind(az, 720002)
-check("C6: operator confirm with the id he saw -> 200", r.status_code == 200 and r.json().get("converted_payg_accounts") == 1, r.text[:200])
-check("C6: charged 96,000 (8 GB x 12,000), now prepay, linked to 720002", abs(charges_for([az1]) - 96000.0) < 0.01 and mode_of(az1) == Q_ and state(az)["linked_telegram_id"] == 720002, state(az))
-with Session(engine) as s:
-    left = s.exec(select(ShopBindClaim).where(ShopBindClaim.customer_id == az, ShopBindClaim.claimed_at.is_(None))).all()
-check("C6: pending claim cleared by the bind", left == [])
-
-# two customers claiming the SAME username: nothing arrives for either.
-d1c, (d1a,) = new_customer("Dup One", [("dup1", P, 1, 1000.0, {})])
-d2c, (d2a,) = new_customer("Dup Two", [("dup2", P, 1, 1000.0, {})])
-claim(d1c, telegram_username="dupuser")
-claim(d2c, telegram_username="dupuser")
-say(720010, username="dupuser", name="Dup")
-check("C7: ambiguous (two claims match) -> no arrival on either", state(d1c)["bind_claim_arrived_telegram_id"] is None and state(d2c)["bind_claim_arrived_telegram_id"] is None)
-
-# display-name claim arrives the same way.
-nm, (nm1,) = new_customer("By Name", [("byname", P, 1, 1000.0, {})])
-claim(nm, display_name="Ali Rezaei")
-say(720020, username=None, name="ali  REZAEI")
-check("C8: display-name claim arrival (normalised match)", state(nm)["bind_claim_arrived_telegram_id"] == 720020 and mode_of(nm1) == P)
-
-# GROUP payg: claim refused up front (flip the group first).
+# GROUP payg customers claim/link too (no conversion to protect any more)
 with Session(engine) as s:
     gc = Customer(name="In Payg Group")
     s.add(gc)
@@ -265,21 +235,13 @@ with Session(engine) as s:
     s.commit()
     GC = gc.id
 r = claim(GC, telegram_username="grpuser")
-check("C9: group-payg customer: claim refused (409)", r.status_code == 409, r.text[:160])
+check("C9: group-payg customer may claim too", r.status_code == 200, r.text[:160])
 
 # PREPAY customers keep the old behaviour: the first message binds at once.
 pp, (pp1,) = new_customer("Plain Prepay", [("pp_acc", Q_, 1, 1000.0, {})])
 claim(pp, telegram_username="plainuser")
 say(720030, username="plainuser", name="Plain")
 check("C10: prepay customer still auto-binds on first message", state(pp)["status"] == "linked" and state(pp)["linked_telegram_id"] == 720030, state(pp))
-
-# arrival whose id is ALREADY on another customer: allowed (multi-link) - converts once.
-tk, (tk1,) = new_customer("Taken Id", [("tk", P, 5, 1000.0, {})])
-claim(tk, telegram_username="takenuser")
-say(720030, username="takenuser", name="Plain")   # 720030 already carries Plain Prepay
-check("C11: arrival recorded", state(tk)["bind_claim_arrived_telegram_id"] == 720030)
-r = bind(tk, 720030)
-check("C11: confirm -> 200, billed 5,000, linked next to the sibling", r.status_code == 200 and abs(charges_for([tk1]) - 5000.0) < 0.01 and "Plain Prepay" in state(tk)["also_linked_customers"], r.text[:160])
 
 # E12 - a service the operator deleted from the panel must vanish from the bot
 # list (live 2026-10-26: «shop10» kept showing as 30 GB / 28 days left).
@@ -409,6 +371,87 @@ ow, (ow1,) = new_customer("Owes Much", [("owes_much", P, 5, 10000.0, {})])
 add_charge(ow, 800000.0)
 st = client.get(f"/api/shop/link/{ow}").json()
 check("M13: owed_now = posted 800,000 + pending 50,000; pending alone is 50,000", abs(st["owed_now"] - 850000.0) < 0.01 and abs(st["payg_pending_amount"] - 50000.0) < 0.01, st)
+
+# ── B: ONE balance for payg customers (owner 2026-10-26) ──────────────────
+# T1: debt 50k, wallet 0; an approved 80k top-up clears the debt FIRST, 30k stays.
+tb, (tb1,) = new_customer("Wallet B", [("wb_payg", P, 0, 1000.0, {})])
+TGB = 750001
+assert bind(tb, TGB, convert=False).status_code == 200
+add_charge(tb, 50000.0)
+with Session(engine) as s:
+    su = s.exec(select(ShopUser).where(ShopUser.telegram_id == TGB)).one()
+    t = create_topup(s, su, 80000, None)
+    t, _ = asyncio.run(approve_topup(s, t, approved_amount=80000))
+    check("T1: wallet = 30,000 after the auto debt payment", _wb(s, su.id) == 30000, _wb(s, su.id))
+check("T1: ledger debt cleared (0)", owe(tb) == 0.0, owe(tb))
+sess = client.post("/api/shop/bot/session", headers=BOT_HEADERS, json={"telegram_id": TGB}).json()
+check("T1: bot session: balance 30,000, debt 0", sess["balance"] == 30000 and sess["ledger_debt"] == 0, (sess["balance"], sess["ledger_debt"]))
+
+# T2: top-up SMALLER than the debt: all of it goes to debt, wallet stays 0 (priority = debt).
+add_charge(tb, 100000.0)
+with Session(engine) as s:
+    su = s.exec(select(ShopUser).where(ShopUser.telegram_id == TGB)).one()
+    # wallet currently 30k; spend it to 0 via the debt route first
+    t = create_topup(s, su, 20000, None)
+    t, _ = asyncio.run(approve_topup(s, t, approved_amount=20000))
+    w = _wb(s, su.id)
+check("T2: 20k top-up on 100k debt -> debt 80k + wallet unchanged-by-it (all 20k applied)", abs(owe(tb) - 80000.0) < 0.01 and w == 30000, (owe(tb), w))
+
+# T3: payg usage that is NOT yet invoiced (pending) counts as debt too, and a top-up clears it.
+pu, (pu1,) = new_customer("Pending Use", [("pu_payg", P, 5, 10000.0, {})])   # 50,000 pending, nothing posted
+TGP = 750002
+assert bind(pu, TGP, convert=False).status_code == 200
+sess = client.post("/api/shop/bot/session", headers=BOT_HEADERS, json={"telegram_id": TGP}).json()
+check("T3: session debt includes unbilled usage (50,000)", abs(sess["ledger_debt"] - 50000.0) < 0.01, sess["ledger_debt"])
+with Session(engine) as s:
+    su = s.exec(select(ShopUser).where(ShopUser.telegram_id == TGP)).one()
+    t = create_topup(s, su, 50000, None)
+    t, _ = asyncio.run(approve_topup(s, t, approved_amount=50000))
+    check("T3: top-up fully used on the debt (wallet 0)", _wb(s, su.id) == 0, _wb(s, su.id))
+check("T3: customer now owes 0", abs(owe(pu)) < 0.01, owe(pu))
+
+# T4: a package purchase on a linked PAYG service is refused and moves no money.
+with Session(engine) as s:
+    su = s.exec(select(ShopUser).where(ShopUser.telegram_id == TGB)).one()
+    before = _wb(s, su.id)
+r = client.post("/api/shop/bot/orders", headers=BOT_HEADERS, json={"telegram_id": TGB, "data_limit_gb": 10})
+check("T4: package purchase on a payg service refused (409)", r.status_code == 409, r.text[:200])
+with Session(engine) as s:
+    su = s.exec(select(ShopUser).where(ShopUser.telegram_id == TGB)).one()
+    check("T4: wallet untouched", _wb(s, su.id) == before, (before, _wb(s, su.id)))
+
+# T5: family on one Telegram: a shared top-up pays the debts oldest customer first.
+fx, _ = new_customer("Fam X", [("fx", P, 0, 1000.0, {})])
+fy, _ = new_customer("Fam Y", [("fy", P, 0, 1000.0, {})])
+TGF = 750003
+assert bind(fx, TGF, convert=False).status_code == 200 and bind(fy, TGF, convert=False).status_code == 200
+add_charge(fx, 30000.0)
+add_charge(fy, 50000.0)
+with Session(engine) as s:
+    su = s.exec(select(ShopUser).where(ShopUser.telegram_id == TGF)).one()
+    t = create_topup(s, su, 60000, None)
+    t, _ = asyncio.run(approve_topup(s, t, approved_amount=60000))
+    check("T5: wallet 0 (all 60k went to debts)", _wb(s, su.id) == 0)
+check("T5: X cleared first, Y left with 20,000", owe(fx) == 0.0 and abs(owe(fy) - 20000.0) < 0.01, (owe(fx), owe(fy)))
+
+# T6: a customer with NO debt: a top-up stays whole in the wallet (old behaviour).
+nd, _ = new_customer("No Debt", [("nd", Q_, 0, 1000.0, {})])
+TGN = 750004
+assert bind(nd, TGN, convert=False).status_code == 200
+with Session(engine) as s:
+    su = s.exec(select(ShopUser).where(ShopUser.telegram_id == TGN)).one()
+    t = create_topup(s, su, 40000, None)
+    t, _ = asyncio.run(approve_topup(s, t, approved_amount=40000))
+    check("T6: no debt -> whole 40,000 stays in the wallet", _wb(s, su.id) == 40000)
+
+# T7: an UNLINKED shop user's top-up is untouched by the debt logic.
+with Session(engine) as s:
+    su = ShopUser(telegram_id=750005)
+    s.add(su)
+    s.commit()
+    t = create_topup(s, su, 25000, None)
+    t, _ = asyncio.run(approve_topup(s, t, approved_amount=25000))
+    check("T7: unlinked user: wallet 25,000", _wb(s, su.id) == 25000)
 
 # E11 - the amount the panel shows before the click equals what is charged.
 pv, (pv1,) = new_customer("Preview Match", [("e11_payg", P, 6, 12345.0, {})])

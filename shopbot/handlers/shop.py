@@ -1159,11 +1159,11 @@ async def show_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.effective_message.reply_text(texts.generic_error(None))
         return
 
-    if not session["balance"] and not history:
+    if not session["balance"] and not history and not session.get("ledger_debt", 0) > 0:
         await _reply(update, texts.WALLET_EMPTY, session)
         return
 
-    lines = [texts.wallet_summary(session["balance"])]
+    lines = [texts.wallet_summary(session["balance"], session.get("ledger_debt", 0), session.get("debt_breakdown"))]
     if history:
         lines.append("\nآخرین تراکنش‌ها:")
         for entry in history[:10]:
@@ -1241,7 +1241,7 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         keyboard = InlineKeyboardMarkup(buttons) if buttons else None
         await update.effective_message.reply_text("\n".join(lines), reply_markup=keyboard)
 
-    await _reply(update, texts.wallet_summary(session["balance"]), session)
+    await _reply(update, texts.wallet_summary(session["balance"], session.get("ledger_debt", 0), session.get("debt_breakdown")), session)
 
 
 async def on_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

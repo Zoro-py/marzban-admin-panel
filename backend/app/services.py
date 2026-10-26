@@ -763,25 +763,6 @@ def effective_billing_mode(session: Session, account: Account, group: Optional[G
     return account.billing_mode
 
 
-def shop_linked_customer_blocks_payg(session: Session, customer_id: Optional[int]) -> bool:
-    """Would flipping this customer's billing to payg reopen the two-economies
-    hole routers/shop.py's _customer_has_payg_billing already refuses at LINK
-    time? That check only runs once, when the shop link is created — nothing
-    re-checks it when an operator later flips an already-linked customer's
-    account (or the group it belongs to) to payg. On a shop-linked customer,
-    a shop purchase debits the wallet and extends the account directly, while
-    a payg settle charges the reseller ledger from the SAME usage meter — the
-    shop payment never appears in the settle and the settle never knows the
-    service was renewed, so the customer pays twice for the same GB. Call
-    this with the customer_id the flip would apply to (the account's own, or
-    the group's representative_customer_id) right before applying any
-    prepay->payg flip, and refuse the flip if it returns True."""
-    if customer_id is None:
-        return False
-    customer = session.get(Customer, customer_id)
-    return customer is not None and customer.shop_user_id is not None
-
-
 def attributable_consumed_gb(session: Session, account: Account) -> float:
     """The slice of this account's accrued usage (used_traffic - usage_baseline)
     that NO earlier charge has already attributed, in GB — the consumed_gb a

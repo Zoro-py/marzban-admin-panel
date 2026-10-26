@@ -790,6 +790,36 @@ def linked_debt(session: Session, shop_user_id: int) -> float:
     return sum(d for _, d in linked_debt_by_customer(session, shop_user_id))
 
 
+def auto_pay_debt_from_topup(session: Session, topup: ShopTopup, amount: int) -> int:
+    """Move min(amount, total linked debt) from the just-credited top-up into
+    the ledger as credits (oldest customer first, each capped at its own debt).
+    Writes only — the caller commits. Returns the amount applied (0 = none)."""
+    from app.models import LedgerEntry, LedgerSource, LedgerType
+
+    debt = linked_debt(session, topup.shop_user_id)
+    pay = min(int(amount), int(debt))
+    if pay < 1:
+        return 0
+    parts = allocate_debt_payment(session, topup.shop_user_id, float(pay))
+    session.add(ShopWalletEntry(
+        shop_user_id=topup.shop_user_id,
+        type=ShopWalletEntryType.debt_pay,
+        amount=-pay,
+        note=f"بدهی صورت‌حساب از شارژ خودکار پرداخت شد — شارژ #{topup.id}",
+        topup_id=topup.id,
+    ))
+    for customer_id, part in parts:
+        session.add(LedgerEntry(
+            type=LedgerType.credit,
+            amount=float(part),
+            customer_id=customer_id,
+            note=f"پرداخت خودکار بدهی از شارژ کیف پول — شارژ #{topup.id}",
+            source=LedgerSource.shop,
+            created_by="system:shop-topup-debt",
+        ))
+    return pay
+
+
 def allocate_debt_payment(session: Session, shop_user_id: int, amount: float) -> list[tuple[int, float]]:
     """Split a payment over the linked customers' debts: oldest customer first,
     each capped at what they owe. Whatever exceeds the TOTAL debt (a receipt
@@ -1032,6 +1062,12 @@ async def approve_topup(
         topup_id=topup.id,
         commit=False,
     )
+    # ONE number for the customer (owner 2026-10-26: «مصرف می‌کنه منفی می‌شه،
+    # شارژ کنه مثبت»): a top-up first clears what the linked customer(s) owe on
+    # the ledger — debt has priority — and only the rest stays as wallet
+    # credit. Same transaction as the credit; the wallet debit + ledger
+    # credit(s) carry this top-up's id so the pair is auditable.
+    auto_paid = auto_pay_debt_from_topup(session, topup, amount)
     # Committed BEFORE the delivery attempt. The customer paid for credit;
     # that credit is theirs whether or not provisioning then works, and a
     # Marzban failure must never roll back money the operator confirmed

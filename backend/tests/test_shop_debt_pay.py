@@ -150,8 +150,15 @@ tid2 = r.json()["id"]
 client.post(f"/api/shop/topups/{tid2}/approve")
 with Session(engine) as s:
     from app.shop_service import wallet_balance
-    check("plain topup: wallet credited 30,000", wallet_balance(s, SU) == 30000, wallet_balance(s, SU))
-    check("plain topup: debt UNCHANGED 40,000", abs(debt_of(s, CUST) - 40000.0) < 0.01, debt_of(s, CUST))
+    # 2026-10-26 (owner): ONE balance - a plain top-up pays the debt FIRST.
+    check("plain topup: all 30,000 went to the debt, wallet 0", wallet_balance(s, SU) == 0, wallet_balance(s, SU))
+    check("plain topup: debt 40,000 -> 10,000", abs(debt_of(s, CUST) - 10000.0) < 0.01, debt_of(s, CUST))
+    # Restore the premise the sections below test (wallet 30,000 vs debt 40,000)
+    # with direct writes, so the purchase/pay-from-wallet gates stay covered.
+    from app.models import LedgerEntry, LedgerType, ShopWalletEntry, ShopWalletEntryType
+    s.add(LedgerEntry(type=LedgerType.charge, amount=30000.0, customer_id=CUST, note="test restore"))
+    s.add(ShopWalletEntry(shop_user_id=SU, type=ShopWalletEntryType.adjust, amount=30000, note="test restore"))
+    s.commit()
 
 # ---- 4) purchase affordability: spendable = wallet − debt -------------------
 # purchase()'s own gates run in order: blocked → is_open → price → wallet.
@@ -193,7 +200,7 @@ check("pay-from-wallet: debt 10,000 left", abs(res["ledger_debt"] - 10000.0) < 0
 with Session(engine) as s:
     pair_w = s.exec(select(ShopWalletEntry).where(ShopWalletEntry.shop_user_id == SU, ShopWalletEntry.type == ShopWalletEntryType.debt_pay)).all()
     pair_l = s.exec(select(LedgerEntry).where(LedgerEntry.customer_id == CUST, LedgerEntry.type == LedgerType.credit, LedgerEntry.source == LedgerSource.shop)).all()
-    check("pair: wallet row + ledger credit both exist", len(pair_w) == 1 and len(pair_l) == 2, (len(pair_w), len(pair_l)))
+    check("pair: wallet row + ledger credit both exist", len(pair_w) == 2 and len(pair_l) == 3, (len(pair_w), len(pair_l)))  # +1 pair from the AUTO debt payment of the plain top-up
     check("pair: shared ref in both notes", pair_w and any("debt-pay:shopuser" in (e.note or "") for e in pair_l))
 
 # double-tap: wallet now 0 → clean refusal, nothing posted
@@ -201,7 +208,7 @@ r = client.post("/api/shop/bot/pay-debt-from-wallet", headers=BOT_HDR, json={"te
 check("double-tap: refused (wallet empty)", r.status_code == 400, r.status_code)
 with Session(engine) as s:
     pair_l2 = s.exec(select(LedgerEntry).where(LedgerEntry.customer_id == CUST, LedgerEntry.type == LedgerType.credit, LedgerEntry.source == LedgerSource.shop)).all()
-    check("double-tap: no extra ledger credit", len(pair_l2) == 2, len(pair_l2))
+    check("double-tap: no extra ledger credit", len(pair_l2) == 3, len(pair_l2))
 
 print()
 if failures:

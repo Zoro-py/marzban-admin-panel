@@ -153,8 +153,7 @@ check("refusal names the delegate alternative", "دلیگیت" in r.json().get("
 # ---- 6. payg-billing customer refused (economy mixing) ----
 cid_payg = make_customer("Payg Person", payg=True)
 r = bind(cid_payg, 444_555_666)
-check("payg-billing customer -> 409", r.status_code == 409)
-check("payg refusal names the money systems", "payg" in r.json().get("detail", ""))
+check("payg-billing customer links like any other (2026-10-26: one balance, no conversion)", r.status_code == 200)
 
 # ---- 7. a pending invite is superseded by a direct bind ----
 cid3 = make_customer("With Pending")

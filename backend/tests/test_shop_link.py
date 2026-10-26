@@ -96,7 +96,8 @@ r = client.post("/api/shop/link-invite", json={"customer_id": rep_id})
 check("group rep refused → 409", r.status_code == 409 and "group" in r.json()["detail"].lower())
 
 r = client.post("/api/shop/link-invite", json={"customer_id": payg_id})
-check("payg customer refused → 409", r.status_code == 409 and "pay" in r.json()["detail"].lower())
+check("payg customer gets an invite like any other (2026-10-26)", r.status_code == 200)
+client.delete(f"/api/shop/link-invite/{payg_id}")
 
 r = client.post("/api/shop/link-invite", json={"customer_id": alice_id})
 check("invite alice → 200", r.status_code == 200)

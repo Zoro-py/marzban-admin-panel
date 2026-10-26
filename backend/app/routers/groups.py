@@ -22,7 +22,6 @@ from app.services import (
     roll_payg_baseline_after_reset,
     roll_usage_baseline_on_payg_entry,
     serialise_billing,
-    shop_linked_customer_blocks_payg,
     sync_marzban_fields,
 )
 
@@ -232,15 +231,6 @@ async def update_group(group_id: int, body: GroupUpdate, session: Session = Depe
         # member was still prepay must not survive into the group's new
         # payg life (same cleanup update_billing/update_relationship do).
         elif "billing_mode" in changes and old_mode == BillingMode.prepay and group.billing_mode == BillingMode.payg:
-            # N1 (2026-10-20): same shop-link re-check as the account-level
-            # flips in accounts.py — a group's shop exposure runs through
-            # its representative_customer_id, not any one member.
-            if shop_linked_customer_blocks_payg(session, group.representative_customer_id):
-                raise HTTPException(
-                    409,
-                    "مشتری نمایندهٔ این گروه به فروشگاه (شاپ‌بات) متصل است — نمی‌توان این گروه را payg کرد، "
-                    "چون خریدهای فروشگاه و بیلینگ مصرفی روی یک شمارنده تداخل پیدا می‌کنند.",
-                )
             members = session.exec(
                 select(Account).where(Account.group_id == group.id, Account.deleted_at.is_(None))
             ).all()
