@@ -1175,13 +1175,18 @@ async def show_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 def _display_service_name(row: dict) -> str | None:
     """The title a service is listed under: the customer's own nickname, else
-    the account's panel username. Linked reseller accounts never had a
+    the panel username of a linked reseller account. Those never had a
     nickname set, so every one of them was an anonymous «سرویس ۳۰ گیگ» —
     indistinguishable when a customer owns several (owner report 2026-10-25).
     «—» is the backend's placeholder for an order with no panel user yet."""
     nick = (row.get("service_name") or "").strip()
     if nick:
         return nick
+    # Only for accounts the operator created (source "linked"): a shop-bought
+    # service carries an auto-generated panel name («shop10») that means nothing
+    # to the customer — owner feedback 2026-10-26.
+    if row.get("source") != "linked":
+        return None
     username = (row.get("marzban_username") or "").strip()
     return username if username and username != "—" else None
 
