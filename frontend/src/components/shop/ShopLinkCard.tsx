@@ -338,6 +338,13 @@ export function ShopLinkCard({ customerId }: { customerId: number }) {
   const { data: state, isLoading } = useQuery({
     queryKey: ['shop-link', customerId],
     queryFn: () => shopApi.linkState(customerId),
+    // While a claim/invite is pending the bind happens in the BOT, not here:
+    // poll so the card flips to «وصل است» by itself instead of showing a stale
+    // «منتظر» (owner confusion 2026-10-26).
+    refetchInterval: (q) => {
+      const d = q.state.data
+      return d && (d.bind_claim_username || d.bind_claim_display_name || d.status === 'pending') ? 8000 : false
+    },
   })
 
   const unlink = useMutation({
