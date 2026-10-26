@@ -2197,6 +2197,12 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
             if account.id in seen_account_ids:
                 continue
             seen_account_ids.add(account.id)
+            # Gone from the panel = gone for the customer, exactly like the
+            # linked loop below (live 2026-10-26: operator-deleted «shop10» kept
+            # showing as «30 GB, 28 days left»). Added to seen first so an
+            # older order of the same deleted account is skipped too.
+            if account.status == "deleted_from_marzban" or account.deleted_at is not None:
+                continue
         rows.append(ShopBotAccountRow(
             order_id=order.id,
             source="shop",

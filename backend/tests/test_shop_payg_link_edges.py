@@ -282,6 +282,28 @@ check("C11: arrival recorded", state(tk)["bind_claim_arrived_telegram_id"] == 72
 r = bind(tk, 720030)
 check("C11: confirm with an id bound elsewhere -> 409, no charge, still payg", r.status_code == 409 and charges_for([tk1]) == 0.0 and mode_of(tk1) == P, r.text[:160])
 
+# E12 - a service the operator deleted from the panel must vanish from the bot
+# list (live 2026-10-26: «shop10» kept showing as 30 GB / 28 days left).
+from app.models import ShopOrder, ShopOrderStatus  # noqa: E402
+
+BOT_HEADERS = {"X-Shop-Bot-Key": "test-shop-key"}
+with Session(engine) as s:
+    su = ShopUser(telegram_id=730001)
+    s.add(su)
+    s.flush()
+    live = Account(marzban_username="e12_live", billing_mode=Q_, used_traffic=0, data_limit=30 * GB)
+    dead = Account(marzban_username="e12_dead", billing_mode=Q_, used_traffic=0, data_limit=30 * GB, status="deleted_from_marzban")
+    s.add(live)
+    s.add(dead)
+    s.flush()
+    for acc, n in ((live, 1), (dead, 1), (dead, 2)):  # the dead one has TWO orders (top-up)
+        s.add(ShopOrder(shop_user_id=su.id, data_limit_gb=30, duration_days=30, price=1000,
+                        status=ShopOrderStatus.delivered, account_id=acc.id, marzban_username=acc.marzban_username))
+    s.commit()
+names = [r["marzban_username"] for r in client.get("/api/shop/bot/accounts", params={"telegram_id": 730001}, headers=BOT_HEADERS).json()]
+check("E12: live shop service listed", names == ["e12_live"], names)
+check("E12: deleted-from-panel service (even with 2 orders) not listed", "e12_dead" not in names, names)
+
 # E11 - the amount the panel shows before the click equals what is charged.
 pv, (pv1,) = new_customer("Preview Match", [("e11_payg", P, 6, 12345.0, {})])
 shown = client.get(f"/api/shop/link/{pv}").json()["payg_pending_amount"]
