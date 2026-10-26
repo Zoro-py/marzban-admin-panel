@@ -1059,7 +1059,7 @@ async def start_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if debt <= 0:
         await _reply(update, texts.DEBT_NONE, session)
         return
-    text = texts.debt_status(debt, session["balance"], session.get("approval_eta_minutes", 30), session.get("debt_breakdown"))
+    text = texts.debt_status(debt, session["balance"], session.get("approval_eta_minutes", 30), session.get("debt_breakdown"), session.get("debt_exact", True))
     if session["balance"] > 0:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -1105,7 +1105,7 @@ async def on_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
         await query.edit_message_text(
-            texts.debt_status(debt, session["balance"], session.get("approval_eta_minutes", 30), session.get("debt_breakdown"))
+            texts.debt_status(debt, session["balance"], session.get("approval_eta_minutes", 30), session.get("debt_breakdown"), session.get("debt_exact", True))
             + f"\n\nپرداخت {texts.money(pay)} از کیف پول؟",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(text=texts.DEBT_PAY_WALLET_CONFIRM, callback_data="debt:wallet:yes"),
@@ -1163,7 +1163,7 @@ async def show_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _reply(update, texts.WALLET_EMPTY, session)
         return
 
-    lines = [texts.wallet_summary(session["balance"], session.get("ledger_debt", 0), session.get("debt_breakdown"))]
+    lines = [texts.wallet_summary(session["balance"], session.get("ledger_debt", 0), session.get("debt_breakdown"), session.get("debt_exact", True))]
     if history:
         lines.append("\nآخرین تراکنش‌ها:")
         for entry in history[:10]:
@@ -1241,7 +1241,7 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         keyboard = InlineKeyboardMarkup(buttons) if buttons else None
         await update.effective_message.reply_text("\n".join(lines), reply_markup=keyboard)
 
-    await _reply(update, texts.wallet_summary(session["balance"], session.get("ledger_debt", 0), session.get("debt_breakdown")), session)
+    await _reply(update, texts.wallet_summary(session["balance"], session.get("ledger_debt", 0), session.get("debt_breakdown"), session.get("debt_exact", True)), session)
 
 
 async def on_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

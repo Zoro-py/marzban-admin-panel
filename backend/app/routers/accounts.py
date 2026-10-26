@@ -30,6 +30,7 @@ from app.schemas import (
     AccountRelationshipUpdate,
     AccountResetRequest,
     AccountRow,
+    AccountingSyncedUpdate,
     AccountSettleRequest,
     BulkAccountCreateRequest,
     BulkAccountCreateResult,
@@ -624,6 +625,28 @@ async def update_relationship(account_id: int, body: AccountRelationshipUpdate, 
     except Exception:
         session.rollback()
         raise
+    return account
+
+
+@router.post("/{account_id}/accounting-synced", response_model=AccountRead)
+def set_accounting_synced(account_id: int, body: AccountingSyncedUpdate, session: Session = Depends(get_session), operator: str = Depends(require_auth)):
+    """Stamp (or clear) «this account's ledger was reconciled against real
+    Marzban usage». A label only - no money figure reads it - but the shop bot
+    warns a customer whose debt touches an unstamped account that the number
+    is approximate."""
+    account = session.get(Account, account_id)
+    if not account or account.deleted_at is not None:
+        raise HTTPException(404, "Account not found")
+    account.accounting_synced_at = utcnow() if body.synced else None
+    session.add(account)
+    session.add(AccountEvent(
+        account_id=account.id,
+        action="accounting_synced" if body.synced else "accounting_unsynced",
+        detail="Ledger reconciled with real usage" if body.synced else "Reconciliation mark removed",
+        created_by=operator,
+    ))
+    session.commit()
+    session.refresh(account)
     return account
 
 

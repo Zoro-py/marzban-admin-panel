@@ -1292,7 +1292,7 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
     settings = get_shop_settings(session)
     # Routed-books debt view (council 2026-10-24): read-only, from the ledger.
     ledger_debt = _linked_ledger_debt(session, user)
-    from app.shop_service import linked_debt_by_customer
+    from app.shop_service import linked_debt_by_customer, linked_debt_is_exact
 
     split = linked_debt_by_customer(session, user.id)
     owing = [{"name": c.name, "debt": round(d, 2)} for c, d in split if d > 0.5]
@@ -1323,6 +1323,7 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
         ledger_debt=ledger_debt,
         # whose debt it is matters as soon as ONE telegram carries several customers
         debt_breakdown=owing if len(split) > 1 else [],
+        debt_exact=linked_debt_is_exact(session, user.id),
     )
 
 

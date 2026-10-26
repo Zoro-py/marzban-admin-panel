@@ -435,7 +435,7 @@ def debt_line(debt: float) -> str:
     return f"ⓘ یادآوری: بدهی صورت‌حساب شما {money(int(debt))} است. اگر قصد پرداخت آن را دارید، از «{MENU_PAY_DEBT}» استفاده کنید."
 
 
-def debt_status(debt: float, wallet: int, eta: int, breakdown=None) -> str:
+def debt_status(debt: float, wallet: int, eta: int, breakdown=None, exact: bool = True) -> str:
     """The pay-debt landing text: what they owe, what the wallet holds, what
     they can actually spend — one place, no interpretation needed."""
     spendable = max(0, wallet - int(debt))
@@ -447,6 +447,8 @@ def debt_status(debt: float, wallet: int, eta: int, breakdown=None) -> str:
         "",
         "تا وقتی بدهی پرداخت نشود، خرید سرویس جدید ممکن نیست.",
     ]
+    if not exact:
+        lines += ["", DEBT_NOT_EXACT]
     return "\n".join(lines)
 
 
@@ -488,7 +490,13 @@ def debt_paid_from_wallet(paid: int, wallet: int, debt_left: float) -> str:
     )
 
 
-def wallet_summary(balance: int, debt: float = 0, breakdown=None) -> str:
+DEBT_NOT_EXACT = (
+    "⚠️ این عدد تقریبی است؛ حساب‌کتاب بعضی از سرویس‌ها هنوز با مصرف واقعی "
+    "تطبیق داده نشده. اگر با حساب خودتان نمی‌خواند، به پشتیبانی پیام دهید."
+)
+
+
+def wallet_summary(balance: int, debt: float = 0, breakdown=None, exact: bool = True) -> str:
     """ONE number (owner 2026-10-26): usage makes it negative, a top-up makes it
     positive. Without debt this is exactly the old line."""
     if debt <= 0.5:
@@ -501,6 +509,8 @@ def wallet_summary(balance: int, debt: float = 0, breakdown=None) -> str:
         (f"⚠️ مانده شما: منفی {money(-net)} — با شارژ، اول بدهی پرداخت می‌شود"
          if net < 0 else f"✅ مانده شما: {money(net)}"),
     ]
+    if not exact:
+        lines.append(DEBT_NOT_EXACT)
     return "\n".join(lines)
 
 

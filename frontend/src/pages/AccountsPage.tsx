@@ -17,6 +17,7 @@ import { NewAccountDialog } from '@/components/accounts/NewAccountDialog'
 import { SettleAccountButton } from '@/components/accounts/SettleAccountButton'
 import { AccountsBoard } from '@/components/accounts/AccountsBoard'
 import { AutoRenewSwitch } from '@/components/accounts/AutoRenewSwitch'
+import { AccountingSyncBadge } from '@/components/accounts/AccountingSyncBadge'
 import { useOpenAccountInspector } from '@/components/accounts/AccountInspector'
 import { EmptyState } from '@/components/EmptyState'
 import { UsageBar } from '@/components/UsageBar'
@@ -474,6 +475,7 @@ function AccountTableRow({
           <span className="flex min-w-0 flex-col leading-tight">
             <span className="flex items-center gap-1.5">
               <span className="truncate font-mono text-xs font-medium">{a.marzban_username}</span>
+              <AccountingSyncBadge accountId={a.id} username={a.marzban_username} syncedAt={a.accounting_synced_at} />
               {a.has_next_plan && (
                 <span className="inline-flex shrink-0 items-center rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                   Next ▸

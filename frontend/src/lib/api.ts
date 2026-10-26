@@ -201,6 +201,8 @@ export const accountsApi = {
     id: number,
     body: { rate_per_gb?: number | null; billing_mode?: BillingMode; clear_rate?: boolean; auto_renew_enabled?: boolean },
   ) => (await api.patch<Account>(`/api/accounts/${id}/billing`, body)).data,
+  setAccountingSynced: async (id: number, synced: boolean) =>
+    (await api.post<Account>(`/api/accounts/${id}/accounting-synced`, { synced })).data,
   adjust: async (
     id: number,
     body: { extend_days?: number; extend_gb?: number; set_expire?: number; set_data_limit_gb?: number; note?: string; bill_added_gb?: boolean },

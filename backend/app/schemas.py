@@ -177,6 +177,10 @@ class AccountRelationshipUpdate(BaseModel):
     role: Optional[AccountRole] = None
 
 
+class AccountingSyncedUpdate(BaseModel):
+    synced: bool
+
+
 class AccountBillingUpdate(BaseModel):
     rate_per_gb: Optional[float] = Field(default=None, ge=0.0)
     billing_mode: Optional[BillingMode] = None
@@ -257,6 +261,8 @@ class AccountRead(BaseModel):
     last_synced_at: Optional[datetime]
     auto_renew_enabled: bool
     created_at: datetime
+    # Set = the operator reconciled this account's ledger against real usage.
+    accounting_synced_at: Optional[datetime] = None
 
 
 class AccountEventRead(BaseModel):
@@ -868,6 +874,9 @@ class ShopBotSession(BaseModel):
     # Per-customer split of ledger_debt, ONLY when more than one linked customer
     # owes (family on one Telegram): [{"name": ..., "debt": ...}].
     debt_breakdown: list[dict] = []
+    # False = at least one account behind this debt was not reconciled, so the
+    # number is an estimate and the bot says so.
+    debt_exact: bool = True
 
     # Whether to show the trial button at all, and whether THIS customer can
     # still take it. Two separate booleans on purpose: "the shop doesn't offer

@@ -34,6 +34,7 @@ import { UsageBar } from '@/components/UsageBar'
 import { Money } from '@/components/Money'
 import { StatusDot } from '@/components/StatusDot'
 import { ShopLinkCard } from '@/components/shop/ShopLinkCard'
+import { AccountingSyncBadge } from '@/components/accounts/AccountingSyncBadge'
 import { cn, daysUntil, formatAgo, formatDate, formatToman } from '@/lib/utils'
 
 const NONE = '__none__'
@@ -128,6 +129,7 @@ function InspectorBody({ account, onClose }: { account: AccountRow; onClose: () 
             <Badge variant={account.effective_billing_mode === 'payg' ? 'warning' : 'secondary'}>
               {account.effective_billing_mode === 'payg' ? 'pay-as-you-go' : 'prepay'}
             </Badge>
+            <AccountingSyncBadge accountId={account.id} username={account.marzban_username} syncedAt={account.accounting_synced_at} />
             {!account.auto_renew_enabled && <Badge variant="outline">auto-renew off</Badge>}
             {account.created_via && (
               <Badge variant="outline" title={account.created_via_detail ?? undefined}>

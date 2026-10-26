@@ -87,6 +87,8 @@ export interface Account {
   // account (or a whole bulk-created batch) from ever being auto-renewed.
   auto_renew_enabled: boolean
   created_at: string
+  // Set = ledger reconciled against Marzban's real usage (operator stamp).
+  accounting_synced_at: string | null
   // The customer's own nickname for this service (set via the shop bot).
   service_name: string | null
 }

@@ -786,6 +786,25 @@ def linked_debt_by_customer(session: Session, shop_user_id: int) -> list[tuple[C
     return [(c, max(0.0, book.customer_net(c))) for c in linked_customers(session, shop_user_id)]
 
 
+def linked_debt_is_exact(session: Session, shop_user_id: int) -> bool:
+    """True only when EVERY account behind the linked customers' debt (their own
+    accounts + members of groups they represent) carries the operator's
+    «ledger reconciled» stamp. One unstamped account makes the whole figure an
+    estimate, and the bot tells the customer so."""
+    from app.models import Account, Group
+
+    for customer in linked_customers(session, shop_user_id):
+        group_ids = [g.id for g in session.exec(
+            select(Group).where(Group.representative_customer_id == customer.id)).all()]
+        cond = Account.customer_id == customer.id
+        if group_ids:
+            cond = cond | Account.group_id.in_(group_ids)
+        stmt = select(Account).where(Account.deleted_at.is_(None)).where(cond)
+        if any(a.accounting_synced_at is None for a in session.exec(stmt).all()):
+            return False
+    return True
+
+
 def linked_debt(session: Session, shop_user_id: int) -> float:
     return sum(d for _, d in linked_debt_by_customer(session, shop_user_id))
 

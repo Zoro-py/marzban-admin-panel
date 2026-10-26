@@ -141,6 +141,14 @@ class Account(SQLModel, table=True):
     # together with debt_since.
     debt_reminder_sent_at: Optional[datetime] = None
 
+    # Owner 2026-10-27: the panel's numbers were often not exact (rates typed
+    # wrong, payments undated, usage never billed). This stamps an account
+    # whose ledger the operator has RECONCILED against Marzban's real usage.
+    # NULL = «not verified»: any customer touching such an account is shown to
+    # the bot customer with an «approximate» warning. Pure label - no money
+    # computation reads it.
+    accounting_synced_at: Optional[datetime] = None
+
     # Retail payg's own one-shot heads-up before a suspension that CAN
     # happen on the very next daily meter tick (payg has no grace window —
     # owner decision 2026-10-22, distinct from the auto-renew debt above,
