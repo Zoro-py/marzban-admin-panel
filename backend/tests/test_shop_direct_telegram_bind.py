@@ -128,11 +128,15 @@ check("same-pair rebind is 200 (idempotent)", r.status_code == 200)
 with Session(engine) as session:
     check("still exactly one ShopUser", len(session.exec(select(ShopUser)).all()) == 1)
 
-# ---- 3. another customer binding the SAME telegram -> 409 naming the holder ----
+# ---- 3. another customer binding the SAME telegram -> allowed (owner 2026-10-26:
+# one person may hold a whole family's services); then unlinked again so section 4's
+# premise (cid2 free) still holds ----
 cid2 = make_customer("Sara Ahmadi")
 r = bind(cid2, 111_222_333)
-check("telegram already bound elsewhere -> 409", r.status_code == 409)
-check("409 names the holding customer", "Ali Rezaei" in r.json().get("detail", ""))
+check("telegram already on another customer -> 200 (multi-link)", r.status_code == 200)
+with Session(engine) as session:
+    check("both customers now share that telegram", len([c for c in session.exec(select(Customer)).all() if c.shop_user_id is not None and c.id in (cid, cid2)]) == 2)
+client.delete(f"/api/shop/link/{cid2}")
 
 # ---- 4. customer already bound -> binding a DIFFERENT telegram -> 409 with unlink hint ----
 r = bind(cid2, 999_888_777)

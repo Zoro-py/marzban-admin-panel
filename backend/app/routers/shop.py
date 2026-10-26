@@ -677,12 +677,9 @@ def _linked_ledger_debt(session: Session, shop_user: ShopUser) -> float:
     READ-ONLY by contract (council 2026-24, routed books): the wallet's
     affordability and this debt meet only in DISPLAY and in the customer's
     explicit payment choices — never as a bookkeeping transfer."""
-    customer = _linked_customer(session, shop_user)
-    if customer is None:
-        return 0.0
-    from app.services import MoneyBook
+    from app.shop_service import linked_debt
 
-    return round(MoneyBook(session).customer_net(customer), 2)
+    return round(linked_debt(session, shop_user.id), 2)
 
 
 def _linked_account_count(session: Session, customer: Customer) -> int:
@@ -798,14 +795,20 @@ def read_shop_link(customer_id: int, session: Session = Depends(get_session)):
         from app.services import MoneyBook
 
         standalone, group_names = _payg_partition(session, customer)
-        if not standalone and not group_names:
-            return {"has_payg": False, "payg_pending_amount": 0.0, "payg_group_names": []}
         book = MoneyBook(session)
+        # The customer's WHOLE debt (posted + not-yet-invoiced) - the figure the
+        # panel's «Owes now» shows - next to what the conversion bills this
+        # click. Showing only the latter made a 949k debt read as 143k
+        # (owner report 2026-10-26).
+        owed_now = round(book.customer_net(customer), 2)
+        if not standalone and not group_names:
+            return {"has_payg": False, "payg_pending_amount": 0.0, "payg_group_names": [], "owed_now": owed_now}
         pending = round(sum(book.account_pending(a) for a in standalone), 2)
         return {
             "has_payg": True,
             "payg_pending_amount": pending,
             "payg_group_names": group_names,
+            "owed_now": owed_now,
         }
 
     if customer.shop_user_id is not None:
@@ -815,6 +818,15 @@ def read_shop_link(customer_id: int, session: Session = Depends(get_session)):
             customer_name=customer.name,
             status="linked",
             linked_telegram_id=shop_user.telegram_id if shop_user else None,
+            linked_telegram_username=shop_user.telegram_username if shop_user else None,
+            linked_display_name=shop_user.display_name if shop_user else None,
+            # Other customers riding on the same Telegram (family bought by one person).
+            also_linked_customers=[
+                c.name for c in session.exec(
+                    select(Customer).where(Customer.shop_user_id == customer.shop_user_id, Customer.id != customer.id)
+                    .order_by(Customer.id)
+                ).all()
+            ],
             linked_at=customer.shop_link_linked_at,
             accounts_linked=_linked_account_count(session, customer),
             **_claim_kwargs(),
@@ -879,14 +891,6 @@ def create_bind_claim(body: ShopBindClaimRequest, session: Session = Depends(get
     # steps are never triggered by a bot message). Council 2026-10-25.
     if customer.shop_user_id is not None:
         raise HTTPException(409, "این مشتری از قبل به تلگرام وصل است — اول جدا کنید (unlink)، بعد ادعای جدید بسازید.")
-    if username is not None:
-        taken = session.exec(
-            select(Customer).join(ShopUser, ShopUser.id == Customer.shop_user_id).where(
-                ShopUser.telegram_username == username, Customer.id != customer.id
-            )
-        ).first() if username else None
-        if taken is not None:
-            raise HTTPException(409, f"این @username از قبل به مشتریِ دیگری وصل است ({taken.name}).")
     # One PENDING claim per customer — a corrected retry replaces the old
     # one without needing a discard first.
     for old_claim in session.exec(
@@ -1019,19 +1023,6 @@ async def bind_shop_customer_telegram(
             f"این مشتری از قبل به تلگرامِ دیگری وصل است ({bound}) — اول با "
             f"DELETE /api/shop/link/{customer.id} جدا کنید، بعد دوباره ببندید.",
         )
-    if existing_shop_user is not None:
-        early_collision = session.exec(
-            select(Customer).where(
-                Customer.shop_user_id == existing_shop_user.id,
-                Customer.id != customer.id,
-            )
-        ).first()
-        if early_collision is not None:
-            raise HTTPException(
-                409,
-                f"این آیدی تلگرام از قبل به مشتریِ دیگری وصل است ({early_collision.name}) — "
-                "اول آن را جدا کنید؛ یک تلگرام فقط سرویس‌های یک مشتری را می‌بیند.",
-            )
     converted_payg_accounts = 0
     settled_amount = 0.0
     payg_standalone, payg_groups = _payg_partition(session, customer)
@@ -1116,19 +1107,8 @@ async def bind_shop_customer_telegram(
             f"DELETE /api/shop/link/{customer.id} جدا کنید، بعد دوباره ببندید.",
         )
 
-    collision = session.exec(
-        select(Customer).where(
-            Customer.shop_user_id == shop_user.id,
-            Customer.id != customer.id,
-        )
-    ).first()
-    if collision is not None:
-        raise HTTPException(
-            409,
-            f"این آیدی تلگرام از قبل به مشتریِ دیگری وصل است ({collision.name}) — "
-            "اول آن را جدا کنید؛ یک تلگرام فقط سرویس‌های یک مشتری را می‌بیند.",
-        )
-
+    # One Telegram account MAY carry several customers (owner 2026-10-26: one
+    # person buys for the whole family) - no «id already linked elsewhere» refusal.
     customer.shop_user_id = shop_user.id
     customer.shop_link_linked_at = utcnow()
     # A pending invite is superseded by a direct bind: its token dies with
@@ -1300,12 +1280,6 @@ def _try_complete_bind_claim(session: Session, shop_user: ShopUser) -> None:
                 if c.customer_id == customer.id:
                     session.delete(c)
             session.commit()
-            return
-        collision = session.exec(
-            select(Customer).where(Customer.shop_user_id == shop_user.id, Customer.id != customer.id)
-        ).first()
-        if collision is not None:
-            logger.warning("bind-claim for customer %s: shop user already bound to %s", customer.id, collision.name)
             return
         customer.shop_user_id = shop_user.id
         customer.shop_link_linked_at = utcnow()
@@ -1951,15 +1925,14 @@ async def bot_pay_debt_from_wallet(
     from app.models import Customer, LedgerEntry, LedgerSource, LedgerType
     from app.services import billing_lock
 
-    customer = _linked_customer(session, user)
-    if customer is None:
+    from app.shop_service import allocate_debt_payment, linked_customers, linked_debt
+
+    if not linked_customers(session, user.id):
         raise HTTPException(400, "این حساب بدهیِ صورت‌حسابی ندارد (به مشتری وصل نیست).")
 
     async with billing_lock:
-        from app.services import MoneyBook
-
         wallet = wallet_balance(session, user.id)
-        debt = max(0.0, MoneyBook(session).customer_net(customer))
+        debt = linked_debt(session, user.id)
         pay = min(body.amount if body.amount is not None else wallet, wallet, int(debt))
         if wallet <= 0:
             raise HTTPException(400, "کیف پولتان خالی است — برای پرداخت بدهی رسید بفرستید (گزینهٔ «پرداخت بدهی»).")
@@ -1975,18 +1948,21 @@ async def bot_pay_debt_from_wallet(
             amount=-pay,
             note=f"پرداخت بدهی صورت‌حساب — {ref}",
         ))
-        session.add(LedgerEntry(
-            type=LedgerType.credit,
-            amount=float(pay),
-            customer_id=customer.id,
-            note=f"پرداخت بدهی از کیف پول فروشگاه — {ref}",
-            source=LedgerSource.shop,
-            created_by="system:shop-debt-pay",
-        ))
+        # pay <= total debt, so the split never exceeds any one customer's debt
+        # (allocate_debt_payment: oldest customer first, each capped at what they owe).
+        for customer_id, part in allocate_debt_payment(session, user.id, float(pay)):
+            session.add(LedgerEntry(
+                type=LedgerType.credit,
+                amount=float(part),
+                customer_id=customer_id,
+                note=f"پرداخت بدهی از کیف پول فروشگاه — {ref}",
+                source=LedgerSource.shop,
+                created_by="system:shop-debt-pay",
+            ))
         session.commit()
 
     wallet_after = wallet_balance(session, user.id)
-    debt_after = max(0.0, MoneyBook(session).customer_net(customer))
+    debt_after = linked_debt(session, user.id)
     return ShopBotPayDebtResult(paid=pay, wallet_balance=wallet_after, ledger_debt=round(debt_after, 2))
 
 
@@ -2131,21 +2107,8 @@ def bot_claim_link(body: ShopBotClaimLinkRequest, session: Session = Depends(get
             "ask the operator to unlink it first",
         )
 
-    # One Telegram account carries exactly one customer's services: a second
-    # claim would stack two strangers' accounts in one «سرویس‌های من» list.
-    collision = session.exec(
-        select(Customer).where(
-            Customer.shop_user_id == shop_user.id,
-            Customer.id != customer.id,
-        )
-    ).first()
-    if collision is not None:
-        raise HTTPException(
-            409,
-            "This Telegram account is already linked to another customer "
-            f"({collision.name})",
-        )
-
+    # One Telegram account MAY carry several customers (owner 2026-10-26: one
+    # person buys for the whole family) - no «id already linked elsewhere» refusal.
     customer.shop_user_id = shop_user.id
     customer.shop_link_linked_at = utcnow()
     customer.shop_link_token = None
@@ -2218,11 +2181,15 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
             created_at=order.created_at,
         ))
 
-    customer = session.exec(select(Customer).where(Customer.shop_user_id == user.id)).first()
-    if customer is not None:
+    # EVERY customer linked to this Telegram (one person may hold the whole
+    # family's services - owner 2026-10-26), their accounts merged.
+    from app.shop_service import linked_customers
+
+    customer_ids = [c.id for c in linked_customers(session, user.id)]
+    if customer_ids:
         linked = session.exec(
             select(Account)
-            .where(Account.customer_id == customer.id)
+            .where(Account.customer_id.in_(customer_ids))
             .order_by(Account.created_at.desc(), Account.id.desc())
         ).all()
         for account in linked:
@@ -2272,9 +2239,10 @@ async def bot_rename_account(account_id: int, body: ShopBotServiceNameRequest,
     for order in orders:
         if order.account_id:
             visible_ids.add(order.account_id)
-    customer = session.exec(select(Customer).where(Customer.shop_user_id == user.id)).first()
-    if customer is not None:
-        for acc in session.exec(select(Account.id).where(Account.customer_id == customer.id)).all():
+    from app.shop_service import linked_customers
+
+    for linked_customer in linked_customers(session, user.id):
+        for acc in session.exec(select(Account.id).where(Account.customer_id == linked_customer.id)).all():
             visible_ids.add(acc if isinstance(acc, int) else acc[0])
 
     if account_id not in visible_ids:

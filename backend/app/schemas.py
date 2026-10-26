@@ -1095,6 +1095,11 @@ class ShopLinkState(BaseModel):
     # convertible here (flipping a group reprices every member — a decision
     # the operator makes in the group's own settings, not inside a bind).
     payg_group_names: list[str] = []
+    # The customer's whole debt now (posted + not yet invoiced) - what «Owes now» shows.
+    owed_now: float = 0.0
+    linked_telegram_username: Optional[str] = None
+    linked_display_name: Optional[str] = None
+    also_linked_customers: list[str] = []
     # The operator's pending bind-by-identity claim (2026-10-24): what they
     # typed instead of a numeric telegram id, waiting for the customer's
     # first message to the bot to complete the bind. NULL = no pending claim.

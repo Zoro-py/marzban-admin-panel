@@ -141,6 +141,7 @@ function NotLinkedBody({
   customerId,
   hasPayg,
   paygPendingAmount,
+  owedNow,
   paygGroupNames,
   claimArrivedId,
   claimArrivedName,
@@ -150,6 +151,7 @@ function NotLinkedBody({
   customerId: number
   hasPayg: boolean
   paygPendingAmount: number
+  owedNow: number
   paygGroupNames: string[]
   claimArrivedId: number | null
   claimArrivedName: string | null
@@ -238,7 +240,7 @@ function NotLinkedBody({
     if (
       window.confirm(
         `تسویه + تبدیل + اتصالِ ${customerName}؟\n\n` +
-          `مصرفِ ماندهٔ اکانت‌های مصرفی‌اش همین حالا بیل و ثبت می‌شود (≈ ${paygPendingAmount.toLocaleString('en-US')} تومان بدهی می‌شود)، ` +
+          `مصرفِ ماندهٔ اکانت‌های مصرفی‌اش همین حالا بیل و ثبت می‌شود (≈ ${paygPendingAmount.toLocaleString('en-US')} تومان به بدهی اضافه می‌شود؛ کل بدهی بعد از آن ≈ ${Math.max(owedNow, paygPendingAmount).toLocaleString('en-US')} تومان)، ` +
           `اکانت‌ها به پکیجی (prepay) تبدیل می‌شوند و بعد به آیدی ${who} وصل می‌شوند.\n` +
           `برگشتِ به مصرفی بعد از اتصال ممکن نیست (تداخلِ دو نظامِ پولی).`,
       )
@@ -275,8 +277,15 @@ function NotLinkedBody({
           <p className="text-xs">
             <span className="font-medium text-warning">این مشتری بیلینگ مصرفی (payg) دارد.</span>{' '}
             برای اتصال، یک کلیک: مصرفِ مانده بیل و ثبت می‌شود (≈{' '}
-            <span className="font-medium tabular-nums">{paygPendingAmount.toLocaleString('en-US')} تومان</span> بدهی)،
+            <span className="font-medium tabular-nums">{paygPendingAmount.toLocaleString('en-US')} تومان</span> همین مصرفِ ثبت‌نشده)،
             اکانت‌ها به پکیچی تبدیل و بعد وصل می‌شوند. برگشتِ به مصرفی بعد از اتصال بسته است.
+            {owedNow > paygPendingAmount + 0.5 && (
+              <>
+                {' '}
+                <span className="font-medium">کل بدهیِ فعلیِ مشتری: <span className="tabular-nums">{owedNow.toLocaleString('en-US')} تومان</span></span>
+                {' '}(شامل {(owedNow - paygPendingAmount).toLocaleString('en-US')} تومان که قبلاً ثبت شده) — مشتری باید همهٔ این مبلغ را تسویه کند.
+              </>
+            )}
           </p>
           {convertId !== null ? (
             <div className="flex flex-col gap-1.5">
@@ -355,6 +364,9 @@ export function ShopLinkCard({ customerId }: { customerId: number }) {
             <ShieldCheck className="h-3 w-3" /> وصل است
           </Badge>
         )}
+        {state?.status === 'not_linked' && (
+          <Badge variant="outline">به هیچ آیدی وصل نیست</Badge>
+        )}
         {state?.status === 'pending' && (
           <Badge variant="secondary">
             <Clock className="h-3 w-3" /> دعوت معلق
@@ -370,6 +382,7 @@ export function ShopLinkCard({ customerId }: { customerId: number }) {
           customerId={state.customer_id}
           hasPayg={state.has_payg}
           paygPendingAmount={state.payg_pending_amount}
+          owedNow={state.owed_now}
           paygGroupNames={state.payg_group_names}
           claimArrivedId={state.bind_claim_arrived_telegram_id}
           claimArrivedName={state.bind_claim_arrived_name}
@@ -383,8 +396,17 @@ export function ShopLinkCard({ customerId }: { customerId: number }) {
         <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
           <p className="text-xs text-muted-foreground">
             وصل از {formatDate(state.linked_at)} — آیدی تلگرام{' '}
-            <span className="font-mono tabular-nums" dir="ltr">{state.linked_telegram_id}</span>، {state.accounts_linked}{' '}
-            سرویس در بات دیده می‌شود.
+            <span className="font-mono tabular-nums" dir="ltr">{state.linked_telegram_id}</span>
+            {state.linked_display_name || state.linked_telegram_username ? (
+              <>
+                {' '}(<span className="font-medium text-foreground">{state.linked_display_name ?? '—'}</span>
+                {state.linked_telegram_username ? <span dir="ltr"> @{state.linked_telegram_username}</span> : null})
+              </>
+            ) : null}
+            ، {state.accounts_linked} سرویس در بات دیده می‌شود.
+            {state.also_linked_customers.length > 0 && (
+              <> همین آیدی به مشتری‌های دیگر هم وصل است: <span className="font-medium text-foreground">{state.also_linked_customers.join('، ')}</span>.</>
+            )}
           </p>
           <Button
             size="sm"

@@ -284,15 +284,7 @@ async def purchase(session: Session, shop_user: ShopUser, data_limit_gb: float,
         from app.services import MoneyBook
         from app.models import Customer as _C
 
-        _cust = None
-        if shop_user.customer_id is not None:
-            _cust = session.get(_C, shop_user.customer_id)
-        if _cust is None or _cust.shop_user_id != shop_user.id:
-            _cust = session.exec(
-                select(_C).where(_C.shop_user_id == shop_user.id)
-            ).first()
-        if _cust is not None:
-            debt = max(0.0, MoneyBook(session).customer_net(_cust))
+        debt = linked_debt(session, shop_user.id)
         spendable = balance - int(debt)
         if spendable < price:
             if debt > 0:
@@ -775,6 +767,53 @@ def _generate_reference_code(session: Session) -> str:
     return f"R{secrets.token_hex(3).upper()}"
 
 
+def linked_customers(session: Session, shop_user_id: int) -> list[Customer]:
+    """EVERY customer linked to this shop user, oldest first. One Telegram may
+    carry several customers (owner 2026-10-26: one person buys for the whole
+    family), so nothing may assume «the» linked customer any more."""
+    return list(session.exec(
+        select(Customer).where(Customer.shop_user_id == shop_user_id).order_by(Customer.id)
+    ).all())
+
+
+def linked_debt_by_customer(session: Session, shop_user_id: int) -> list[tuple[Customer, float]]:
+    """(customer, what they owe now) for each linked customer, oldest first.
+    A credit balance on one customer never offsets another customer's debt -
+    they are different payers' books - so each is floored at 0 separately."""
+    from app.services import MoneyBook
+
+    book = MoneyBook(session)
+    return [(c, max(0.0, book.customer_net(c))) for c in linked_customers(session, shop_user_id)]
+
+
+def linked_debt(session: Session, shop_user_id: int) -> float:
+    return sum(d for _, d in linked_debt_by_customer(session, shop_user_id))
+
+
+def allocate_debt_payment(session: Session, shop_user_id: int, amount: float) -> list[tuple[int, float]]:
+    """Split a payment over the linked customers' debts: oldest customer first,
+    each capped at what they owe. Whatever exceeds the TOTAL debt (a receipt
+    for more than owed) goes to the first customer as a plain credit - the
+    pre-multi-link behaviour (the full amount was always credited), so no
+    money is ever dropped. Returns [(customer_id, credited_amount)], amounts > 0."""
+    rows = linked_debt_by_customer(session, shop_user_id)
+    if not rows:
+        return []
+    left = float(amount)
+    out: list[tuple[int, float]] = []
+    for cust, debt in rows:
+        take = min(left, debt)
+        if take > 0:
+            out.append((cust.id, take))
+            left -= take
+    if left > 0:
+        if out and out[0][0] == rows[0][0].id:
+            out[0] = (out[0][0], out[0][1] + left)
+        else:
+            out.insert(0, (rows[0][0].id, left))
+    return out
+
+
 def _shop_user_linked_customer_id(session: Session, shop_user: ShopUser) -> Optional[int]:
     """Two-way link resolution (see routers/shop.py::_linked_customer): the
     live link is Customer.shop_user_id; ShopUser.customer_id is a
@@ -965,20 +1004,21 @@ async def approve_topup(
         # is never touched: no transfer ever happens between the two
         # systems, this row is simply routed to the books it belongs to.
         shop_user = session.get(ShopUser, topup.shop_user_id)
-        customer_id = _shop_user_linked_customer_id(session, shop_user) if shop_user else None
-        if customer_id is None:
+        parts = allocate_debt_payment(session, shop_user.id, float(amount)) if shop_user else []
+        if not parts:
             raise ShopError("This receipt was sent as a debt payment but the sender is not linked to a customer.")
         from app.models import Customer, LedgerEntry, LedgerSource, LedgerType
 
-        session.add(LedgerEntry(
-            type=LedgerType.credit,
-            amount=float(amount),
-            customer_id=customer_id,
-            note=f"پرداخت بدهی از بات فروش — رسید #{topup.id}"
-                 + (f" (کد {topup.reference_code})" if topup.reference_code else ""),
-            source=LedgerSource.shop,
-            created_by=f"system:shop-debt-pay",
-        ))
+        for customer_id, part in parts:
+            session.add(LedgerEntry(
+                type=LedgerType.credit,
+                amount=float(part),
+                customer_id=customer_id,
+                note=f"پرداخت بدهی از بات فروش — رسید #{topup.id}"
+                     + (f" (کد {topup.reference_code})" if topup.reference_code else ""),
+                source=LedgerSource.shop,
+                created_by=f"system:shop-debt-pay",
+            ))
         session.commit()
         session.refresh(topup)
         return topup, None
@@ -1643,14 +1683,12 @@ def renewable_account(session: Session, shop_user_id: int) -> Optional[Account]:
             continue
         return account
 
-    customer = session.exec(
-        select(Customer).where(Customer.shop_user_id == shop_user_id)
-    ).first()
-    if customer is None:
+    customer_ids = [c.id for c in linked_customers(session, shop_user_id)]
+    if not customer_ids:
         return None
     linked = session.exec(
         select(Account)
-        .where(Account.customer_id == customer.id)
+        .where(Account.customer_id.in_(customer_ids))
         .order_by(Account.created_at.desc(), Account.id.desc())
     ).all()
     for account in linked:

@@ -159,9 +159,15 @@ with Session(engine) as session:
     bob_id = bob.id
 r = client.post("/api/shop/link-invite", json={"customer_id": bob_id}).json()
 bob_token = r["invite_url"].split("shoplnk_", 1)[1]
-# The telegram that already carries Alice must not take Bob too.
+# The telegram that already carries Alice MAY take Bob too (owner 2026-10-26: one
+# person buys for the family) - the invite is consumed like any other claim.
 r = client.post("/api/shop/bot/claim-link", json={"token": bob_token, "telegram_id": 777001}, headers=BOT_HEADERS)
-check("telegram already bound to alice refuses bob → 409", r.status_code == 409 and "another customer" in r.json()["detail"])
+check("telegram already on alice also takes bob → 200 (multi-link)", r.status_code == 200)
+with Session(engine) as session:
+    bob_row = session.get(Customer, bob_id)
+    bob_row.shop_user_id = None  # restore the single-link premise of the checks below
+    session.add(bob_row)
+    session.commit()
 
 # ── renewal primitives on the linked customer ─────────────────────────────
 with Session(engine) as session:

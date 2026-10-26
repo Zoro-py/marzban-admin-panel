@@ -782,6 +782,11 @@ export interface ShopLinkState {
   has_payg: boolean
   payg_pending_amount: number
   payg_group_names: string[]
+  // The customer's whole debt now (posted + not yet invoiced).
+  owed_now: number
+  linked_telegram_username: string | null
+  linked_display_name: string | null
+  also_linked_customers: string[]
 }
 
 // Response of POST /api/shop/link-invite (mirrors schemas.ShopLinkInviteRead —
