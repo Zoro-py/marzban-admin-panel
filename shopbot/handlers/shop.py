@@ -1059,7 +1059,7 @@ async def start_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if debt <= 0:
         await _reply(update, texts.DEBT_NONE, session)
         return
-    text = texts.debt_status(debt, session["balance"], session.get("approval_eta_minutes", 30))
+    text = texts.debt_status(debt, session["balance"], session.get("approval_eta_minutes", 30), session.get("debt_breakdown"))
     if session["balance"] > 0:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -1072,6 +1072,9 @@ async def start_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         ])
         await update.effective_message.reply_text(text, reply_markup=keyboard)
         return
+    # Empty wallet: the status lines used to be skipped, so the customer never
+    # saw the figure as a headline (owner feedback 2026-10-26).
+    await update.effective_message.reply_text(text)
     await _start_debt_receipt(update, context, session, debt)
 
 
@@ -1080,6 +1083,7 @@ async def _start_debt_receipt(update, context, session, debt) -> None:
     context.user_data[_PENDING_FOR_DEBT] = True
     await update.effective_message.reply_text(
         f"چند تومان می‌خواهید از بدهیِ {texts.money(int(debt))} بپردازید؟"
+        f"\nبرای پرداخت کامل، همین عدد را بفرستید: {int(debt)}"
         f"\n(حداقل ۱٬۰۰۰ — حداکثر {texts.money(session['max_topup'])})",
         reply_markup=ReplyKeyboardMarkup([[KeyboardButton(texts.CANCEL)]], resize_keyboard=True),
     )
@@ -1101,7 +1105,7 @@ async def on_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
         await query.edit_message_text(
-            texts.debt_status(debt, session["balance"], session.get("approval_eta_minutes", 30))
+            texts.debt_status(debt, session["balance"], session.get("approval_eta_minutes", 30), session.get("debt_breakdown"))
             + f"\n\nپرداخت {texts.money(pay)} از کیف پول؟",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton(text=texts.DEBT_PAY_WALLET_CONFIRM, callback_data="debt:wallet:yes"),

@@ -1326,6 +1326,9 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
     settings = get_shop_settings(session)
     # Routed-books debt view (council 2026-10-24): read-only, from the ledger.
     ledger_debt = _linked_ledger_debt(session, user)
+    from app.shop_service import linked_debt_by_customer
+
+    owing = [{"name": c.name, "debt": round(d, 2)} for c, d in linked_debt_by_customer(session, user.id) if d > 0.5]
     return ShopBotSession(
         shop_user_id=user.id,
         is_blocked=user.is_blocked,
@@ -1351,6 +1354,7 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
         payg_enabled=bool(settings.payg_enabled and settings.payg_rate_per_gb),
         payg_rate_per_gb=settings.payg_rate_per_gb or 0,
         ledger_debt=ledger_debt,
+        debt_breakdown=owing if len(owing) > 1 else [],
     )
 
 

@@ -865,6 +865,9 @@ class ShopBotSession(BaseModel):
     # nothing about the wallet ever writes it and vice versa (council
     # 2026-10-24 — routed books, no transfers).
     ledger_debt: float = 0.0
+    # Per-customer split of ledger_debt, ONLY when more than one linked customer
+    # owes (family on one Telegram): [{"name": ..., "debt": ...}].
+    debt_breakdown: list[dict] = []
 
     # Whether to show the trial button at all, and whether THIS customer can
     # still take it. Two separate booleans on purpose: "the shop doesn't offer

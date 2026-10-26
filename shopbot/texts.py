@@ -435,12 +435,13 @@ def debt_line(debt: float) -> str:
     return f"ⓘ یادآوری: بدهی صورت‌حساب شما {money(int(debt))} است. اگر قصد پرداخت آن را دارید، از «{MENU_PAY_DEBT}» استفاده کنید."
 
 
-def debt_status(debt: float, wallet: int, eta: int) -> str:
+def debt_status(debt: float, wallet: int, eta: int, breakdown=None) -> str:
     """The pay-debt landing text: what they owe, what the wallet holds, what
     they can actually spend — one place, no interpretation needed."""
     spendable = max(0, wallet - int(debt))
     lines = [
         f"بدهی صورت‌حساب شما: {money(int(debt))}",
+        *[f"  • {row['name']}: {money(int(row['debt']))}" for row in (breakdown or [])],
         f"موجودی کیف پول: {money(wallet)}",
         f"قابل خرید (کیف پول منهای بدهی): {money(spendable)}",
         "",
