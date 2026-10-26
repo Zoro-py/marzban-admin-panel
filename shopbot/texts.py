@@ -441,7 +441,7 @@ def debt_status(debt: float, wallet: int, eta: int, breakdown=None, exact: bool 
     spendable = max(0, wallet - int(debt))
     lines = [
         f"بدهی صورت‌حساب شما: {money(int(debt))}",
-        *[f"  • {row['name']}: {money(int(row['debt']))}" for row in (breakdown or [])],
+        *[debt_source_line(row) for row in (breakdown or [])],
         f"موجودی کیف پول: {money(wallet)}",
         f"قابل خرید (کیف پول منهای بدهی): {money(spendable)}",
         "",
@@ -490,6 +490,14 @@ def debt_paid_from_wallet(paid: int, wallet: int, debt_left: float) -> str:
     )
 
 
+def debt_source_line(row: dict) -> str:
+    """One «where this debt comes from» row; a negative amount is a payment."""
+    amount = int(row["debt"])
+    shown = money(amount) if amount >= 0 else f"منفی {money(-amount)}"
+    mark = "" if row.get("exact", True) else " (تقریبی)"
+    return f"   • {row['name']}: {shown}{mark}"
+
+
 DEBT_NOT_EXACT = (
     "⚠️ این عدد تقریبی است؛ حساب‌کتاب بعضی از سرویس‌ها هنوز با مصرف واقعی "
     "تطبیق داده نشده. اگر با حساب خودتان نمی‌خواند، به پشتیبانی پیام دهید."
@@ -505,7 +513,7 @@ def wallet_summary(balance: int, debt: float = 0, breakdown=None, exact: bool = 
     lines = [
         f"💰 کیف پول: {money(balance)}",
         f"🧾 بدهی صورت‌حساب: {money(int(debt))}",
-        *[f"   • {row['name']}: {money(int(row['debt']))}" for row in (breakdown or [])],
+        *[debt_source_line(row) for row in (breakdown or [])],
         (f"⚠️ مانده شما: منفی {money(-net)} — با شارژ، اول بدهی پرداخت می‌شود"
          if net < 0 else f"✅ مانده شما: {money(net)}"),
     ]

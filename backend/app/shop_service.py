@@ -786,6 +786,47 @@ def linked_debt_by_customer(session: Session, shop_user_id: int) -> list[tuple[C
     return [(c, max(0.0, book.customer_net(c))) for c in linked_customers(session, shop_user_id)]
 
 
+def linked_debt_lines(session: Session, shop_user_id: int) -> list[dict]:
+    """WHERE the debt comes from (owner 2026-10-27): one row per account behind
+    each owing customer's number - their own accounts plus the members of any
+    group they represent - and one signed «payments/adjustments» row for what
+    is not tied to an account (group-level payments). The rows add up exactly
+    to the customer's debt. `exact` is False for an account that is not
+    reconciled yet. With several customers on one Telegram each row carries
+    the customer's name too."""
+    from app.services import MoneyBook
+
+    book = MoneyBook(session)
+    customers = linked_customers(session, shop_user_id)
+    multi = len(customers) > 1
+    out: list[dict] = []
+    for c in customers:
+        net = book.customer_net(c)
+        if net <= 0.5:
+            continue
+        accounts = list(book.customer_accounts(c))
+        for g in book.represented_groups(c):
+            accounts.extend(book.group_members(g))
+        seen: set[int] = set()
+        rows: list[tuple[str, float, bool]] = []
+        acc_sum = 0.0
+        for a in accounts:
+            if a.id in seen or a.deleted_at is not None:
+                continue
+            seen.add(a.id)
+            n = book.account_net(a)
+            acc_sum += n
+            if abs(n) > 0.5:
+                rows.append((a.service_name or a.marzban_username, n, a.accounting_synced_at is not None))
+        all_exact = all(r[2] for r in rows)
+        rest = round(net - acc_sum, 2)
+        if abs(rest) > 0.5:
+            rows.append(("پرداخت‌ها و تعدیل‌های ثبت‌شده" if rest < 0 else "سایر", rest, all_exact))
+        for label, amount, exact in rows:
+            out.append({"name": f"{c.name} — {label}" if multi else label, "debt": round(amount, 2), "exact": exact})
+    return out
+
+
 def linked_debt_is_exact(session: Session, shop_user_id: int) -> bool:
     """True only when EVERY account behind the linked customers' debt (their own
     accounts + members of groups they represent) carries the operator's

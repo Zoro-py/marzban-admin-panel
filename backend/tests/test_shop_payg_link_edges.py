@@ -302,7 +302,7 @@ check("M3: card shows id, not 'not linked'", state(fa)["status"] == "linked" and
 add_charge(fa, 30000.0)
 add_charge(fb, 50000.0)
 sess = client.post("/api/shop/bot/session", headers=BOT_HEADERS, json={"telegram_id": TG}).json()
-check("M4b: session carries the per-customer split", sorted((r["name"], r["debt"]) for r in sess.get("debt_breakdown", [])) == [("Fam A", 30000.0), ("Fam B", 50000.0)], sess.get("debt_breakdown"))
+check("M4b: session carries the per-customer split", sorted((r["name"].split(" — ")[0], r["debt"]) for r in sess.get("debt_breakdown", [])) == [("Fam A", 30000.0), ("Fam B", 50000.0)], sess.get("debt_breakdown"))
 check("M4: session debt = SUM of both customers (80,000)", abs(sess.get("ledger_debt", -1) - 80000.0) < 0.01, sess.get("ledger_debt"))
 
 fund_wallet(TG, 100000)

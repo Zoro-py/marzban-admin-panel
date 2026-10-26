@@ -100,6 +100,41 @@ check("6: unknown account 404", client.post("/api/accounts/99999/accounting-sync
 with Session(engine) as s:
     check("7: stamp never changes money", MoneyBook(s).customer_net(s.get(Customer, 1)) == 50000.0)
 
+# ---- debt lines: which sub-account the debt belongs to ----------------------
+with Session(engine) as s:
+    su2 = ShopUser(telegram_id=777002, display_name="rep")
+    s.add(su2)
+    s.flush()
+    rep = Customer(name="Rep", shop_user_id=su2.id)
+    kid = Customer(name="Kid")
+    s.add(rep)
+    s.add(kid)
+    s.flush()
+    g2 = Group(name="fam", representative_customer_id=rep.id, billing_mode=BillingMode.payg)
+    s.add(g2)
+    s.flush()
+    ra = Account(marzban_username="rep_acc", service_name="گوشی من", customer_id=rep.id, group_id=g2.id, billing_mode=BillingMode.payg)
+    ka = Account(marzban_username="kid_acc", customer_id=kid.id, group_id=g2.id, billing_mode=BillingMode.payg)
+    s.add(ra)
+    s.add(ka)
+    s.flush()
+    s.add(LedgerEntry(type=LedgerType.charge, amount=300000.0, account_id=ra.id, group_id=g2.id, customer_id=rep.id))
+    s.add(LedgerEntry(type=LedgerType.charge, amount=200000.0, account_id=ka.id, group_id=g2.id, customer_id=kid.id))
+    s.add(LedgerEntry(type=LedgerType.credit, amount=120000.0, group_id=g2.id))
+    s.commit()
+    RA = ra.id
+sess = session_of(777002)
+rows = sess["debt_breakdown"]
+by = {r["name"]: r for r in rows}
+check("L1: debt = 380,000", abs(sess["ledger_debt"] - 380000.0) < 0.01, sess["ledger_debt"])
+check("L2: one row per sub-account + a payments row", set(by) == {"گوشی من", "kid_acc", "پرداخت‌ها و تعدیل‌های ثبت‌شده"}, list(by))
+check("L3: amounts 300,000 / 200,000 / -120,000", by["گوشی من"]["debt"] == 300000.0 and by["kid_acc"]["debt"] == 200000.0 and by["پرداخت‌ها و تعدیل‌های ثبت‌شده"]["debt"] == -120000.0, rows)
+check("L4: rows add up to the debt exactly", abs(sum(r["debt"] for r in rows) - sess["ledger_debt"]) < 0.01)
+check("L5: unreconciled accounts flagged inexact", not by["kid_acc"]["exact"] and not by["گوشی من"]["exact"])
+client.post(f"/api/accounts/{RA}/accounting-synced", json={"synced": True})
+rows = session_of(777002)["debt_breakdown"]
+check("L6: stamped account row becomes exact", {r["name"]: r["exact"] for r in rows}["گوشی من"] is True)
+
 print()
 if failures:
     print(f"{len(failures)} FAILURES: {failures}")
