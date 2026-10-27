@@ -589,10 +589,9 @@ class BulkAccountCreateRequest(BaseModel):
     # filling the operator's chat (e.g. re-running a preview-driven flow).
     notify: bool = True
 
-    # Applied to every account created in this batch. Default True (today's
-    # behavior); turn off for a batch the operator always wants to renew by
-    # hand (comp accounts, staff, family) — see Account.auto_renew_enabled.
-    auto_renew_enabled: bool = True
+    # Applied to every account created in this batch. Default False since
+    # 2026-10-27 (auto-renew is opt-IN now) - see Account.auto_renew_enabled.
+    auto_renew_enabled: bool = False
 
 
 class BulkAccountPlannedName(BaseModel):

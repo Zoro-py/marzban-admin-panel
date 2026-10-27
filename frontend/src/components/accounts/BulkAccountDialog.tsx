@@ -69,7 +69,7 @@ export function BulkAccountDialog({ defaultCustomerId, defaultGroupId, trigger }
   const [expireDays, setExpireDays] = React.useState('30')
   const [dataLimitGb, setDataLimitGb] = React.useState('')
   const [ratePerGb, setRatePerGb] = React.useState('')
-  const [autoRenewEnabled, setAutoRenewEnabled] = React.useState(true)
+  const [autoRenewEnabled, setAutoRenewEnabled] = React.useState(false)
   const [result, setResult] = React.useState<BulkAccountResult | null>(null)
   const queryClient = useQueryClient()
 

@@ -100,6 +100,7 @@ def seed_account(username: str, *, data_limit_gb: float, used_gb: float,
         session.refresh(customer)
         account = Account(
             marzban_username=username,
+            auto_renew_enabled=True,
             customer_id=customer.id,
             status="active",
             used_traffic=int(used_gb * GB),
@@ -224,6 +225,7 @@ with Session(engine) as session:
     fresh = Account(
         marzban_username="no-history-test",
         customer_id=customer.id,
+        auto_renew_enabled=True,
         status="active",
         used_traffic=int(9.5 * GB),   # 0.5 GB left -> near-quota fires
         data_limit=int(10 * GB),

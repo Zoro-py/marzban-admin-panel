@@ -91,6 +91,7 @@ def seed_thin_history_account(username: str) -> int:
         session.refresh(customer)
         account = Account(
             marzban_username=username,
+            auto_renew_enabled=True,
             customer_id=customer.id,
             status="active",
             used_traffic=int(0.34 * GB),
