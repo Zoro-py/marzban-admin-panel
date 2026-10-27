@@ -1,8 +1,11 @@
-"""Tunnel inbounds (owner 2026-10-27): the double-quota «ضریب ۲» configs that
-go through the Iran entry boxes (US 6002/6005, France 6009). They are NOT part
-of a normal subscription - the operator grants them per account. A brand-new
-account must therefore start WITHOUT them; Marzban's own default (= every
-inbound) would hand them out to everyone."""
+"""Three kinds of config (owner 2026-10-27):
+  F      client -> Cloudflare -> server          (Unified*, everyone)
+  D      client -> middle server -> main server  (6002/6005, «ضریب ۲», everyone)
+  TUNNEL client -> Iran server -> US/France      (looks like D to the user)
+Only the TUNNEL inbounds are restricted: the operator grants them per account,
+so a brand-new account must start WITHOUT them (Marzban's own default, every
+inbound, would hand them out). Today the only dedicated tunnel inbound is the
+France one (6009); add the US tunnel's tag here when it exists."""
 from __future__ import annotations
 
 import os
@@ -11,8 +14,6 @@ from typing import Optional
 from app.marzban_client import marzban_client
 
 TUNNEL_INBOUND_TAGS = frozenset({
-    "VLESS_REALITY_XHTTP_6002",
-    "VLESS_REALITY_TCP_6005",
     "VLESS_REALITY_XHTTP_FR_6009",
 })
 

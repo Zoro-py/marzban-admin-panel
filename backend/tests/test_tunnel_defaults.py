@@ -45,7 +45,7 @@ async def main():
     await tunnels.apply_no_tunnel_defaults(p)
     tags = p["inbounds"]["vless"]
     check("1: no tunnel tag in a default create", not (set(tags) & tunnels.TUNNEL_INBOUND_TAGS), tags)
-    check("2: normal tags kept", set(tags) == {"VLESS_XHTTP_Unified", "VLESS_WS_TLS_2083", "VLESS_REALITY_GRPC_6006"}, tags)
+    check("2: F and D (6002/6005) kept for everyone", set(tags) == {"VLESS_XHTTP_Unified", "VLESS_WS_TLS_2083", "VLESS_REALITY_GRPC_6006", "VLESS_REALITY_XHTTP_6002", "VLESS_REALITY_TCP_6005"}, tags)
     check("3: vless only (no shadowsocks)", list(p["inbounds"]) == ["vless"] and p["proxies"] == {"vless": {}})
     p2 = {"username": "y"}
     chosen = {"vless": ["VLESS_REALITY_TCP_6005"]}
