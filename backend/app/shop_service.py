@@ -41,6 +41,7 @@ from app.models import (
     ShopWalletEntryType,
     utcnow,
 )
+from app.tunnels import TUNNEL_INBOUND_TAGS, apply_no_tunnel_defaults
 from app.services import GB, bytes_from_gb, effective_billing_mode, sync_marzban_fields
 
 logger = logging.getLogger(__name__)
@@ -444,7 +445,7 @@ async def _shop_inbounds_payload(session: Session) -> Optional[tuple[dict, dict]
     if not raw:
         return None
     try:
-        selected = set(json.loads(raw))
+        selected = set(json.loads(raw)) - TUNNEL_INBOUND_TAGS
     except (ValueError, TypeError):
         logger.warning("shop_inbound_tags is not valid JSON — ignoring (Marzban defaults apply)")
         return None
@@ -533,6 +534,7 @@ async def _provision_order(
         payload["proxies"], payload["inbounds"] = panel_pair
 
     try:
+        await apply_no_tunnel_defaults(payload)
         marzban_user = await marzban_client.create_user(payload)
     except (ValueError, MarzbanUnavailable, MarzbanAuthError) as exc:
         logger.exception("Shop order #%s: Marzban rejected it or was unreachable", order.id)
@@ -2341,6 +2343,7 @@ async def start_payg_service(session: Session, shop_user: ShopUser,
     if panel_pair is not None:
         payload["proxies"], payload["inbounds"] = panel_pair
     try:
+        await apply_no_tunnel_defaults(payload)
         marzban_user = await marzban_client.create_user(payload)
     except (ValueError, MarzbanUnavailable, MarzbanAuthError) as exc:
         logger.exception("Payg start #%s: Marzban rejected it or was unreachable", order.id)

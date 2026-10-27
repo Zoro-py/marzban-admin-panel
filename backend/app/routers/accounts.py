@@ -21,6 +21,7 @@ from app.config import settings
 from app.db import get_session
 from app.marzban_client import MarzbanAuthError, MarzbanUnavailable, marzban_client
 from app.models import Account, AccountEvent, BillingMode, Customer, Group, LedgerEntry, LedgerSource, LedgerType, QueuedPlan, QueuedPlanStatus, RateChange, utcnow
+from app.tunnels import apply_no_tunnel_defaults
 from app.schemas import (
     AccountAdjustRequest,
     AccountBillingUpdate,
@@ -172,6 +173,7 @@ async def create_account(body: AccountCreateRequest, session: Session = Depends(
     }
 
     try:
+        await apply_no_tunnel_defaults(marzban_payload, body.inbounds)
         marzban_user = await marzban_client.create_user(marzban_payload)
     except ValueError as exc:
         raise HTTPException(400, f"Marzban rejected this user: {exc}")
@@ -391,6 +393,7 @@ async def create_bulk_accounts(
         }
 
         try:
+            await apply_no_tunnel_defaults(marzban_payload, body.inbounds)
             marzban_user = await marzban_client.create_user(marzban_payload)
         except ValueError as exc:
             # A 4xx for THIS user (duplicate, bad inbound tag). Specific to one

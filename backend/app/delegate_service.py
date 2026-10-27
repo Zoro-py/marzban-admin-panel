@@ -32,6 +32,7 @@ from app.models import (
     utcnow,
 )
 from app.notify import notify_admin
+from app.tunnels import apply_no_tunnel_defaults
 from app.services import MoneyBook, attributable_consumed_gb, bytes_from_gb, cancel_pending_queued_plan, close_out_payg_usage_before_delete, effective_billing_mode, effective_rate
 
 logger = logging.getLogger(__name__)
@@ -204,6 +205,7 @@ async def create_delegate_account(session: Session, delegate: Delegate, data_lim
     }
 
     try:
+        await apply_no_tunnel_defaults(marzban_payload)
         marzban_user = await marzban_client.create_user(marzban_payload)
     except ValueError as exc:
         raise DelegateError(f"ساخت اکانت رد شد: {exc}") from exc
