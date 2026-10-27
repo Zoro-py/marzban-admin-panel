@@ -101,6 +101,10 @@ function Tile({ label, value, sub, tone }: { label: string; value: React.ReactNo
  * opening and a closing balance, and «owes now» is the last line. */
 function StatementLines({ s, lang }: { s: Statement; lang: Lang }) {
   const m = s.statement
+  // GB sits on the SAME line as its money (charged GB with the charges, the
+  // meter's GB with «not invoiced»), so volume and debt can never be read
+  // from two different windows.
+  const gbSuffix = (g: number | null | undefined) => (g ? ` · ${fmtGb(g)}` : '')
   const row = (sign: string, label: string, value: React.ReactNode, strong = false) => (
     <div className={cn('flex items-baseline justify-between gap-3 py-1', strong && 'border-t border-border pt-1.5 font-semibold')}>
       <span className="text-muted-foreground">
@@ -112,10 +116,10 @@ function StatementLines({ s, lang }: { s: Statement; lang: Lang }) {
   return (
     <div className="rounded-md border border-border px-3 py-2 text-xs" data-testid="statement-lines">
       {row(' ', tr(lang, 'ماندهٔ ابتدای بازه', 'Opening balance'), <Money amount={m.opening_balance} kind="balance" zero="dash" />)}
-      {row('+', `${tr(lang, 'شارژها', 'Charges')} (${m.charge_count})`, formatToman(m.charged))}
+      {row('+', `${tr(lang, 'شارژها', 'Charges')} (${m.charge_count})${gbSuffix(s.charges_gb.gb)}`, formatToman(m.charged))}
       {row('−', `${tr(lang, 'پرداخت‌ها', 'Payments')} (${m.payment_count})`, formatToman(m.paid))}
       {row('=', tr(lang, 'ماندهٔ ثبت‌شده', 'Posted balance'), <Money amount={m.closing_balance} kind="balance" zero="dash" />, true)}
-      {s.window.is_open && row('+', tr(lang, 'هنوز صورتحساب‌نشده', 'Not invoiced yet'), <Money amount={m.pending} kind="pending" />)}
+      {s.window.is_open && row('+', `${tr(lang, 'هنوز صورتحساب‌نشده', 'Not invoiced yet')}${gbSuffix(m.pending_gb)}`, <Money amount={m.pending} kind="pending" />)}
       {s.window.is_open && row('=', tr(lang, 'بدهی همین الان', 'Owes now'), <Money amount={m.owed_now} kind="balance" zero="settled" />, true)}
     </div>
   )
@@ -577,50 +581,43 @@ export function BalanceSinceControl({ scope }: { scope: Scope }) {
             <Num><Money amount={s.statement.owed_now} kind="balance" zero="settled" className="text-lg" /></Num>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
-            <Tile
-              label={tr(lang, 'شارژ شده (صورتحساب)', 'Charged (invoiced)')}
-              value={formatToman(s.statement.charged)}
-              sub={
-                <>
-                  {s.statement.charge_count} {tr(lang, 'بار', 'time(s)')}
-                  {s.charges_gb.gb !== null && (
-                    <>
-                      {' · '}
-                      {fmtGb(s.charges_gb.gb)}
-                      {s.charges_gb.with_gb < s.charges_gb.of && ` (${tr(lang, 'ثبت روی', 'on')} ${s.charges_gb.with_gb}/${s.charges_gb.of})`}
-                    </>
-                  )}
-                </>
-              }
-            />
-            <Tile
-              label={tr(lang, 'پرداخت‌شده', 'Paid')}
-              value={formatToman(s.statement.paid)}
-              sub={`${s.statement.payment_count} ${tr(lang, 'بار', 'time(s)')}`}
-            />
-            <Tile
-              label={tr(lang, 'حجم شارژشده', 'Volume recharged')}
-              value={s.volume.recharge_count ? fmtGb(s.volume.recharged_gb) : '—'}
-              tone={s.volume.recharge_count ? undefined : 'muted'}
-              sub={
-                s.volume.recharge_count
-                  ? `${s.volume.recharge_count} ${tr(lang, 'بار', 'time(s)')}` +
-                    (Object.entries(s.volume.by_kind) as [RechargeKind, { gb: number; count: number }][])
-                      .filter(([, k]) => k.count)
-                      .map(([kind, k]) => ` · ${tr(lang, ...KIND_LABEL[kind])} ${k.count}`)
-                      .join('')
-                  : s.scope.billing_modes.length === 1 && s.scope.billing_modes[0] === 'payg'
-                    ? tr(lang, 'مصرفی (payg) — شارژ حجمی ندارد', 'pay-as-you-go — billed by usage')
-                    : tr(lang, 'در این بازه شارژی نشده', 'none in this window')
-              }
-            />
-            <UsageTile s={s} lang={lang} />
-          </div>
-
           <StatementLines s={s} lang={lang} />
 
+          {s.periods.some((p) => p.partial_in_window) && (
+            <p className="rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-[11px] leading-relaxed text-warning" data-testid="window-cuts-cycle">
+              {tr(
+                lang,
+                'این بازه وسطِ یک دوره شروع می‌شود: شارژ آن دوره کامل در بالا آمده ولی بخشی از مصرفش قبل از بازه بوده. برای مقایسهٔ حجم با مبلغ، «همهٔ زمان» را بزنید.',
+                'This window starts in the middle of a billing cycle: that cycle’s whole charge is counted above although part of its usage happened before the window. Pick «All time» to compare volume with money.',
+              )}
+            </p>
+          )}
+
           <PaygWhatIfLine s={s} lang={lang} />
+
+          <Section title={tr(lang, 'حجم و مصرف مرزبان (اطلاعات — جزو محاسبهٔ بدهی نیست)', 'Volume & Marzban usage (information — not part of the debt)')}>
+            <div className="p-2">
+              <div className="grid grid-cols-2 gap-2">
+                <Tile
+                  label={tr(lang, 'حجم شارژشده', 'Volume recharged')}
+                  value={s.volume.recharge_count ? fmtGb(s.volume.recharged_gb) : '—'}
+                  tone={s.volume.recharge_count ? undefined : 'muted'}
+                  sub={
+                    s.volume.recharge_count
+                      ? `${s.volume.recharge_count} ${tr(lang, 'بار', 'time(s)')}` +
+                        (Object.entries(s.volume.by_kind) as [RechargeKind, { gb: number; count: number }][])
+                          .filter(([, k]) => k.count)
+                          .map(([kind, k]) => ` · ${tr(lang, ...KIND_LABEL[kind])} ${k.count}`)
+                          .join('')
+                      : s.scope.billing_modes.length === 1 && s.scope.billing_modes[0] === 'payg'
+                        ? tr(lang, 'مصرفی (payg) — شارژ حجمی ندارد', 'pay-as-you-go — billed by usage')
+                        : tr(lang, 'در این بازه شارژی نشده', 'none in this window')
+                  }
+                />
+                <UsageTile s={s} lang={lang} />
+              </div>
+            </div>
+          </Section>
 
           {s.volume.excluded.length > 0 && (
             <p className="text-[10.5px] leading-snug text-muted-foreground">

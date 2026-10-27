@@ -338,6 +338,7 @@ export interface Statement {
     payment_count: number
     closing_balance: number
     pending: number
+    pending_gb: number
     owed_now: number
     all_time_posted: number
   }

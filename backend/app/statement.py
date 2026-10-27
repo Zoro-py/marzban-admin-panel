@@ -288,10 +288,13 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
 
     if scope.kind == "account":
         pending = book.account_pending(scope.accounts[0])
+        pending_gb = book.account_pending_gb(scope.accounts[0])
     elif scope.kind == "group":
         pending = book.group_pending(session.get(Group, scope.id))
+        pending_gb = book.group_pending_gb(session.get(Group, scope.id))
     else:
         pending = book.customer_pending(session.get(Customer, scope.id))
+        pending_gb = book.customer_pending_gb(session.get(Customer, scope.id))
     pending = round(pending, 2)
 
     # --- per-account context -------------------------------------------------
@@ -554,6 +557,9 @@ async def build_statement(session: Session, *, since: datetime, until: Optional[
             "paid": paid, "payment_count": len(credits),
             "closing_balance": closing,
             "pending": pending,
+            # GB behind `pending` - the same meter, so «charged GB + this» is
+            # the whole billed volume and can be compared to the money lines.
+            "pending_gb": round(pending_gb, 3),
             "owed_now": round(all_time_posted + pending, 2),
             "all_time_posted": all_time_posted,
         },
