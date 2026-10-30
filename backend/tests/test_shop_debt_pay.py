@@ -122,6 +122,10 @@ with Session(engine) as s:
         LedgerEntry.source == LedgerSource.shop)).all()
     check("routing: exactly ONE shop ledger credit", len(credits) == 1, len(credits))
     check("routing: amount = approved 60,000", credits and credits[0].amount == 60000.0, credits[0].amount if credits else None)
+    sole = s.exec(select(Account.id).where(Account.customer_id == CUST, Account.deleted_at.is_(None))).all()
+    if len(sole) == 1:
+        check("routing: single-account customer -> credit carries that account_id (panel table agrees)",
+              credits and credits[0].account_id == sole[0], credits[0].account_id if credits else None)
     check("routing: wallet untouched", len(s.exec(select(ShopWalletEntry).where(ShopWalletEntry.shop_user_id == SU)).all()) == wallet_rows_before)
     check("routing: debt dropped to 40,000", abs(debt_of(s, CUST) - 40000.0) < 0.01, debt_of(s, CUST))
 

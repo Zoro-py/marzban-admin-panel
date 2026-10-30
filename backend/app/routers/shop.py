@@ -1897,7 +1897,7 @@ async def bot_pay_debt_from_wallet(
     from app.models import Customer, LedgerEntry, LedgerSource, LedgerType
     from app.services import billing_lock
 
-    from app.shop_service import allocate_debt_payment, linked_customers, linked_debt
+    from app.shop_service import allocate_debt_payment, linked_customers, linked_debt, sole_account_id
 
     if not linked_customers(session, user.id):
         raise HTTPException(400, "این حساب بدهیِ صورت‌حسابی ندارد (به مشتری وصل نیست).")
@@ -1927,6 +1927,7 @@ async def bot_pay_debt_from_wallet(
                 type=LedgerType.credit,
                 amount=float(part),
                 customer_id=customer_id,
+                account_id=sole_account_id(session, customer_id),
                 note=f"پرداخت بدهی از کیف پول فروشگاه — {ref}",
                 source=LedgerSource.shop,
                 created_by="system:shop-debt-pay",

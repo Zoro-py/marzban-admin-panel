@@ -852,6 +852,24 @@ def linked_debt(session: Session, shop_user_id: int) -> float:
     return sum(d for _, d in linked_debt_by_customer(session, shop_user_id))
 
 
+def sole_account_id(session: Session, customer_id: int) -> Optional[int]:
+    """The one account a customer-level payment belongs to, or None.
+
+    A debt payment used to be written with customer_id only, so the customer
+    view read 0 while the accounts table (which sums account_id rows) still
+    showed the debt in red (aentezari, 2026-10-30). When the customer has
+    exactly one live account and represents no group there is no ambiguity:
+    stamp the payment onto it. Anything else stays customer-level."""
+    from app.models import Account, Group
+
+    if session.exec(select(Group.id).where(Group.representative_customer_id == customer_id)).first() is not None:
+        return None
+    ids = session.exec(
+        select(Account.id).where(Account.customer_id == customer_id, Account.deleted_at.is_(None))
+    ).all()
+    return ids[0] if len(ids) == 1 else None
+
+
 def auto_pay_debt_from_topup(session: Session, topup: ShopTopup, amount: int) -> int:
     """Move min(amount, total linked debt) from the just-credited top-up into
     the ledger as credits (oldest customer first, each capped at its own debt).
@@ -875,6 +893,7 @@ def auto_pay_debt_from_topup(session: Session, topup: ShopTopup, amount: int) ->
             type=LedgerType.credit,
             amount=float(part),
             customer_id=customer_id,
+            account_id=sole_account_id(session, customer_id),
             note=f"پرداخت خودکار بدهی از شارژ کیف پول — شارژ #{topup.id}",
             source=LedgerSource.shop,
             created_by="system:shop-topup-debt",
@@ -1106,6 +1125,7 @@ async def approve_topup(
                 type=LedgerType.credit,
                 amount=float(part),
                 customer_id=customer_id,
+                account_id=sole_account_id(session, customer_id),
                 note=f"پرداخت بدهی از بات فروش — رسید #{topup.id}"
                      + (f" (کد {topup.reference_code})" if topup.reference_code else ""),
                 source=LedgerSource.shop,
