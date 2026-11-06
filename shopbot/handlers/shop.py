@@ -843,6 +843,20 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
     return await _payment_screens(update, context, intent)
 
 
+def _cancel_keyboard(session: dict | None) -> ReplyKeyboardMarkup:
+    """[انصراف] with the main-menu rows UNDER it (R3, screen-transcript read).
+
+    The receipt wait is the longest, most anxious wait in the product — and
+    the three prompts that open it used to replace the whole reply keyboard
+    with a single ❌ انصراف button, hiding the menu at the exact moment the
+    customer is most likely to want out (or their «حساب من»). Menu taps were
+    ALWAYS routed during this state (handle_text checks the menu first) —
+    now they are visible too, the same fix T7 applied to the phone prompt."""
+    rows = [[KeyboardButton(texts.CANCEL)]]
+    rows += [[KeyboardButton(b.text) for b in row] for row in main_menu(session).keyboard]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
 async def _payment_screens(update: Update, context: ContextTypes.DEFAULT_TYPE,
                            intent: dict) -> None:
     """The two payment screens (one-tap wallet confirm / card-to-card receipt
@@ -884,7 +898,7 @@ async def _payment_screens(update: Update, context: ContextTypes.DEFAULT_TYPE,
     await update.effective_message.reply_text(
         _payment_request_text(intent, ask),
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=ReplyKeyboardMarkup([[KeyboardButton(texts.CANCEL)]], resize_keyboard=True),
+        reply_markup=_cancel_keyboard(session),
     )
 
 
@@ -999,7 +1013,7 @@ async def _handle_topup_amount(update: Update, context: ContextTypes.DEFAULT_TYP
                 session.get("approval_eta_minutes", 30),
             ),
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=ReplyKeyboardMarkup([[KeyboardButton(texts.CANCEL)]], resize_keyboard=True),
+            reply_markup=_cancel_keyboard(session),
         )
         return
     await update.effective_message.reply_text(
@@ -1008,7 +1022,7 @@ async def _handle_topup_amount(update: Update, context: ContextTypes.DEFAULT_TYP
             session.get("approval_eta_minutes", 30),
         ),
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=ReplyKeyboardMarkup([[KeyboardButton(texts.CANCEL)]], resize_keyboard=True),
+        reply_markup=_cancel_keyboard(session),
     )
 
 

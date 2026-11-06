@@ -173,6 +173,25 @@ async def main() -> None:
           any("ماندهٔ پرداخت‌نشده" in r[0] for r in msg.replies), repr([r[0] for r in msg.replies]))
     SESSION["ledger_debt"] = 0
 
+    # ── R3: the receipt wait keeps the menu VISIBLE under ❌ انصراف ────────
+    (upd, context), msg = make_update(texts.MENU_BUY)
+    await shop.handle_text(upd, context)          # → volume screen
+    msg.text = "10"
+    await shop.handle_text(upd, context)          # → card-to-card receipt wait
+    kb = msg.replies[-1][1]
+    rows = [[b.text for b in row] for row in kb.keyboard]
+    check("payment wait: row 1 is ❌ انصراف", rows[0] == [texts.CANCEL], repr(rows))
+    check("payment wait: the main menu rides UNDER the cancel row",
+          len(rows) > 1 and any(texts.MENU_ACCOUNTS in t for t in rows[1]), repr(rows))
+    (upd, context), msg = make_update(texts.MENU_TOPUP)
+    await shop.handle_text(upd, context)
+    msg.text = "200000"
+    await shop.handle_text(upd, context)
+    kb = msg.replies[-1][1]
+    rows = [[b.text for b in row] for row in kb.keyboard]
+    check("top-up wait: انصراف + the menu underneath",
+          rows[0] == [texts.CANCEL] and len(rows) > 1, repr(rows))
+
     # ── ROUTE: every callback the OLD base could emit still routes ────────
     bot_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "bot.py"), encoding="utf-8").read()
