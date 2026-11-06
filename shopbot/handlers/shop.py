@@ -96,7 +96,7 @@ _CODE_PATTERN = re.compile(r"[ACDEFGHJKMNPQRTUVWXYZ2345789]{4}|R[0-9A-F]{6}")
 # the operator's internal English note ("Card payment approved (top-up #12)"),
 # which reads to a customer like a glitch.
 _WALLET_LABELS = {
-    "topup": "شارژ کیف پول",
+    "topup": "شارژ",
     "purchase": "خرید سرویس",
     "refund": "بازگشت وجه",
     "adjust": "اصلاح موجودی",
@@ -109,7 +109,7 @@ _WALLET_LABELS = {
 # روزانه…» once the backend's own relabel lands — matched case-insensitively
 # against both so the label is right whichever side deploys first.
 _METER_NOTE_MARKERS = ("payg meter", "بیل مصرف روزانه")
-_WALLET_METER_LABEL = "بیل مصرف روزانه"
+_WALLET_METER_LABEL = "مصرف روزانه"
 
 
 def _wallet_label(entry: dict) -> str:
@@ -745,7 +745,7 @@ def _payment_request_text(intent: dict, ask: int | None = None) -> str:
     if intent["balance"] > 0:
         head += (
             f"قیمت: {texts.money(intent['price'])}\n"
-            f"از کیف پولتان کم می‌شود: {texts.money(intent['balance'])}\n"
+            f"از موجودی‌تان کم می‌شود: {texts.money(intent['balance'])}\n"
         )
     if ask is not None and ask > intent["shortfall"]:
         return head + "\n" + texts.topup_instructions_with_minimum(
@@ -1012,7 +1012,7 @@ def _topup_submitted_text(reference, eta: int, handle, has_order: bool,
     if has_order:
         lines.append(f"معمولاً تا {texts.fa(eta)} دقیقه بررسی و سرویس‌تان خودکار آماده می‌شود.")
     else:
-        lines.append(f"معمولاً تا {texts.fa(eta)} دقیقه بررسی و کیف پولتان خودکار شارژ می‌شود.")
+        lines.append(f"معمولاً تا {texts.fa(eta)} دقیقه بررسی و موجودی‌تان خودکار شارژ می‌شود.")
     lines.append("لازم نیست ربات را باز نگه دارید — خبرش همینجا می‌آید.")
     if reference:
         # Says what the code is FOR. A code with no use reads as decoration;
@@ -1178,7 +1178,7 @@ async def show_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """The ONE money door (T2): debt flavour when the customer owes, wallet
     flavour otherwise — never both numbers side by side.
 
-    The debt view's buttons carry their amounts: «پرداخت از کیف پول (X)»
+    The debt view's buttons carry their amounts: «پرداخت از موجودی (X)»
     pays on the tap (the money goes to the customer's own account, and the
     amount they are paying was the button they read), «ارسال رسید کارت» opens
     the receipt flow with the whole debt one button away. The per-account
@@ -1243,8 +1243,7 @@ async def on_account_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.edit_message_text(texts.DEBT_NONE)
         return
     detail = texts.debt_status(
-        debt, session["balance"], session.get("approval_eta_minutes", 30),
-        session.get("debt_breakdown"), session.get("debt_exact", True),
+        debt, session.get("debt_breakdown"), session.get("debt_exact", True),
     )
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     await query.edit_message_text(
@@ -1282,7 +1281,7 @@ def _debt_buttons(session: dict, debt: float) -> list:
     if session["balance"] > 0:
         pay = min(session["balance"], int(debt))
         buttons.append([InlineKeyboardButton(
-            text=f"💳 پرداخت از کیف پول ({texts.money(pay)})",
+            text=f"💳 پرداخت از موجودی ({texts.money(pay)})",
             callback_data="debt:wallet",
         )])
     buttons.append([InlineKeyboardButton(text=texts.DEBT_PAY_BY_RECEIPT, callback_data="debt:receipt")])
@@ -1359,7 +1358,7 @@ async def _pay_debt_from_wallet(update: Update, query) -> None:
 
 
 async def on_pay_debt_wallet_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """The old «تأیید پرداخت از کیف پول» button, still sitting in chats from
+    """The legacy wallet-pay confirm button, still sitting in chats from
     before the rebuild: same immediate payment as the new one-tap button."""
     query = update.callback_query
     await query.answer()
@@ -1380,7 +1379,7 @@ async def on_pay_debt_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def show_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Legacy entry (old chats' «💰 کیف پول» button): the merged account view.
+    """Legacy entry (the old wallet button still in some chats): the merged account view.
     The wallet flavour shows the balance; if the customer also owes, the debt
     flavour wins (ONE number per view)."""
     await show_account(update, context)

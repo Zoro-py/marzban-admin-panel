@@ -118,8 +118,8 @@ def delivery_caption_payg() -> str:
     volume/day figures on purpose: a payg service has neither."""
     return (
         "📊 سرویس مصرفی‌تان آماده است\n\n"
-        "حجم و زمان ثابت ندارد — هر روز فقط به‌اندازهٔ مصرفتان از کیف پولتان کم می‌شود.\n"
-        "اگر کیف پول خالی شود سرویس موقتاً قطع می‌شود و با شارژ دوباره، خودش وصل می‌شود."
+        "حجم و زمان ثابت ندارد — هر روز فقط به‌اندازهٔ مصرفتان از موجودی‌تان کم می‌شود.\n"
+        "اگر موجودی خالی شود سرویس موقتاً قطع می‌شود و با شارژ دوباره، خودش وصل می‌شود."
     )
 
 
@@ -133,7 +133,7 @@ def order_refunded(amount: int, reason: Optional[str] = None,
     the reason (a restart mid-provisioning) is ours, not theirs."""
     why = f"\nعلت: {reason}" if reason else ""
     return (
-        f"سلام — سفارشتان ساخته نشد و {money_fa(amount)} کامل به کیف پولتان برگشت.\n"
+        f"سلام — سفارشتان ساخته نشد و {money_fa(amount)} کامل به موجودی‌تان برگشت.\n"
         "هیچ کسرشی نشده؛ هر وقت خواستید دوباره خرید کنید."
         + why
         + support_line(handle)
@@ -155,7 +155,7 @@ def delivery_link(url: str) -> str:
 def topup_approved_plain(amount: int, balance: int, handle: Optional[str]) -> str:
     """A wallet top-up with no plan attached — the repeat-customer path."""
     return (
-        f"✅ پرداختتان تأیید شد و {money_fa(amount)} به کیف پولتان اضافه شد.\n"
+        f"✅ پرداختتان تأیید شد و {money_fa(amount)} به موجودی‌تان اضافه شد.\n"
         f"موجودی فعلی: {money_fa(balance)}\n\n"
         "حالا می‌توانید از «🛒 خرید سرویس» ادامه بدهید."
         + support_line(handle)
@@ -172,7 +172,7 @@ def topup_approved_with_order(amount: int, balance: int) -> str:
     a 90,000 plan and hears nothing about the other 10,000 concludes the shop
     kept it."""
     extra = (
-        f"\n{money_fa(balance)} بیشتر واریز کرده بودید؛ در کیف پولتان ماند و از خرید بعدی کم می‌شود."
+        f"\n{money_fa(balance)} بیشتر واریز کرده بودید؛ در موجودی‌تان ماند و از خرید بعدی کم می‌شود."
         if balance > 0 else ""
     )
     return (
@@ -190,7 +190,7 @@ def topup_approved_no_service(amount: int, balance: int, handle: Optional[str]) 
     left the customer waiting for a QR that was never coming."""
     return (
         f"✅ پرداختتان تأیید شد — {money_fa(amount)}.\n"
-        "اما ساخت سرویس این بار انجام نشد و مبلغ در کیف پولتان ماند.\n"
+        "اما ساخت سرویس این بار انجام نشد و مبلغ در موجودی‌تان ماند.\n"
         f"موجودی فعلی: {money_fa(balance)}\n\n"
         "با «🛒 خرید سرویس» دوباره امتحان کنید؛ چیزی از دست نرفته."
         + support_line(handle)
@@ -223,7 +223,7 @@ def topup_approved_short(
             "و عکس رسیدش را همینجا بفرستید — سفارشتان نگه داشته شده است."
         )
     return (
-        f"✅ {money_fa(amount)} از پرداختتان رسید و در کیف پولتان محفوظ است.\n"
+        f"✅ {money_fa(amount)} از پرداختتان رسید و در موجودی‌تان محفوظ است.\n"
         f"برای سرویسی که انتخاب کرده بودید {money_fa(shortfall)} کم است."
         + card
         + "\n\nاگر نمی‌خواهید ادامه دهید، پیام بدهید تا مبلغ را برگردانم."
@@ -328,7 +328,7 @@ def payment_request(
     """
     holder = f"\nبه نام: {card_holder}" if card_holder else ""
     wallet_line = (
-        f"\n(از این مبلغ، {money_fa(from_wallet)} از کیف پولتان کم می‌شود)"
+        f"\n(از این مبلغ، {money_fa(from_wallet)} از موجودی‌تان کم می‌شود)"
         if from_wallet > 0 else ""
     )
     return (
@@ -376,7 +376,7 @@ def data_almost_gone(volume_gb: float, percent_used: int, handle: Optional[str])
 
 def debt_reminder(owed: int, days_left: int) -> str:
     return (
-        f"⏳ یادآوری: کیف پولتان {money_fa(owed)} بدهکار است.\n"
+        f"⏳ یادآوری: ماندهٔ پرداخت‌نشده‌ی شما {money_fa(owed)} است.\n"
         f"تا {fa_num(max(days_left, 0))} روز دیگر برای شارژ وقت دارید، وگرنه سرویس موقتاً متوقف می‌شود."
     )
 
@@ -384,33 +384,33 @@ def debt_reminder(owed: int, days_left: int) -> str:
 def debt_suspended(owed: int) -> str:
     return (
         f"⛔ سرویستان به‌دلیل {money_fa(owed)} بدهی تسویه‌نشده موقتاً متوقف شد.\n"
-        "به محض شارژ کیف پول، خودش دوباره فعال می‌شود — لازم نیست با پشتیبانی تماس بگیرید."
+        "به محض شارژ، خودش دوباره فعال می‌شود — لازم نیست با پشتیبانی تماس بگیرید."
     )
 
 
 def debt_cleared_reactivated() -> str:
-    return "✅ کیف پولتان شارژ شد و سرویستان دوباره فعال است."
+    return "✅ موجودی‌تان شارژ شد و سرویستان دوباره فعال است."
 
 
 # ── retail pay-as-you-go ("📊 سرویس مصرفی") daily meter ────────────────────
 
 def payg_low_balance(balance: int) -> str:
     return (
-        f"⏳ موجودی کیف پولتان {money_fa(balance)} است و رو به اتمام.\n"
+        f"⏳ موجودی‌تان {money_fa(balance)} است و رو به اتمام.\n"
         "برای اینکه سرویستان قطع نشود، شارژ کنید."
     )
 
 
 def payg_suspended(owed: int) -> str:
     return (
-        f"⛔ موجودی کیف پولتان کافی نبود و سرویس مصرفی‌تان موقتاً متوقف شد "
+        f"⛔ موجودی‌تان کافی نبود و سرویس مصرفی‌تان موقتاً متوقف شد "
         f"({money_fa(owed)} کم آمد).\n"
-        "به محض شارژ کیف پول، خودش دوباره فعال می‌شود."
+        "به محض شارژ، خودش دوباره فعال می‌شود."
     )
 
 
 def payg_reactivated() -> str:
-    return "✅ کیف پولتان شارژ شد و سرویس مصرفی‌تان دوباره فعال است."
+    return "✅ موجودی‌تان شارژ شد و سرویس مصرفی‌تان دوباره فعال است."
 
 
 def trial_ending(hours_left: int, handle: Optional[str]) -> str:

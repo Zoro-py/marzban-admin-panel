@@ -13,9 +13,8 @@ customer ends up hunting the menu for a button that is right in front of them:
                first as "sharing", and this market says «سرویس» or «کانفیگ».
                The one exception is «لینک اشتراک», which is the fixed term
                every v2rayNG user already knows.
-  کیف پول      the stored balance (the object)
-  شارژ         putting money into it (the verb)
-  موجودی       the number inside it
+  موجودی       the stored balance — the ONE number (T5). «شارژ» is the
+               verb for putting money into it.
   «-تان»       not «شما». Polite, but the way a shopkeeper talks rather than
                the way a bank writes.
 
@@ -189,7 +188,7 @@ def help_text(price_per_gb: int, days: int, eta_minutes: int, handle: Optional[s
         f"۳. رسید را که ببینم (معمولاً تا {fa(eta_minutes)} دقیقه)، سرویس‌تان خودکار ساخته می‌شود "
         "و لینک و کد QR همینجا می‌آید.\n\n"
         f"قیمت هر گیگابایت {money(price_per_gb)} و همه‌ی سرویس‌ها {fa(days)} روزه‌اند؛ فقط حجمشان فرق می‌کند.\n"
-        "اگر از قبل کیف پولتان شارژ باشد، خرید همان لحظه انجام می‌شود.\n"
+        "اگر از قبل موجودی کافی داشته باشید، خرید همان لحظه انجام می‌شود.\n"
         "محدودیتی در تعداد خریدتان نیست — هر چندتا سرویس که بخواهید می‌توانید بخرید."
         + support(handle)
     )
@@ -229,8 +228,8 @@ def confirm_from_wallet(volume: float, days: int, price: int, balance: int) -> s
     return (
         f"{gb(volume)} — {fa(days)} روزه\n"
         f"قیمت: {money(price)}\n"
-        f"موجودی کیف پولتان: {money(balance)}\n\n"
-        "از کیف پولتان کم می‌شود و سرویس همین الان ساخته می‌شود."
+        f"موجودی شما: {money(balance)}\n\n"
+        "از موجودی‌تان کم می‌شود و سرویس همین الان ساخته می‌شود."
     )
 
 
@@ -250,14 +249,14 @@ def auto_renew_in_debt(volume_gb: float, owed: int, grace_days: int) -> str:
     never a vague "حتماً شارژ کنید"."""
     return (
         f"🎉 سرویستان با {gb(volume_gb)} (میانگین مصرفتان) تمدید شد — همین الان فعال است.\n\n"
-        f"کیف پولتان {money(owed)} بدهکار شد. تا {fa(grace_days)} روز دیگر برای شارژ وقت دارید؛ "
+        f"موجودی‌تان {money(owed)} منفی شد. تا {fa(grace_days)} روز دیگر برای شارژ وقت دارید؛ "
         "وگرنه سرویس موقتاً متوقف می‌شود (با شارژ کردن، خودش دوباره فعال می‌شود)."
     )
 
 
 AUTO_RENEW_ALREADY_IN_DEBT = (
     "یک تمدید خودکار قبلی هنوز تسویه نشده.\n"
-    "برای ادامه، یا کیف پولتان را شارژ کنید، یا «🔧 تمدید حجم دلخواه» را بزنید."
+    "برای ادامه، یا موجودی‌تان را شارژ کنید، یا «🔧 تمدید حجم دلخواه» را بزنید."
 )
 
 AUTO_RENEW_NO_HISTORY = (
@@ -272,15 +271,15 @@ def payg_intro(rate_per_gb: int) -> str:
     return (
         "سرویس مصرفی یعنی هیچ حجم یا مدت ثابتی نمی‌خرید — هر روز فقط برای "
         f"همان مقداری که واقعاً مصرف کرده‌اید، {money(rate_per_gb)} به ازای هر گیگ، "
-        "از کیف پولتان کم می‌شود.\n\n"
-        "اگر موجودی کیف پول کافی نباشد، سرویس موقتاً متوقف می‌شود و با شارژ کردن "
+        "از موجودی‌تان کم می‌شود.\n\n"
+        "اگر موجودی کافی نباشد، سرویس موقتاً متوقف می‌شود و با شارژ کردن "
         "خودش دوباره فعال می‌شود — نیازی به تماس با پشتیبانی نیست.\n\n"
         "برای شروع، همین الان سرویس ساخته می‌شود؛ تا موقعی که مصرفی نداشته باشید چیزی کم نمی‌شود."
     )
 
 
 PAYG_UNAVAILABLE = "سرویس مصرفی الان فعال نیست."
-PAYG_STARTED_CONFIRM = "✅ سرویس مصرفی‌تان فعال شد — مصرف روزانه از کیف پولتان کم می‌شود."
+PAYG_STARTED_CONFIRM = "✅ سرویس مصرفی‌تان فعال شد — مصرف روزانه از موجودی‌تان کم می‌شود."
 
 PAYG_ALREADY_HAS_SERVICE = (
     "شما همین الان یک سرویس فعال دارید.\n"
@@ -424,7 +423,7 @@ def topup_instructions_with_minimum(amount: int, owed: int, card_number: str,
         f"بدهی این سفارش {money(owed)} است؛ لطفاً حداقل {money(amount)} به این کارت واریز کنید:\n\n"
         f"`{plain_digits(card_number)}`{holder}\n"
         f"مبلغ برای کپی: `{amount}`\n\n"
-        "مازاد بر بدهی به کیف پولتان برمی‌گردد و برای خرید بعدی‌تان می‌ماند.\n\n"
+        "مازادش به موجودی‌تان برمی‌گردد و برای خرید بعدی‌تان می‌ماند.\n\n"
         "اگر برنامه‌ی بانک با VPN باز نمی‌شود، برای پرداخت خاموشش کنید — سفارشتان همچنان محفوظ است.\n\n"
         "بعد عکس رسید را همینجا بفرستید، یا کد پیگیری تراکنش را تایپ کنید؛ "
         f"معمولاً تا {fa(eta_minutes)} دقیقه بررسی و سرویستان خودکار آماده می‌شود."
@@ -469,7 +468,7 @@ def payment_status(status: str, reference: str, order_status: Optional[str],
             f"✅ پرداخت {reference} تأیید شد، ولی برای سرویسی که انتخاب کرده بودید کافی نبود.\n"
             f"باقی را از «{MENU_BUY}» با همان حجم کامل کنید." + support(handle)
         )
-    return f"✅ پرداخت {reference} تأیید شد و به کیف پولتان اضافه شد."
+    return f"✅ پرداخت {reference} تأیید شد و به موجودی‌تان اضافه شد."
 
 
 # ── wallet & accounts ─────────────────────────────────────────────────────
@@ -477,7 +476,7 @@ def payment_status(status: str, reference: str, order_status: Optional[str],
 
 def debt_line(debt: float) -> str:
     """The reminder shown when a wallet top-up starts while a debt exists —
-    the owner's «موقع شارژ کیف پول بهش گفته بشه»."""
+    the owner's «موقع شارژ بهش گفته بشه»."""
     return f"ⓘ یادآوری: ماندهٔ پرداخت‌نشده‌ی شما {money(int(debt))} است. اگر قصد پرداخت آن را دارید، از «{MENU_ACCOUNT}» ادامه دهید."
 
 
@@ -525,34 +524,31 @@ def debt_receipt_amount_ask(debt: int, max_topup: int) -> str:
     )
 
 
-def debt_status(debt: float, wallet: int, eta: int, breakdown=None, exact: bool = True) -> str:
-    """The pay-debt landing text: what they owe, what the wallet holds, what
-    they can actually spend — one place, no interpretation needed."""
-    spendable = max(0, wallet - int(debt))
+def debt_status(debt: float, breakdown=None, exact: bool = True) -> str:
+    """The «جزئیات» view behind the debt screen (T2/T5): what they owe, and
+    — only here, by request — whose account each piece belongs to. No
+    spendable-arithmetic line: that was the system doing bookkeeping at the
+    customer (T0)."""
     lines = [
-        f"بدهی صورت‌حساب شما: {money(int(debt))}",
+        f"ماندهٔ پرداخت‌نشده: {money(int(debt))}",
         *[debt_source_line(row) for row in (breakdown or [])],
-        f"موجودی کیف پول: {money(wallet)}",
-        f"قابل خرید (کیف پول منهای بدهی): {money(spendable)}",
         "",
-        "تا وقتی بدهی پرداخت نشود، خرید سرویس جدید ممکن نیست.",
+        "تا وقتی این مانده پرداخت نشود، خرید سرویس جدید ممکن نیست.",
     ]
     if not exact:
         lines += ["", DEBT_NOT_EXACT]
     return "\n".join(lines)
 
 
-DEBT_PAY_FROM_WALLET = "پرداخت از کیف پول"
 DEBT_PAY_BY_RECEIPT = "ارسال رسید کارت‌به‌کارت"
-DEBT_PAY_WALLET_CONFIRM = "تأیید پرداخت از کیف پول"
-DEBT_NONE = "شما بدهی صورت‌حسابی ندارید ✓"
+DEBT_NONE = "ماندهٔ پرداخت‌نشده‌ای ندارید ✓"
 
 
 def debt_receipt_instructions(amount: int, card: str, holder, eta: int) -> str:
     return (
         f"مبلغ {money(amount)} را به کارت زیر واریز کنید و رسید آن را "
         "دقیقاً همین‌جا بفرستید. این پرداخت روی صورت‌حساب شما ثبت می‌شود "
-        "(شارژ کیف پول نمی‌شود).\n\n"
+        "(شارژ موجودی نمی‌شود — ماندهٔ پرداخت‌نشده کم می‌شود).\n\n"
         f"شماره کارت: `{card}`\n"
         + (f"به نام {holder}\n" if holder else "")
         + f"\nمعمولاً تا {fa(eta)} دقیقه بررسی می‌شود."
@@ -574,8 +570,8 @@ def debt_paid_from_wallet(paid: int, wallet: int, debt_left: float) -> str:
         if debt_left > 0.5 else "بدهی شما کامل پرداخت شد ✓"
     )
     return (
-        f"✅ {money(paid)} از کیف پولتان پرداخت و روی صورت‌حسابتان ثبت شد.\n"
-        f"موجودی کیف پول: {money(wallet)}\n"
+        f"✅ {money(paid)} پرداخت شد و روی ماندهٔ شما ثبت شد.\n"
+        f"موجودی شما: {money(wallet)}\n"
         f"{left}"
     )
 
@@ -589,31 +585,12 @@ def debt_source_line(row: dict) -> str:
 
 
 DEBT_NOT_EXACT = (
-    "⚠️ این عدد تقریبی است؛ حساب‌کتاب بعضی از سرویس‌ها هنوز با مصرف واقعی "
-    "تطبیق داده نشده. اگر با حساب خودتان نمی‌خواند، به پشتیبانی پیام دهید."
+    "این عدد تقریبی است — اگر با حساب خودتان نمی‌خواند، پیام بدهید تا بررسی کنم."
 )
 
 
-def wallet_summary(balance: int, debt: float = 0, breakdown=None, exact: bool = True) -> str:
-    """ONE number (owner 2026-10-26): usage makes it negative, a top-up makes it
-    positive. Without debt this is exactly the old line."""
-    if debt <= 0.5:
-        return f"💰 موجودی کیف پولتان: {money(balance)}"
-    net = balance - int(debt)
-    lines = [
-        f"💰 کیف پول: {money(balance)}",
-        f"🧾 بدهی صورت‌حساب: {money(int(debt))}",
-        *[debt_source_line(row) for row in (breakdown or [])],
-        (f"⚠️ مانده شما: منفی {money(-net)} — با شارژ، اول بدهی پرداخت می‌شود"
-         if net < 0 else f"✅ مانده شما: {money(net)}"),
-    ]
-    if not exact:
-        lines.append(DEBT_NOT_EXACT)
-    return "\n".join(lines)
-
-
 WALLET_EMPTY = (
-    "کیف پولتان خالی است.\n"
+    "موجودی‌تان صفر است.\n"
     f"برای خرید لازم نیست از قبل شارژ کنید — کافی است «{MENU_BUY}» را بزنید."
 )
 
@@ -649,7 +626,7 @@ def usage_bar(used_gb: float, total_gb: float, width: int = 10) -> str:
 # the status string. Honest and blame-free: states that the service IS
 # stopped — without it the row still renders "active, X GB left" and reads
 # as a broken promise the day the customer notices nothing connects.
-STATUS_SUSPENDED_BADGE = "⚪️ موقتاً متوقف — با شارژ کیف پول یا پس از رفع بدهی دوباره وصل می‌شود"
+STATUS_SUSPENDED_BADGE = "⚪️ موقتاً متوقف — با شارژ، خودش دوباره وصل می‌شود"
 
 # ── naming a service (the customer's own nickname) ────────────────────────
 # ONE string: a stray comma here once made this a tuple, and python-telegram-bot
@@ -743,7 +720,7 @@ def generic_error(handle: Optional[str]) -> str:
 # "کاری انجام نشد", which after a wallet debit reads as "my money vanished".
 PURCHASE_FAILED_REFUNDED = (
     "ساخت سرویس نیمه‌کاره ماند و انجام نشد.\n"
-    "پرداختتان به کیف پولتان برگشت — موجودی‌تان سالم است.\n"
+    "پرداختتان به موجودی‌تان برگشت — سالم است.\n"
     f"چند لحظه بعد دوباره از «{MENU_BUY}» شروع کنید."
 )
 
@@ -832,7 +809,7 @@ def link_welcome(customer_name: str, accounts_linked: int) -> str:
 # service.
 SERVICE_UNLIMITED = (
     "سرویس فعلی شما نامحدود است و حجم اضافه نمی‌خواهد — برای همین خریدی ثبت نشد "
-    "و پولی از کیف پولتان کم نشد.\n"
+    "و پولی از موجودی‌تان کم نشد.\n"
     "اگر برای دستگاه دیگری سرویس جداگانه می‌خواهید، به پشتیبانی پیام بدهید تا برایتان بسازیم."
 )
 
@@ -842,7 +819,7 @@ SERVICE_UNLIMITED = (
 # moves. Same shape as its twin: the fact, the way forward, and the
 # no-money-moved reassurance.
 PAYG_TOPUP_INSTEAD = (
-    "سرویس فعلی شما مصرفی است — به‌جای بسته، کیف پولتان را شارژ کنید؛ "
+    "سرویس فعلی شما مصرفی است — به‌جای بسته، موجودی‌تان را شارژ کنید؛ "
     "مصرف روزانه از آن کم می‌شود.\n"
-    "این خرید ثبت نشد و پولی از کیف پولتان کم نشد."
+    "این خرید ثبت نشد و پولی از موجودی‌تان کم نشد."
 )

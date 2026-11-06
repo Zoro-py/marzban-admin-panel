@@ -138,7 +138,7 @@ async def main() -> None:
           and context.user_data[shop._STATE] == shop._STATE_AWAITING_RECEIPT)
     text = msg.replies[-1][0]
     check("sub-min text carries the minimum AND the surplus promise",
-          "حداقل" in text and "مازاد بر بدهی به کیف پولتان برمی‌گردد" in text
+          "حداقل" in text and "مازادش به موجودی‌تان برمی‌گردد" in text
           and "۵۰,۰۰۰" in text)
     check("sub-min text still names the actual debt (۳۰,۰۰۰)", "۳۰,۰۰۰" in text)
     check("sub-min text has the Latin copy span for the bank app",
@@ -187,7 +187,7 @@ async def main() -> None:
           msg.replies[-1][0] == texts.PAYG_TOPUP_INSTEAD)
     check("PAYG_TOPUP_INSTEAD clears the flow state", context.user_data == {})
     check("PAYG_TOPUP_INSTEAD text says no money moved",
-          "پولی از کیف پولتان کم نشد" in texts.PAYG_TOPUP_INSTEAD)
+          "پولی از موجودی‌تان کم نشد" in texts.PAYG_TOPUP_INSTEAD)
 
     # SERVICE_IS_UNLIMITED keeps its existing mapping (regression).
     stub.order_error = ("SERVICE_IS_UNLIMITED: renewal target has no cap", 409)
@@ -207,8 +207,8 @@ async def main() -> None:
     check("502 on pay maps to PURCHASE_FAILED_REFUNDED",
           any(r[0] == texts.PURCHASE_FAILED_REFUNDED for r in msg.replies))
     check("refund text states the money came back",
-          "به کیف پولتان برگشت" in texts.PURCHASE_FAILED_REFUNDED
-          and "موجودی‌تان سالم است" in texts.PURCHASE_FAILED_REFUNDED)
+          "به موجودی‌تان برگشت" in texts.PURCHASE_FAILED_REFUNDED
+          and "برگشت — سالم است" in texts.PURCHASE_FAILED_REFUNDED)
 
     # Any other failure keeps the generic error.
     stub.pay_error = ("boom", 500)
@@ -241,15 +241,15 @@ async def main() -> None:
     # ── Ride-along: the payg meter wallet label ───────────────────────────
     check("english meter note → بیل مصرف روزانه",
           shop._wallet_label({"type": "purchase", "note": "Payg meter: 0.123 GB"})
-          == "بیل مصرف روزانه")
+          == "مصرف روزانه")
     check("persian meter note (backend's relabel) → بیل مصرف روزانه",
           shop._wallet_label({"type": "purchase", "note": "بیل مصرف روزانه: 0.123 GB"})
-          == "بیل مصرف روزانه")
+          == "مصرف روزانه")
     check("a real purchase keeps خرید سرویس",
           shop._wallet_label({"type": "purchase", "note": None}) == "خرید سرویس"
           and shop._wallet_label({"type": "purchase", "note": "order #12"}) == "خرید سرویس")
     check("other entry types keep their labels",
-          shop._wallet_label({"type": "topup", "note": None}) == "شارژ کیف پول"
+          shop._wallet_label({"type": "topup", "note": None}) == "شارژ"
           and shop._wallet_label({"type": "refund", "note": None}) == "بازگشت وجه"
           and shop._wallet_label({"type": "unknown", "note": None}) == "تراکنش")
 
@@ -274,7 +274,7 @@ async def main() -> None:
     await shop.show_wallet(upd, context)
     wallet_text = msg.replies[-1][0]
     check("meter entry renders as بیل مصرف روزانه in the wallet screen",
-          "بیل مصرف روزانه: ۱,۲۳۴ تومان" in wallet_text)
+          "مصرف روزانه: ۱,۲۳۴ تومان" in wallet_text)
     check("plain purchase on the same screen still reads خرید سرویس",
           "خرید سرویس: ۱۰۰,۰۰۰ تومان" in wallet_text)
 
