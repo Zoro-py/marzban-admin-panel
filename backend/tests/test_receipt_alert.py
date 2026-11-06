@@ -32,7 +32,16 @@ from sqlmodel import Session, select  # noqa: E402
 from app.auth import require_auth  # noqa: E402
 from app.db import engine, init_db  # noqa: E402
 from app.main import app  # noqa: E402
-from app.models import Account, AccountEvent, ShopOrder, ShopSettings, ShopTopup, ShopUser, ShopWalletEntry  # noqa: E402
+from app.models import (  # noqa: E402
+    Account,
+    AccountEvent,
+    ShopOrder,
+    ShopSettings,
+    ShopTopup,
+    ShopTopupStatus,
+    ShopUser,
+    ShopWalletEntry,
+)
 
 init_db()
 
@@ -98,7 +107,15 @@ try:
     check("dupe warning text present", "already used" in caption2)
     check("second caption also shows its own typed text", "trx-778899" in caption2)
 
-    # A photo-only topup (no receipt_text) shows neither line.
+    # A photo-only topup (no receipt_text) shows neither line. Customer 555's
+    # FIRST topup is still pending — the one-pending-topup guard (deliberate
+    # product behaviour) refuses a second one — so approve r1 first, exactly
+    # like the operator would, before this customer sends another receipt.
+    with Session(engine) as session:
+        r1_row = session.get(ShopTopup, r1.json()["id"])
+        r1_row.status = ShopTopupStatus.approved
+        session.add(r1_row)
+        session.commit()
     r3 = client.post("/api/shop/bot/topups", headers=BOT_HEADERS,
                      json={"telegram_id": 555, "claimed_amount": 15_000, "receipt_file_id": "file123"})
     check("photo-only topup created", r3.status_code == 200)

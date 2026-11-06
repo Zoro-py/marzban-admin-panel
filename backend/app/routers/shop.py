@@ -1873,11 +1873,16 @@ async def bot_create_topup(
     # service is built. If Marzban is having a bad minute, the receipt is
     # still in front of the operator.
     background_tasks.add_task(_grant_bridge_service, topup.id)
+    # Keyword args on the tail parameters on purpose: the pre-2026-11 call
+    # passed (..., receipt_text, reused.id, for_debt) against a signature
+    # ending (..., receipt_text, for_debt, reused_from_topup_id) — the dupe
+    # warning reached `for_debt` and never rendered (test_receipt_alert).
     background_tasks.add_task(_alert_operator_to_topup, topup.id, user.telegram_id,
                               user.display_name or user.telegram_username, body.receipt_file_id,
                               topup.claimed_amount, topup.reference_code, order_summary,
-                              body.receipt_text, reused.id if reused else None,
-                              body.for_debt)
+                              body.receipt_text,
+                              for_debt=body.for_debt,
+                              reused_from_topup_id=reused.id if reused else None)
 
     return ShopTopupRead(**topup.model_dump(), telegram_id=user.telegram_id, display_name=user.display_name)
 
