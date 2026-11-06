@@ -1528,7 +1528,7 @@ def test_sweep_late_delivery_pushes_once() -> None:
 
     qr_pushes: list[str] = []
 
-    async def capture_photo(chat_id, photo, caption, *, filename="qr.png"):
+    async def capture_photo(chat_id, photo, caption, *, filename="qr.png", reply_markup=None):
         qr_pushes.append(caption)
 
     original = notify_module.send_photo_to_shop_user
@@ -1640,7 +1640,7 @@ def test_payg_delivery_uses_payg_caption_not_trial() -> None:
 
     captions: list[str] = []
 
-    async def capture_photo(chat_id, photo, caption, *, filename="qr.png"):
+    async def capture_photo(chat_id, photo, caption, *, filename="qr.png", reply_markup=None):
         captions.append(caption)
 
     original = notify_module.send_photo_to_shop_user

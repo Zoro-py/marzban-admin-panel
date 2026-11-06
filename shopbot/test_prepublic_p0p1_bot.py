@@ -130,13 +130,9 @@ async def main() -> None:
     # ── F10: shortfall < min_topup ────────────────────────────────────────
     stub.order_intent = order_intent(shortfall=30_000)
     (upd, context), msg = make_update()
+    # T4: the username ask left the mandatory path — the volume goes
+    # STRAIGHT to the payment screen now.
     await shop._handle_volume(upd, context, 10)
-    # F-E: the optional-name step sits between the volume and the payment
-    # screen — an empty text answers it as "no name", continuing the flow on
-    # the SAME context (the stashed volume/state live there).
-    msg.text = shop.texts.SKIP_NAME  # the «بدون نام» button's own text
-    upd.message = msg  # handle_text reads update.message.text
-    await shop.handle_text(upd, context)
     check("sub-min shortfall asks for min_topup, not the shortfall",
           context.user_data[shop._PENDING_AMOUNT] == 50_000
           and context.user_data[shop._STATE] == shop._STATE_AWAITING_RECEIPT)
@@ -159,13 +155,9 @@ async def main() -> None:
     # ── F10: shortfall > min_topup keeps the exact-amount ask ────────────
     stub.order_intent = order_intent(shortfall=120_000)
     (upd, context), msg = make_update()
+    # T4: the username ask left the mandatory path — the volume goes
+    # STRAIGHT to the payment screen now.
     await shop._handle_volume(upd, context, 10)
-    # F-E: the optional-name step sits between the volume and the payment
-    # screen — an empty text answers it as "no name", continuing the flow on
-    # the SAME context (the stashed volume/state live there).
-    msg.text = shop.texts.SKIP_NAME  # the «بدون نام» button's own text
-    upd.message = msg  # handle_text reads update.message.text
-    await shop.handle_text(upd, context)
     check("above-min shortfall asks exactly the shortfall",
           context.user_data[shop._PENDING_AMOUNT] == 120_000)
     text = msg.replies[-1][0]
@@ -177,13 +169,9 @@ async def main() -> None:
     SESSION["min_topup"] = 0
     stub.order_intent = order_intent(shortfall=30_000)
     (upd, context), msg = make_update()
+    # T4: the username ask left the mandatory path — the volume goes
+    # STRAIGHT to the payment screen now.
     await shop._handle_volume(upd, context, 10)
-    # F-E: the optional-name step sits between the volume and the payment
-    # screen — an empty text answers it as "no name", continuing the flow on
-    # the SAME context (the stashed volume/state live there).
-    msg.text = shop.texts.SKIP_NAME  # the «بدون نام» button's own text
-    upd.message = msg  # handle_text reads update.message.text
-    await shop.handle_text(upd, context)
     check("min_topup=0 asks the bare shortfall as before",
           context.user_data[shop._PENDING_AMOUNT] == 30_000
           and "برای تکمیل، مبلغ" in msg.replies[-1][0])

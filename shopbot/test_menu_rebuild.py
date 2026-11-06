@@ -79,6 +79,10 @@ def make_update(text: str | None = None, user_id: int = 555, cb_data: str | None
 
 
 def rows_of(markup) -> list[list[str]]:
+    if markup is None:
+        return []
+    if hasattr(markup, "inline_keyboard"):  # inline keyboard (T4 buy screen)
+        return [[btn.text for btn in row] for row in markup.inline_keyboard]
     return [[btn.text for btn in row] for row in markup.keyboard]
 
 

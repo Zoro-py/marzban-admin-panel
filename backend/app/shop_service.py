@@ -1296,22 +1296,37 @@ async def deliver_order_to_customer(session: Session, order: ShopOrder) -> bool:
             logger.exception("Order #%s: could not warn the customer about the missing link", order.id)
         return False
 
+    # T4 (2026-11-06): the whole delivery is ONE message — the QR photo whose
+    # caption carries the plan line, the link on its own line (copy-safe: a
+    # URL alone on a line never gets bidi-reordered into something broken),
+    # and the setup guide — plus the link as an inline URL button for the
+    # one-tap open. The link stays in the CAPTION because v2rayNG's import is
+    # paste-driven; the button is the convenience, not the only path.
     delivered = False
     try:
         if is_payg_start:
-            caption = shop_texts.delivery_caption_payg()
+            plan_caption = shop_texts.delivery_caption_payg()
         else:
-            caption = shop_texts.delivery_caption(
+            plan_caption = shop_texts.delivery_caption(
                 order.data_limit_gb, order.duration_days,
                 is_trial=is_trial and not order.is_provisional,
                 is_provisional=order.is_provisional,
                 hours=settings.provisional_hours,
             )
+        caption = (
+            f"{plan_caption}\n\n"
+            f"{shop_texts.delivery_link(url)}\n\n"
+            f"{shop_texts.setup_guide(settings.support_handle)}"
+        )
+        reply_markup = {
+            "inline_keyboard": [[{"text": "🔗 لینک اشتراک", "url": url}]],
+        }
         await send_photo_to_shop_user(
             user.telegram_id,
             subscription_qr_png(url),
             caption,
             filename=f"{order.marzban_username or order.id}.png",
+            reply_markup=reply_markup,
         )
         delivered = True
     except Exception:
@@ -1320,12 +1335,13 @@ async def deliver_order_to_customer(session: Session, order: ShopOrder) -> bool:
     # The link goes as its own message even when the QR failed — a customer
     # who can copy a URL is not blocked by a missing image, and this is the
     # part that actually carries the service.
-    try:
-        await send_to_shop_user(user.telegram_id, shop_texts.delivery_link(url))
-        await send_to_shop_user(user.telegram_id, shop_texts.setup_guide(settings.support_handle))
-        delivered = True
-    except Exception:
-        logger.exception("Order #%s: subscription link could not be sent", order.id)
+    if not delivered:
+        try:
+            await send_to_shop_user(user.telegram_id, shop_texts.delivery_link(url))
+            await send_to_shop_user(user.telegram_id, shop_texts.setup_guide(settings.support_handle))
+            delivered = True
+        except Exception:
+            logger.exception("Order #%s: subscription link could not be sent", order.id)
 
     return delivered
 

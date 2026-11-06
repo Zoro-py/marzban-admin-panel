@@ -136,6 +136,21 @@ RENEW_BUTTON = "🔄 تمدید همین سرویس"
 BUY_BUTTON = "🛒 خرید سرویس"
 CANCEL = "❌ انصراف"
 
+# ── T4 buy flow — one screen, one action ──────────────────────────────────
+
+# Inline button on the volume screen: the OPTIONAL pre-pick of the Marzban
+# username. Default stays the auto shop{id} name — the ask is off the
+# mandatory path entirely (design decision 3, docs/ZCODE_SHOPBOT_UX_DESIGN.md).
+PREFERRED_NAME_BUTTON = "✏️ نام کاربری دلخواه"
+ASK_PREFERRED_NAME = (
+    "نام کاربری سرویست را انتخاب کن (اختیاری):\n"
+    "حروف انگلیسی، عدد و - یا _ — بین ۳ تا ۳۰ کاراکتر، مثلاً fateme.\n"
+    "این همون اسمیه که توی اپ و اشتراکت دیده می‌شه. «بدون نام» = خودکار (مثل shop10)."
+)
+# An old inline button whose flow has already moved on (or died with a
+# restart): answered, never silence.
+STALE_BUTTON = "این دکمه قدیمی شده — از منوی پایین ادامه دهید."
+
 # Offered once, after a first real purchase (never on /start — see
 # handlers/shop.py) — never required for anything.
 SHARE_PHONE_BUTTON = "📞 اشتراک‌گذاری شماره"
@@ -647,21 +662,6 @@ SERVICE_NAME_SAVED = "✅ ثبت شد — از این به بعد سرویست �
 SERVICE_NAME_CLEARED = "نام حذف شد — سرویست دوباره با حجمش نام‌گذاری می‌شود."
 SERVICE_NAME_TOO_LONG = "نام طولانی است — تا ۴۰ کاراکتر."
 
-ASK_OPTIONAL_USERNAME = (
-    "نام کاربری سرویست را انتخاب کن (اختیاری):\n"
-    "حروف انگلیسی، عدد و - یا _ — بین ۳ تا ۳۰ کاراکتر، مثلاً fateme."
-    "این همون اسمیه که توی اپ و اشتراکت دیده می‌شه. «بدون نام» = خودکار (مثل shop10)."
-)
-USERNAME_INVALID = "نام کاربری فقط حروف انگلیسی، عدد و - یا _ است — بین ۳ تا ۳۰ کاراکتر."
-def username_taken(name: str) -> str:
-    return f"«{name}» قبلاً گرفته شده — یکی دیگر انتخاب کن."
-
-
-
-ASK_OPTIONAL_NAME = (
-    "برای این سرویس چه اسمی بگذاریم؟ (اختیاری)\n"
-    "مثلاً «گوشی علی» — هر وقت هم خواستی از «سرویس‌های من» با ✏️ عوضش کن."
-)
 SKIP_NAME = "بدون نام"
 PURCHASE_CANCELLED = "خرید لغو شد — هر وقت خواستی از «🛒 خرید سرویس» شروع کن."
 

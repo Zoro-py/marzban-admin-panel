@@ -293,17 +293,23 @@ async def send_to_shop_user(chat_id: int, text: str, reply_markup: dict | None =
         raise RuntimeError(f"Telegram rejected the customer message ({resp.status_code}): {resp.text}")
 
 
-async def send_photo_to_shop_user(chat_id: int, photo: bytes, caption: str, *, filename: str = "qr.png") -> None:
+async def send_photo_to_shop_user(chat_id: int, photo: bytes, caption: str, *,
+                                  filename: str = "qr.png",
+                                  reply_markup: dict | None = None) -> None:
     """The shop-bot equivalent of notify_admin_photo — delivers a purchased
     account's QR to the buyer. Shares notify_admin_photo's rate-limit handling
     reasoning but targets one customer at a time, so it does not need the
-    batch spacing."""
+    batch spacing. `reply_markup` (a Bot-API dict, e.g. an inline URL button)
+    rides the same multipart call, JSON-encoded like send_to_shop_user's."""
     if not settings.shop_bot_token:
         raise RuntimeError("SHOP_BOT_TOKEN not set — nowhere to send this customer message")
+    payload: dict = {"chat_id": chat_id, "caption": _truncate_caption(caption)}
+    if reply_markup is not None:
+        payload["reply_markup"] = json.dumps(reply_markup)
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(
             f"https://api.telegram.org/bot{settings.shop_bot_token}/sendPhoto",
-            data={"chat_id": chat_id, "caption": _truncate_caption(caption)},
+            data=payload,
             files={"photo": (filename, photo, "image/png")},
         )
     if resp.status_code != 200:

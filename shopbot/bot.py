@@ -45,11 +45,15 @@ from handlers.shop import (  # noqa: E402
     on_account_detail,
     on_account_topup,
     on_auto_renew,
+    on_buy_confirm,
+    on_menu_callback,
     on_pay_debt,
     on_pay_debt_wallet_confirm,
     on_renew,
     on_service_more,
     on_service_name,
+    on_username_ask,
+    on_volume_choice,
     start_pay_debt,
     handle_photo,
     handle_text,
@@ -116,6 +120,12 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_renew, pattern=r"^renew:"))
     app.add_handler(CallbackQueryHandler(on_service_more, pattern=r"^svcmore:"))
     app.add_handler(CallbackQueryHandler(on_service_name, pattern=r"^svcname:"))
+    # T4 buy flow: the inline volume screen, its optional username pre-pick,
+    # the menu-level shortcuts, and the wallet-purchase confirm/cancel.
+    app.add_handler(CallbackQueryHandler(on_volume_choice, pattern=r"^vol:"))
+    app.add_handler(CallbackQueryHandler(on_username_ask, pattern=r"^uname:ask$"))
+    app.add_handler(CallbackQueryHandler(on_menu_callback, pattern=r"^menu:"))
+    app.add_handler(CallbackQueryHandler(on_buy_confirm, pattern=r"^buy:"))
     app.add_handler(CallbackQueryHandler(on_auto_renew, pattern=r"^autorenew:"))
     # Debt-payment keyboard (council 2026-10-24): debt:wallet / debt:receipt /
     # debt:wallet:yes / debt:cancel. More specific patterns registered BEFORE
