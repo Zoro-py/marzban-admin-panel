@@ -204,4 +204,8 @@
 - **رباتِ قدیمی + بک‌اندِ جدید:** کدِ واقعیِ بیس (`git show 2b57db2:…` → `temp/r5_compat/`) با stubِ پاسخ‌های NEW-shape پیموده شد (`temp/r5_compat/run_oldbot_compat.py`، ۱۰ چک، سبز با venv ربات) — پنجرهٔ بینِ دو دیپلوی کاملاً سالم؛ فیلدهای جدید نادیده؛ payloadهای POST قدیمی زیرمجموعهٔ قراردادِ جدید؛ رفتارهای قدیمیِ شناخته‌شده (باگِ debt:cancel، نبودِ سؤالِ نام در این بیس) ثبت و غیر-کرش اثبات شد.
 - **برگهٔ دیپلوی:** `docs/deploys/2026-11-06_shopbot_ux.md` — **NOT APPLIED، فقط با GO مالک**: ترتیب (اول backend، بعد shopbot + دلیلِ تست‌شده)، پیش‌نیازِ پوش، بکاپِ sqlite با API رسمی به `/app/data/manual_backups/`، دستورهای build، اسموکِ بک‌اند و اسموکِ ۷مرحله‌ایِ تلگرامی با اکانتِ تستِ دورریز، rollback دوسرویسی (`git checkout 2b57db2` + rebuild؛ هیچ DDL/نوشدنیِ داده‌ای در کار نیست).
 
+## R6 — طراحیِ تمدیدِ per-account — ✅ فقط سند
+
+- **سند:** `docs/ZCODE_SHOPBOT_RENEW_TARGET_DESIGN.md` — وضعِ موجودِ VERIFIED (فایل:خط)، ستونِ `ShopOrder.target_account_id` + migration سبکِ همین ریپو، هلپرِ `resolve_renew_target` (پاریتیِ None→`renewable_account`، مالکیت با استخراجِ `visible_account_ids` مشترک با rename، گاردهای per-target با همان پیشوندها)، endpointها + بیتِ تواناییِ `per_account_renewal` در سشن (نکتهٔ حیاتی: pydanticِ بک‌اندِ قدیمی فیلد را بی‌صدا می‌اندازد — ربات بدونِ بیت هرگز فیلد را نمی‌فرستد)، کال‌بکِ `ren:<id>:<gb>` با سازگاریِ `renew:`، UX «کارت = انتخاب‌گر» بدونِ صفحهٔ جدا، جدولِ ریسک‌های پولی، فهرستِ ۱۰تستیِ قرمز-اول و ترتیبِ ۴گامیِ پیاده‌سازی. **هیچ کدی نوشته نشد.**
+
 </div>
