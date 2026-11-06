@@ -189,6 +189,20 @@ async def main() -> None:
           any(c == "svcname:11" for _, c in btns) and any(c == "autorenew:11" for _, c in btns),
           repr(btns))
 
+    # ── 6b. multi-service: renew button only on the card that renews ────
+    ROWS.clear()
+    ROWS.append(row(account_id=11, renews_here=True))
+    ROWS.append(row(account_id=12, renews_here=False, used_traffic=30 * 1024 ** 3))
+    (upd, context), msg = make_update()
+    await shop.show_accounts(upd, context)
+    first = [c for _, c in [(b.text, b.callback_data or "") for r_ in msg.replies[0][1].inline_keyboard for b in r_]]
+    second = [c for _, c in [(b.text, b.callback_data or "") for r_ in msg.replies[1][1].inline_keyboard for b in r_]]
+    check("target card keeps its renew button", any(c.startswith("renew:") for c in first), repr(first))
+    check("non-target card has NO renew button", not any(c.startswith("renew:") for c in second), repr(second))
+    check("non-target ended card does not promise a renew tap",
+          texts.RENEW_HINT_ENDED not in msg.replies[1][0], repr(msg.replies[1][0]))
+    check("non-target card keeps link + more", any(c.startswith("svcmore:") for c in second), repr(second))
+
     # ── 7. empty list unchanged ──────────────────────────────────────────
     ROWS.clear()
     (upd, context), msg = make_update()

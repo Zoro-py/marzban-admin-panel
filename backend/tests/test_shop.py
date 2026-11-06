@@ -533,6 +533,33 @@ def test_accounts_are_scoped_to_their_buyer() -> None:
     check("an unknown id sees none", stranger, [])
 
 
+def test_accounts_mark_the_one_renewable_service() -> None:
+    print("\n[12b] a renewal extends ONE service; only that card says renews_here")
+    fake = FakeMarzban()
+    client = _reset(fake)
+    buyer = _make_user(client, telegram_id=777)
+    _credit(buyer, 200_000)
+    r1 = client.post("/api/shop/bot/purchase", headers=BOT_HEADERS,
+                     json={"telegram_id": 777, "data_limit_gb": 10})
+    one = client.get("/api/shop/bot/accounts", headers=BOT_HEADERS, params={"telegram_id": 777}).json()
+    check("single service: it renews here", [r["renews_here"] for r in one], [True])
+    intent = client.post("/api/shop/bot/orders", headers=BOT_HEADERS,
+                         json={"telegram_id": 777, "data_limit_gb": 10, "force_new_service": True}).json()
+    r2 = client.post(f"/api/shop/bot/orders/{intent['order_id']}/pay", headers=BOT_HEADERS,
+                     json={"telegram_id": 777})
+    check("second (separate) service bought", (r1.status_code, r2.status_code), (200, 200))
+    rows = client.get("/api/shop/bot/accounts", headers=BOT_HEADERS, params={"telegram_id": 777}).json()
+    check("two services listed", len(rows), 2)
+    check("exactly one card renews here", sum(1 for r in rows if r["renews_here"]), 1)
+    from app.shop_service import renewable_account
+    with Session(engine) as s:
+        target = renewable_account(s, buyer)
+        check("...and it is the account renewable_account picks",
+              [r["account_id"] for r in rows if r["renews_here"]], [target.id])
+    stranger = client.get("/api/shop/bot/accounts", headers=BOT_HEADERS, params={"telegram_id": 999}).json()
+    check("unknown user: still empty", stranger, [])
+
+
 def main() -> int:
     init_db()
     for test in (
@@ -550,6 +577,7 @@ def main() -> int:
         test_closed_shop_and_bounds,
         test_cannot_open_shop_half_configured,
         test_accounts_are_scoped_to_their_buyer,
+        test_accounts_mark_the_one_renewable_service,
         test_order_first_approval_delivers,
         test_order_first_short_approval_waits,
         test_order_paid_from_wallet,

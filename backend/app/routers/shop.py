@@ -2196,6 +2196,12 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
                 subscription_url=resolve_subscription_url(account.subscription_url),
                 created_at=account.created_at,
             ))
+    from app.shop_service import renewable_account
+
+    target = renewable_account(session, user.id)
+    if target is not None:
+        for row in rows:
+            row.renews_here = row.account_id == target.id
     return rows
 
 

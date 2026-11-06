@@ -1476,7 +1476,13 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # T3: an ended card states what happened AND what one tap does, and
         # its تمدید button becomes the FIRST thing on the card.
         ended = (limit_gb is not None and used_gb >= limit_gb) or (days_left is not None and days_left <= 0)
-        if ended:
+        # A renewal extends ONE service (the backend's renewable_account), not
+        # the card it was tapped on. The backend marks that card; every other
+        # card of a multi-service customer carries no renew button, so no
+        # tap can extend (and charge for) the wrong service. A backend that
+        # predates the field is treated as before (button shown).
+        can_renew = row.get("renews_here", True)
+        if ended and can_renew:
             lines.append(texts.RENEW_HINT_ENDED)
         # The card carries its own actions (T3): تمدید starts the renewal of
         # the same size via the EXISTING renew: callback (the backend's expiry
@@ -1487,7 +1493,7 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # auto-renew) sit one level down behind ⋯ بیشتر.
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         buttons = []
-        if limit_gb is not None and row.get("account_id"):
+        if can_renew and limit_gb is not None and row.get("account_id"):
             buttons.append([InlineKeyboardButton(texts.CARD_RENEW_BUTTON,
                                                  callback_data=f"renew:{round(limit_gb, 2):g}")])
         if row["subscription_url"]:

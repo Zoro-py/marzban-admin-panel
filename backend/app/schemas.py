@@ -1067,6 +1067,12 @@ class ShopBotAccountRow(BaseModel):
     status: Optional[str]
     subscription_url: Optional[str]
     created_at: datetime
+    # True only on the ONE row a «تمدید» purchase would actually extend
+    # (shop_service.renewable_account). The renew purchase path has no
+    # per-account target, so the bot shows its renew button on this card
+    # only — on a multi-service customer every other card would otherwise
+    # promise «renew this» and extend a different service.
+    renews_here: bool = False
 
 
 # ── shop-bot link for EXISTING customers (operator-created accounts) ──────
