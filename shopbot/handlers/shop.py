@@ -244,10 +244,16 @@ async def _maybe_offer_phone_share(update: Update, context: ContextTypes.DEFAULT
     if session.get("phone") or context.chat_data.get(_PHONE_ASKED):
         return
     context.chat_data[_PHONE_ASKED] = True
+    # T7: the menu rides UNDER the prompt — sharing a phone number must never
+    # strand the customer on a two-button keyboard at the exact moment their
+    # service just arrived (T0 trap #1).
+    menu_rows = [[KeyboardButton(b.text) for b in row] for row in main_menu(session).keyboard]
     await update.effective_message.reply_text(
         texts.SHARE_PHONE_PROMPT,
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton(texts.SHARE_PHONE_BUTTON, request_contact=True)], [KeyboardButton(texts.PHONE_LATER)]],
+            [[KeyboardButton(texts.SHARE_PHONE_BUTTON, request_contact=True),
+              KeyboardButton(texts.PHONE_LATER)],
+             *menu_rows],
             resize_keyboard=True,
         ),
     )
@@ -1064,6 +1070,11 @@ async def handle_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     here. Answering is the point: silence reads as a broken bot, especially to
     someone who has just sent money."""
     session = await _session(update)
+    # Free-text money words get the answer they are asking for (T7): the
+    # balance AND the debt live behind one door — «حساب من».
+    if any(word in text for word in ("موجودی", "حساب", "بدهی", "بدهکار", "باقیمانده")):
+        return await show_account(update, context)
+
     await _reply(update, texts.not_understood(_handle(session)), session)
 
 
@@ -1090,6 +1101,20 @@ def _looks_like_receipt_text(text: str) -> bool:
         return False
     digit_count = sum(1 for ch in stripped.translate(_DIGITS) if ch.isdigit())
     return digit_count >= _MIN_RECEIPT_TEXT_DIGITS
+
+
+_QUESTION_WORDS = ("کی ", "چی ", "چرا", "چقدر", "چند ", "میشه", "می‌شه", "سلام",
+                   "لطفا", "می‌خوام", "می‌خوام")
+
+
+def _looks_like_question(text: str) -> bool:
+    """A real question typed while the bot waits for a receipt — the customer
+    deserves an answer (the nudge + menu), not a form rejection. A receipt /
+    tracking code is digits-heavy, so the two classifiers barely overlap."""
+    if "؟" in text or "?" in text:
+        return True
+    lowered = text.strip()
+    return any(w in lowered for w in _QUESTION_WORDS)
 
 
 async def _submit_receipt(
@@ -1468,7 +1493,13 @@ async def on_service_more(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     re-checked server-side when they actually run."""
     query = update.callback_query
     await query.answer()
-    account_id = query.data.split(":", 1)[1]
+    try:
+        account_id = query.data.split(":", 1)[1]
+        if not account_id.isdigit():
+            raise ValueError(account_id)
+    except (IndexError, ValueError):
+        await update.effective_message.reply_text(texts.STALE_BUTTON)
+        return
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     await update.effective_message.reply_text(
         texts.SERVICE_MORE_HINT,
@@ -1485,7 +1516,13 @@ async def on_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     only opens the ask); the id rides in the callback data."""
     query = update.callback_query
     await query.answer()
-    account_id = query.data.split(":", 1)[1]
+    try:
+        account_id = query.data.split(":", 1)[1]
+        if not account_id.isdigit():
+            raise ValueError(account_id)
+    except (IndexError, ValueError):
+        await update.effective_message.reply_text(texts.STALE_BUTTON)
+        return
     context.user_data.clear()
     context.user_data[_STATE] = _STATE_AWAITING_SERVICE_NAME
     context.user_data[_SERVICE_NAME_ACCOUNT] = account_id
@@ -1652,12 +1689,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if state == _STATE_AWAITING_RECEIPT:
         # A plausible tracking code is accepted as the receipt itself — see
-        # _submit_receipt. Anything else (a question, "واریز کردم" with
-        # nothing to identify it by) gets an answer rather than silently
-        # dropped, but does NOT open a pending top-up: that would burn the
-        # operator's attention on something that isn't proof of anything.
+        # _submit_receipt. A QUESTION («کی تایید می‌کنی؟») is answered, not
+        # bounced with the receipt prompt (T7); anything else non-receipt
+        # gets the prompt, still without opening a pending top-up: that would
+        # burn the operator's attention on something that isn't proof.
         if _looks_like_receipt_text(text):
             return await _submit_receipt(update, context, receipt_text=text.strip())
+        if _looks_like_question(text):
+            session = await _session(update)
+            await _reply(update, texts.not_understood(_handle(session)), session)
+            return
+            return
         await update.effective_message.reply_text(texts.NEED_PHOTO)
         return
 
@@ -1682,5 +1724,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             session,
         )
         return
+
+    # Free-text money words get the answer they are asking for (T7): the
+    # balance AND the debt live behind one door — «حساب من».
+    if any(word in text for word in ("موجودی", "حساب", "بدهی", "بدهکار", "باقیمانده")):
+        return await show_account(update, context)
 
     await _reply(update, texts.not_understood(_handle(session)), session)
