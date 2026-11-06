@@ -208,4 +208,33 @@
 
 - **سند:** `docs/ZCODE_SHOPBOT_RENEW_TARGET_DESIGN.md` — وضعِ موجودِ VERIFIED (فایل:خط)، ستونِ `ShopOrder.target_account_id` + migration سبکِ همین ریپو، هلپرِ `resolve_renew_target` (پاریتیِ None→`renewable_account`، مالکیت با استخراجِ `visible_account_ids` مشترک با rename، گاردهای per-target با همان پیشوندها)، endpointها + بیتِ تواناییِ `per_account_renewal` در سشن (نکتهٔ حیاتی: pydanticِ بک‌اندِ قدیمی فیلد را بی‌صدا می‌اندازد — ربات بدونِ بیت هرگز فیلد را نمی‌فرستد)، کال‌بکِ `ren:<id>:<gb>` با سازگاریِ `renew:`، UX «کارت = انتخاب‌گر» بدونِ صفحهٔ جدا، جدولِ ریسک‌های پولی، فهرستِ ۱۰تستیِ قرمز-اول و ترتیبِ ۴گامیِ پیاده‌سازی. **هیچ کدی نوشته نشد.**
 
+## وضعیت نهایی راند ۲
+
+<div dir="rtl">
+
+| تسک | وضعیت |
+|---|---|
+| §0 خواندنِ اجباری (۴ اسکیل + ۴ نوت) | ✅ |
+| R1 ریویو بحرانی | ✅ `docs/ZCODE_SHOPBOT_REVIEW.md` — ۱۲ یافته (۱ HIGH فیکس: NameError ویس‌ها) + ۳ موردِ پولیِ ثبت‌شده |
+| R2 پاس متنی | ✅ `docs/ZCODE_SHOPBOT_COPY_REVIEW.md` — ۱۵ اعمال، ۶ پیشنهاد |
+| R3 ترنسکریپت | ✅ `docs/SHOPBOT_SCREENS.md` + فیکسِ S-1 (منو در انتظارِ رسید) |
+| R4 اسکریپت مصرف | ✅ صفر مغایرت با محاسبهٔ دستی؛ فقط-خواندنی اثبات شد |
+| R5 سازگاری + دیپلوی | ✅ دو جهت تست شد؛ `docs/deploys/2026-11-06_shopbot_ux.md` (NOT APPLIED) |
+| R6 طراحی per-account | ✅ `docs/ZCODE_SHOPBOT_RENEW_TARGET_DESIGN.md` (فقط سند) |
+| پول: هیچ تغییری در منطق پولِ بک‌اند نشد | ✅ فقط رشته‌های رله‌شونده (R1-3/R1-4) |
+
+**کامیت‌های راند ۲ (به‌ترتیب):** `724c300` (R1) → `b861a0b` (R2) → `e67f86a` (R3) → `08bddf0` (R4) → `5af60d5` (R5) → `fd33537` (R6) — همه روی `feat/shopbot-ux-rebuild`، UNPUSHED.
+
+**تست‌های نهایی (همه سبز):** ربات از `shopbot/` با `../bot/venv/Scripts/python.exe` — ۱۱ سوییت: menu_rebuild، buy_flow، service_card، dead_ends، one_vocabulary، prepublic_p0p1_bot، shop_link_claim، texts_are_strings، walkthrough_9_journeys، **r1_review_fixes (۱۸ چک، جدید)**، **compat_deploy (۸ چک، جدید)**. بک‌اند از `backend/` با `./venv/Scripts/python.exe -m tests.<name>` — test_shop، test_shop_debt_pay، test_receipt_alert، test_receipt_text_dedupe، test_shop_delivery_one_message.
+
+**سؤال‌های مالک (جدیدِ راند ۲):**
+① پیشنهادهای R2 که عمداً اعمال نشدند (P-1..P-6 در `ZCODE_SHOPBOT_COPY_REVIEW.md` — سرِ فهرست: اسلشِ «خرید / تمدید»، قولِ «همان لحظه»، …).
+② سه موردِ OWNER MUST DECIDE در `ZCODE_SHOPBOT_REVIEW.md` (M-1 هدفِ تمدید چند-سرویسی، M-2 دکمهٔ تمدیدِ کهنه، M-3 ثبتِ رفتارِ min(wallet,debt)) — دو موردِ اول با طراحیِ R6 راه‌حل دارند اگر GO بگیرند.
+③ گسترشِ رده‌بندِ سؤال به حالتِ آرام (S-6) — ارزان ولی با ریسکِ خطای‌خواندنِ عدد.
+④ GOی دیپلوی طبق `docs/deploys/2026-11-06_shopbot_ux.md` (پوشِ شاخه هم با همین GO).
+
+**گوتاها:** ویرایش سند ریویو سرتیترِ OWNER را یک‌بار خورد (ترمیم شد — insert قبل از سرتیتر باید old_stringِ کاملِ سرتیتر را بگیرد). «همینجا» ۸ اسپات داشت نه ۳ (grep اول منابع را کم شمرد). regex پارسِ TOTAL هارنسِ R4 جداکنندهٔ دوسpace را نمی‌گرفت (`\s*\|\s*`).
+
+</div>
+
 </div>
