@@ -48,6 +48,7 @@ from handlers.shop import (  # noqa: E402
     on_pay_debt,
     on_pay_debt_wallet_confirm,
     on_renew,
+    on_service_more,
     on_service_name,
     start_pay_debt,
     handle_photo,
@@ -113,6 +114,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(on_renew, pattern=r"^renew:"))
+    app.add_handler(CallbackQueryHandler(on_service_more, pattern=r"^svcmore:"))
     app.add_handler(CallbackQueryHandler(on_service_name, pattern=r"^svcname:"))
     app.add_handler(CallbackQueryHandler(on_auto_renew, pattern=r"^autorenew:"))
     # Debt-payment keyboard (council 2026-10-24): debt:wallet / debt:receipt /

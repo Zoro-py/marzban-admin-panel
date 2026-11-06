@@ -1348,23 +1348,50 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # for active/limited/expired rows (see account_line's default).
         lines = [texts.account_line(limit_gb, used_gb, days_left,
                                      status=row.get("status"), name=_display_service_name(row))]
-        # An inline URL BUTTON, not the raw link: subscription URLs churn on
-        # every panel-side modify (live 2026-10-01 — three different tokens
-        # in one hour), and a Latin URL printed inside Persian text gets
-        # bidi-reordered and copied wrong. A button always opens the CURRENT
-        # url without pasting anything into the chat. The nickname button
-        # (owner feature 2026-10-23) rides the same keyboard — ownership is
-        # re-checked server-side at save time; the button only opens the ask.
+        # T3: an ended card states what happened AND what one tap does, and
+        # its تمدید button becomes the FIRST thing on the card.
+        ended = (limit_gb is not None and used_gb >= limit_gb) or (days_left is not None and days_left <= 0)
+        if ended:
+            lines.append(texts.RENEW_HINT_ENDED)
+        # The card carries its own actions (T3): تمدید starts the renewal of
+        # the same size via the EXISTING renew: callback (the backend's expiry
+        # warnings use the same path — renewal-in-place). لینک اشتراک is a URL
+        # BUTTON, not the raw link: subscription URLs churn on every
+        # panel-side modify (live 2026-10-01) and a Latin URL inside Persian
+        # text gets bidi-reordered. The rarer actions (the nickname,
+        # auto-renew) sit one level down behind ⋯ بیشتر.
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         buttons = []
+        if limit_gb is not None and row.get("account_id"):
+            buttons.append([InlineKeyboardButton(texts.CARD_RENEW_BUTTON,
+                                                 callback_data=f"renew:{round(limit_gb, 2):g}")])
         if row["subscription_url"]:
             buttons.append([InlineKeyboardButton("🔗 لینک اشتراک", url=row["subscription_url"])])
         if row.get("account_id"):
-            buttons.append([InlineKeyboardButton("✏️ نام سرویس", callback_data=f"svcname:{row['account_id']}")])
+            buttons.append([InlineKeyboardButton(texts.CARD_MORE_BUTTON,
+                                                 callback_data=f"svcmore:{row['account_id']}")])
         keyboard = InlineKeyboardMarkup(buttons) if buttons else None
         await update.effective_message.reply_text("\n".join(lines), reply_markup=keyboard)
 
-    await _reply(update, texts.wallet_summary(session["balance"], session.get("ledger_debt", 0), session.get("debt_breakdown"), session.get("debt_exact", True)), session)
+    # (No wallet trailer: money has its own door — «حساب من» — and mixing the
+    # two on the services screen is the T0 finding this rebuild removes.)
+
+
+async def on_service_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """«⋯ بیشتر» on a service card: the rarer per-service actions, one level
+    down so the card itself stays narrow. Ownership for both actions is
+    re-checked server-side when they actually run."""
+    query = update.callback_query
+    await query.answer()
+    account_id = query.data.split(":", 1)[1]
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    await update.effective_message.reply_text(
+        texts.SERVICE_MORE_HINT,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ نام سرویس", callback_data=f"svcname:{account_id}")],
+            [InlineKeyboardButton(texts.AUTO_RENEW_BUTTON, callback_data=f"autorenew:{account_id}")],
+        ]),
+    )
 
 
 async def on_service_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

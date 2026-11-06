@@ -604,6 +604,18 @@ WALLET_EMPTY = (
 
 NO_ACCOUNTS = f"هنوز سرویسی نگرفته‌اید. از «{MENU_BUY}» شروع کنید."
 
+# ── the service card (T3) — the card carries its own actions ──────────────
+
+# One tap from the card starts the renewal of the same size (the same
+# renew: callback the backend's expiry warnings carry).
+CARD_RENEW_BUTTON = "🔄 تمدید"
+CARD_MORE_BUTTON = "⋯ بیشتر"
+SERVICE_MORE_HINT = "تنظیمات همین سرویس:"
+AUTO_RENEW_BUTTON = "⚡ تمدید خودکار (میانگین مصرفم)"
+# Under an ended card (volume gone or days up): what happened, and what one
+# tap does — stated as information, never an order.
+RENEW_HINT_ENDED = "سرویس قطع است. دکمهٔ «تمدید» همان حجم را دوباره فعال می‌کند."
+
 
 def usage_bar(used_gb: float, total_gb: float, width: int = 10) -> str:
     """A ten-segment filled/empty bar. The customer's eye reads shape before
