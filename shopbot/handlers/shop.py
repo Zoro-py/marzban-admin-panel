@@ -574,10 +574,16 @@ async def _render_volume_screen(update: Update, session: dict, *, force_new: boo
     accepted (the state branch in handle_text). The optional username pre-pick
     sits here too, only when this purchase can actually mint a new service."""
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    # R1-2 (review 2026-11-06): the volume callbacks carry the force-new flag
+    # (`vol:30:f`) so a STALE screen — the customer tapped «سرویس جداگانه»,
+    # then a restart wiped user_data — cannot silently retarget their next
+    # volume tap at extending the EXISTING service. The plain form stays
+    # valid (a round-1 screen's `vol:30` re-seeds a plain buy).
+    suffix = ":f" if force_new else ""
     quick = [v for v in QUICK_VOLUMES if session["min_gb"] <= v <= session["max_gb"]]
-    keyboard = [[InlineKeyboardButton(texts.gb(v), callback_data=f"vol:{v:g}")
+    keyboard = [[InlineKeyboardButton(texts.gb(v), callback_data=f"vol:{v:g}{suffix}")
                  for v in quick[i:i + 3]] for i in range(0, len(quick), 3)]
-    keyboard.append([InlineKeyboardButton(texts.CUSTOM_VOLUME, callback_data="vol:custom")])
+    keyboard.append([InlineKeyboardButton(texts.CUSTOM_VOLUME, callback_data=f"vol:custom{suffix}")])
     # The rare starts live HERE, not in the main menu (T2): a second,
     # independent service only makes sense for someone who HAS a service (a
     # newcomer's first buy is already creates_new) — and so does the optional
@@ -598,14 +604,24 @@ async def _render_volume_screen(update: Update, session: dict, *, force_new: boo
 
 
 async def on_volume_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """A volume tap (or «حجم دلخواه») on the inline volume screen."""
+    """A volume tap (or «حجم دلخواه») on the inline volume screen.
+
+    The screen the tap came from states its own intent (R1-2): the trailing
+    `:f` on the callback means «سرویس جداگانه». When the state died (restart,
+    stale screen) the tap re-seeds the flow FROM THE SCREEN — including that
+    flag — instead of silently downgrading to a plain extend-their-service
+    buy."""
     query = update.callback_query
     await query.answer()
+    parts = query.data.split(":")
+    arg = parts[1] if len(parts) > 1 else ""
+    force = len(parts) > 2 and parts[2] == "f"
     if not context.user_data.get(_STATE) == _STATE_CHOOSING_VOLUME:
         # The state died (restart, stale screen) — the tap re-seeds it: the
-        # screen they are looking at IS the volume screen.
+        # screen they are looking at IS the volume screen, and what it offered
+        # (plain buy vs سرویس جداگانه) is what the order must be.
         context.user_data[_STATE] = _STATE_CHOOSING_VOLUME
-    arg = query.data.split(":", 1)[1]
+        context.user_data[_FORCE_NEW_SERVICE] = force
     if arg == "custom":
         await update.effective_message.reply_text(texts.ASK_CUSTOM_VOLUME)
         return
@@ -893,7 +909,9 @@ async def on_buy_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     # buy:confirm
     if context.user_data.get(_STATE) != _STATE_CONFIRMING_WALLET_BUY or not context.user_data.get(_ORDER_ID):
-        await query.edit_message_text(texts.STALE_BUTTON)
+        # reply_markup=None so the dead تأیید/انصراف pair comes off the message
+        # with the answer (R1-7) — same as the cancel branch above.
+        await query.edit_message_text(texts.STALE_BUTTON, reply_markup=None)
         return
     await _confirm_wallet_purchase(update, context)
 
@@ -1068,13 +1086,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def handle_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Voice notes, stickers, locations, contacts — anything with no meaning
     here. Answering is the point: silence reads as a broken bot, especially to
-    someone who has just sent money."""
-    session = await _session(update)
-    # Free-text money words get the answer they are asking for (T7): the
-    # balance AND the debt live behind one door — «حساب من».
-    if any(word in text for word in ("موجودی", "حساب", "بدهی", "بدهکار", "باقیمانده")):
-        return await show_account(update, context)
+    someone who has just sent money.
 
+    (R1-1, review 2026-11-06: T7 briefly put the free-text money-words branch
+    here too — reading an undefined `text`, so every voice note crashed with
+    NameError into on_error's scary message. Money words can only arrive as
+    TEXT, and handle_text's tail answers them; a non-text message has none.)"""
+    session = await _session(update)
     await _reply(update, texts.not_understood(_handle(session)), session)
 
 
@@ -1104,7 +1122,7 @@ def _looks_like_receipt_text(text: str) -> bool:
 
 
 _QUESTION_WORDS = ("کی ", "چی ", "چرا", "چقدر", "چند ", "میشه", "می‌شه", "سلام",
-                   "لطفا", "می‌خوام", "می‌خوام")
+                   "لطفا", "می‌خوام")
 
 
 def _looks_like_question(text: str) -> bool:
@@ -1389,8 +1407,11 @@ async def _pay_debt_from_wallet(update: Update, query) -> None:
         result = await backend.post("/api/shop/bot/pay-debt-from-wallet",
                                     json={"telegram_id": update.effective_user.id}, timeout=60)
     except ShopApiError as exc:
+        # ShopApiError's str IS the backend detail — the backend writes these
+        # two refusals in customer-facing Persian (see routers.shop); anything
+        # unexpected falls back to the generic sentence.
         detail = str(exc) or ""
-        await query.edit_message_text(detail.removeprefix("ShopApiError: ") if detail else texts.generic_error(_handle(session)))
+        await query.edit_message_text(detail if detail else texts.generic_error(_handle(session)))
         return
     await query.edit_message_text(
         texts.debt_paid_from_wallet(result["paid"], result["wallet_balance"], result["ledger_debt"])
@@ -1720,9 +1741,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             session = await _session(update)
             await _reply(update, texts.not_understood(_handle(session)), session)
             return
-            return
         await update.effective_message.reply_text(texts.NEED_PHOTO)
         return
+
+    # R1-16 (review 2026-11-06): «همین مبلغ» is a FLOW button — a tap with no
+    # flow state behind it (stale keyboard, restart) still means "pay my
+    # debt": open the debt door instead of saying «متوجه نشدم».
+    if text == texts.DEBT_AMOUNT_AS_IS:
+        return await show_account(update, context)
 
     session = await _session(update)
 

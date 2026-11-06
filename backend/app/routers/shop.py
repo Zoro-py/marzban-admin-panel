@@ -1902,7 +1902,10 @@ async def bot_pay_debt_from_wallet(
     if user is None:
         raise HTTPException(404, "Unknown shop user — call /session first")
     if user.is_blocked:
-        raise HTTPException(403, "This account can't move money. Contact support.")
+        # R1-3 (review 2026-11-06): the bot relays THIS endpoint's details to
+        # the customer verbatim — every detail here is customer Persian on
+        # purpose, so the block refusal is too (was English operator text).
+        raise HTTPException(403, "این حساب فعلاً نمی‌تواند پرداخت انجام دهد — برای بررسی، پیام بدهید.")
 
     from app.models import Customer, LedgerEntry, LedgerSource, LedgerType
     from app.services import billing_lock
@@ -1917,7 +1920,10 @@ async def bot_pay_debt_from_wallet(
         debt = linked_debt(session, user.id)
         pay = min(body.amount if body.amount is not None else wallet, wallet, int(debt))
         if wallet <= 0:
-            raise HTTPException(400, "کیف پولتان خالی است — برای پرداخت بدهی رسید بفرستید (گزینهٔ «پرداخت بدهی»).")
+            # R1-3: relayed verbatim — retired «کیف پول» vocabulary removed and
+            # the dead button reference (the old «پرداخت بدهی» label) replaced
+            # with the action that exists on both bot versions: send a receipt.
+            raise HTTPException(400, "موجودی‌تان خالی است — برای پرداختِ مانده، رسید کارت‌به‌کارت بفرستید.")
         if debt <= 0:
             raise HTTPException(400, "بدهیِ صورت‌حسابی ندارید.")
         if pay < 1000:

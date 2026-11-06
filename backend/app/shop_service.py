@@ -289,9 +289,18 @@ async def purchase(session: Session, shop_user: ShopUser, data_limit_gb: float,
         spendable = balance - int(debt)
         if spendable < price:
             if debt > 0:
+                # DEBT_LINE (R1-4, review 2026-11-06): the bot relays this tail
+                # to the customer verbatim — it now speaks the settled
+                # vocabulary (ماندهٔ پرداخت‌نشده / موجودی), states the two
+                # numbers as information instead of «قابل خرید» arithmetic,
+                # drops the Latin "T" unit, and points at a receipt (a path
+                # both the old and the new bot's menus actually have) instead
+                # of an order-form «پرداخت کن».
+                from app.shop_texts import money_fa
                 raise ShopError(
-                    f"DEBT_LINE: ابتدا بدهی صورت‌حسابت را پرداخت کن — بدهی {int(debt):,} T "
-                    f"و کیف پول {balance:,} T؛ قابل خرید {spendable:,} T ولی این پلن {price:,} T است."
+                    f"DEBT_LINE: ماندهٔ پرداخت‌نشده: {money_fa(int(debt))} — موجودی: {money_fa(balance)}.\n"
+                    f"تا پرداختِ این مانده، خرید سرویس جدید ممکن نیست. "
+                    f"برای پرداخت، رسید کارت‌به‌کارت بفرستید."
                 )
             raise ShopError(
                 f"Not enough balance: this plan costs {price:,} T and your wallet has {balance:,} T."
