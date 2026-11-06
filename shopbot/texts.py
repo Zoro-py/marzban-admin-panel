@@ -182,8 +182,8 @@ def help_text(price_per_gb: int, days: int, eta_minutes: int, handle: Optional[s
     return (
         "سفارش اول ثبت می‌شود، بعد پرداخت:\n"
         f"۱. از «{MENU_BUY}» حجم را انتخاب کنید.\n"
-        "۲. مبلغ دقیق و شماره کارت را می‌بینید؛ عکس رسید را همینجا بفرستید یا کد پیگیری تراکنش را تایپ کنید.\n"
-        f"۳. رسید که بررسی شد (معمولاً تا {fa(eta_minutes)} دقیقه)، لینک و QR سرویس همینجا می‌آید.\n\n"
+        "۲. مبلغ دقیق و شماره کارت را می‌بینید؛ عکس رسید را همین‌جا بفرستید یا کد پیگیری تراکنش را تایپ کنید.\n"
+        f"۳. رسید که بررسی شد (معمولاً تا {fa(eta_minutes)} دقیقه)، لینک و QR سرویس همین‌جا می‌آید.\n\n"
         f"هر گیگابایت {money(price_per_gb)}؛ سرویس‌ها {fa(days)} روزه‌اند. با موجودیِ کافی، خرید همان لحظه انجام می‌شود."
         + support(handle)
     )
@@ -221,7 +221,7 @@ def confirm_from_wallet(volume: float, days: int, price: int, balance: int) -> s
     return (
         f"{gb(volume)} — {fa(days)} روزه\n"
         f"قیمت: {money(price)}\n"
-        f"موجودی شما: {money(balance)}\n\n"
+        f"موجودی: {money(balance)}\n\n"
         "از موجودی‌تان کم می‌شود و سرویس همین الان ساخته می‌شود."
     )
 
@@ -253,7 +253,7 @@ AUTO_RENEW_ALREADY_IN_DEBT = (
 )
 
 AUTO_RENEW_NO_HISTORY = (
-    "برای این سرویس هنوز سابقه‌ی خریدی نیست که میانگینش را بگیرم.\n"
+    "برای این سرویس هنوز سابقهٔ خریدی نیست که میانگینش را بگیرم.\n"
     "از کارت سرویس، «تمدید» را بزنید."
 )
 
@@ -305,7 +305,7 @@ NEED_PHOTO = (
 RECEIPT_ALREADY_WAITING = (
     "رسید قبلی‌تان برای همین سفارش در صف بررسی است؛ "
     "لازم نیست دوباره بفرستید. "
-    "تا تأیید، همینجا خبرتان می‌کنم."
+    "تا تأیید، همین‌جا خبرتان می‌کنم."
 )
 
 RECEIPT_AS_FILE = (
@@ -315,14 +315,14 @@ RECEIPT_AS_FILE = (
 )
 
 RECEIPT_WITHOUT_CONTEXT = (
-    "این عکس مربوط به چه پرداختی است؟\n"
+    "این رسید مربوط به چه پرداختی است؟\n"
     f"اول از «{MENU_BUY}» سرویس را انتخاب کنید یا از «{MENU_ACCOUNT}» شارژ کنید، بعد رسید را بفرستید."
 )
 
 
 def topup_ask_amount(min_topup: int, max_topup: int) -> str:
     return (
-        "چه مبلغی می‌خواهید شارژ کنید؟ عدد را به تومان بفرستید (مثلاً ۲۰۰,۰۰۰).\n"
+        "چه مبلغی می‌خواهید شارژ کنید؟ عدد را به تومان بفرستید (مثلاً ۲۰۰٬۰۰۰).\n"
         f"از {money(min_topup)} تا {money(max_topup)}."
     )
 
@@ -376,8 +376,8 @@ def topup_instructions(amount: int, card_number: str, card_holder: Optional[str]
         f"برای تکمیل، مبلغ {money(amount)} را به این کارت واریز کنید:\n\n"
         f"`{plain_digits(card_number)}`{holder}\n"
         f"مبلغ برای کپی: `{amount}`\n\n"
-        "اگر برنامه‌ی بانک با VPN باز نمی‌شود، برای پرداخت خاموشش کنید — سفارشتان همچنان محفوظ است.\n\n"
-        "بعد رسید را همینجا بفرستید — عکس، فایلِ عکس، یا کد پیگیری تراکنش؛ "
+        "اگر برنامهٔ بانک با VPN باز نمی‌شود، برای پرداخت خاموشش کنید — سفارشتان همچنان محفوظ است.\n\n"
+        "بعد رسید را همین‌جا بفرستید — عکس، فایلِ عکس، یا کد پیگیری تراکنش؛ "
         f"معمولاً تا {fa(eta_minutes)} دقیقه بررسی و سرویستان خودکار آماده می‌شود."
     )
 
@@ -405,8 +405,8 @@ def topup_instructions_with_minimum(amount: int, owed: int, card_number: str,
         f"`{plain_digits(card_number)}`{holder}\n"
         f"مبلغ برای کپی: `{amount}`\n\n"
         "مازادش به موجودی‌تان برمی‌گردد و برای خرید بعدی‌تان می‌ماند.\n\n"
-        "اگر برنامه‌ی بانک با VPN باز نمی‌شود، برای پرداخت خاموشش کنید — سفارشتان همچنان محفوظ است.\n\n"
-        "بعد رسید را همینجا بفرستید — عکس، فایلِ عکس، یا کد پیگیری تراکنش؛ "
+        "اگر برنامهٔ بانک با VPN باز نمی‌شود، برای پرداخت خاموشش کنید — سفارشتان همچنان محفوظ است.\n\n"
+        "بعد رسید را همین‌جا بفرستید — عکس، فایلِ عکس، یا کد پیگیری تراکنش؛ "
         f"معمولاً تا {fa(eta_minutes)} دقیقه بررسی و سرویستان خودکار آماده می‌شود."
     )
 
@@ -436,7 +436,7 @@ def payment_status(status: str, reference: str, order_status: Optional[str],
     if status == "pending":
         return (
             f"⏳ پرداخت {reference} هنوز در صف بررسی است.\n"
-            "به محض بررسی همینجا خبر می‌دهم." + support(handle)
+            "به محض بررسی همین‌جا خبر می‌دهم." + support(handle)
         )
     if status == "rejected":
         why = f"\nعلت: {reject_reason}" if reject_reason else ""
@@ -458,7 +458,7 @@ def payment_status(status: str, reference: str, order_status: Optional[str],
 def debt_line(debt: float) -> str:
     """The reminder shown when a wallet top-up starts while a debt exists —
     the owner's «موقع شارژ بهش گفته بشه»."""
-    return f"ⓘ یادآوری: ماندهٔ پرداخت‌نشده‌ی شما {money(int(debt))} است. اگر قصد پرداخت آن را دارید، از «{MENU_ACCOUNT}» ادامه دهید."
+    return f"ⓘ یادآوری: ماندهٔ پرداخت‌نشدهٔ شما {money(int(debt))} است. اگر قصد پرداخت آن را دارید، از «{MENU_ACCOUNT}» ادامه دهید."
 
 
 # ── the merged «حساب من» screen (T2) — ONE number per view ────────────────
@@ -472,10 +472,12 @@ def account_wallet_view(balance: int, recent_lines: list[str]) -> str:
         # Only the payg meter and the bounded auto-renew can take the wallet
         # negative. "منفی X" in words — a bare minus next to Persian digits
         # detaches in RTL rendering (see confirm_from_wallet's comment).
-        lines = [f"موجودی شما: منفی {money(-int(balance))}",
+        lines = [f"موجودی: منفی {money(-int(balance))}",
                  "با شارژ کردن، اول همین عدد جبران می‌شود."]
     else:
-        lines = [f"موجودی شما: {money(balance)}"]
+        # Bare label, same shape as the debt view's «ماندهٔ پرداخت‌نشده: X» —
+        # one label form across the «حساب من» views (R2 register pass).
+        lines = [f"موجودی: {money(balance)}"]
         if balance == 0:
             lines.append("برای خرید لازم نیست از قبل شارژ کنید — مستقیم از «" + MENU_BUY + "» شروع کنید.")
     if recent_lines:
@@ -500,7 +502,7 @@ def debt_receipt_amount_ask(debt: int, max_topup: int) -> str:
     return (
         f"ماندهٔ پرداخت‌نشده: {money(debt)}\n\n"
         f"«{DEBT_AMOUNT_AS_IS}» را بزنید تا رسیدِ پرداختِ کامل را ثبت کنیم؛ "
-        "یا اگر می‌خواهید کمتر بپردازید، همان مبلغ را بفرستید.\n"
+        "یا اگر می‌خواهید کمتر بپردازید، مبلغش را بفرستید.\n"
         f"(حداقل ۱٬۰۰۰ — حداکثر {money(max_topup)})"
     )
 
@@ -551,8 +553,8 @@ def debt_paid_from_wallet(paid: int, wallet: int, debt_left: float) -> str:
         if debt_left > 0.5 else "بدهی شما کامل پرداخت شد ✓"
     )
     return (
-        f"✅ {money(paid)} پرداخت شد و روی ماندهٔ شما ثبت شد.\n"
-        f"موجودی شما: {money(wallet)}\n"
+        f"✅ {money(paid)} پرداخت شد و از ماندهٔ پرداخت‌نشده کم شد.\n"
+        f"موجودی: {money(wallet)}\n"
         f"{left}"
     )
 
@@ -721,7 +723,7 @@ CANCELLED = "باشد، لغو شد. هر وقت خواستید از منو اد
 # For a cancel tap that arrives when nothing is in progress — most often one
 # that was queued behind a purchase already going through. Saying "cancelled"
 # there told a customer whose service was on its way that it wasn't.
-NOTHING_TO_CANCEL = "کاری در جریان نبود که لغو شود. اگر خریدی را تأیید کرده بودید، ادامه‌اش همینجا می‌آید."
+NOTHING_TO_CANCEL = "کاری در جریان نبود که لغو شود. اگر خریدی را تأیید کرده بودید، ادامه‌اش همین‌جا می‌آید."
 
 
 def not_understood(handle: Optional[str]) -> str:
@@ -787,12 +789,16 @@ def link_welcome(customer_name: str, accounts_linked: int) -> str:
 # The unlimited-service refusal (backend 409 "SERVICE_IS_UNLIMITED"). Leads
 # with the fact, then the two things an anxious customer needs: no money
 # moved, and there IS a path for the rare case they actually want a second
-# service.
-SERVICE_UNLIMITED = (
-    "سرویس فعلی شما نامحدود است و حجم اضافه نمی‌خواهد — برای همین خریدی ثبت نشد "
-    "و پولی از موجودی‌تان کم نشد.\n"
-    "اگر برای دستگاه دیگری سرویس جداگانه می‌خواهید، به پشتیبانی پیام بدهید تا برایتان بسازیم."
-)
+# service. A function (R2, review 2026-11-06) so the "message me" line can
+# end in a NAME when the operator has a handle — the old constant told the
+# customer to message «پشتیبانی» without ever saying who that is.
+def service_unlimited(handle: Optional[str]) -> str:
+    return (
+        "سرویس فعلی شما نامحدود است و حجم اضافه نمی‌خواهد — برای همین خریدی ثبت نشد "
+        "و پولی از موجودی‌تان کم نشد.\n"
+        "اگر برای دستگاه دیگری سرویس جداگانه می‌خواهید، پیام بدهید تا برایتان بسازیم."
+        + support(handle)
+    )
 
 # The payg-refusal twin of SERVICE_UNLIMITED (backend 409 "PAYG_TOPUP_INSTEAD"):
 # the customer's current service is metered — it needs wallet credit, not a

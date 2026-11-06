@@ -807,7 +807,7 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
             # to add to it, and the backend refused before any money moved.
             # This is a "you don't need this", not an error.
             context.user_data.clear()
-            await _reply(update, texts.SERVICE_UNLIMITED, session)
+            await _reply(update, texts.service_unlimited(_handle(session)), session)
             return
         if getattr(exc, "status", 0) == 409 and "PAYG_TOPUP_INSTEAD" in str(exc):
             # F3(b): their current service is METERED — the backend refuses a
@@ -1037,7 +1037,7 @@ def _topup_submitted_text(reference, eta: int, handle, has_order: bool,
         lines.append(f"معمولاً تا {texts.fa(eta)} دقیقه بررسی و سرویس‌تان خودکار آماده می‌شود.")
     else:
         lines.append(f"معمولاً تا {texts.fa(eta)} دقیقه بررسی و موجودی‌تان خودکار شارژ می‌شود.")
-    lines.append("لازم نیست ربات را باز نگه دارید — خبرش همینجا می‌آید.")
+    lines.append("لازم نیست ربات را باز نگه دارید — خبرش همین‌جا می‌آید.")
     if reference:
         # Says what the code is FOR. A code with no use reads as decoration;
         # this one returns the payment's status the moment it is typed back.
@@ -1725,7 +1725,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return await _handle_topup_amount(update, context, debt)
         amount = parse_number(text)
         if amount is None:
-            await update.effective_message.reply_text(texts.not_a_number("۲۰۰,۰۰۰"))
+            await update.effective_message.reply_text(texts.not_a_number("۲۰۰٬۰۰۰"))
             return
         return await _handle_topup_amount(update, context, amount)
 

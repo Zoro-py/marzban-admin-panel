@@ -195,8 +195,8 @@ async def main() -> None:
     # The 409 fires INSIDE _handle_volume (before the name step) — the flow
     # ends here, so no name-step answer follows.
     await shop._handle_volume(upd, context, 10)
-    check("SERVICE_IS_UNLIMITED still maps to SERVICE_UNLIMITED",
-          msg.replies[-1][0] == texts.SERVICE_UNLIMITED)
+    check("SERVICE_IS_UNLIMITED still maps to service_unlimited",
+          msg.replies[-1][0] == texts.service_unlimited(None))
     stub.order_error = None
 
     # ── F12: 502 on the instant purchase → refund-stated text ────────────
