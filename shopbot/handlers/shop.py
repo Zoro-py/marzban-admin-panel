@@ -1351,6 +1351,21 @@ async def on_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if query.data == "debt:wallet":
         await _pay_debt_from_wallet(update, query)
         return
+    if query.data == "debt:cancel":
+        # The OLD keyboard's cancel button: this callback was registered but
+        # never routed — a cancel tap used to OPEN the receipt flow (found in
+        # the B-3 review). Answer the tap, put the debt view back.
+        session = await _session(update)
+        debt = session.get("ledger_debt", 0)
+        if debt <= 0:
+            await query.edit_message_text(texts.DEBT_NONE)
+            return
+        from telegram import InlineKeyboardMarkup
+        await query.edit_message_text(
+            texts.account_debt_view(debt, session.get("debt_exact", True)),
+            reply_markup=InlineKeyboardMarkup(_debt_buttons(session, debt)),
+        )
+        return
     # debt:receipt
     session = await _session(update)
     debt = session.get("ledger_debt", 0)

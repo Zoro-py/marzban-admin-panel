@@ -165,6 +165,17 @@ async def main() -> None:
     check("malformed svcmore callback → «قدیمی شده»",
           any("قدیمی" in r[0] for r in msg.replies), repr(msg.replies))
 
+    # ── 4b. the OLD debt keyboard's cancel answers, never opens a flow ───
+    SESSION["ledger_debt"] = 123_000
+    SESSION["balance"] = 30_000
+    (upd, context), msg = make_update(cb_data="debt:cancel")
+    await shop.on_pay_debt(upd, context)
+    check("debt:cancel restores the debt view (does NOT open the receipt ask)",
+          any("ماندهٔ پرداخت‌نشده" in r[0] for r in msg.replies)
+          and not any("واریز کنید" in r[0] for r in msg.replies), repr([r[0] for r in msg.replies]))
+    SESSION["ledger_debt"] = 0
+    SESSION["balance"] = 40_000
+
     # ── 5. the rename ask names its way back ─────────────────────────────
     check("ASK_SERVICE_NAME mentions the menu as the way back",
           "منو" in texts.ASK_SERVICE_NAME, repr(texts.ASK_SERVICE_NAME))
