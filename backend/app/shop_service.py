@@ -2277,6 +2277,27 @@ PAYG_START_DURATION_DAYS = 3650
 PAYG_LOW_BALANCE_DAYS_WARNING = 2
 
 
+def held_payg_account(session: Session, shop_user_id: int) -> Optional[Account]:
+    """The customer's live metered retail service, if one exists — the same
+    predicate start_payg_service refuses on, exposed so the bot's session can
+    hide the payg button from someone who already holds the meter (T2 menu
+    rebuild). See start_payg_service's F5 comment for why every status counts
+    and only genuinely deleted accounts don't."""
+    return session.exec(
+        select(Account)
+        .select_from(ShopOrder)
+        .join(Account, Account.id == ShopOrder.account_id)
+        .where(
+            ShopOrder.shop_user_id == shop_user_id,
+            ShopOrder.status == ShopOrderStatus.delivered,
+            Account.billing_mode == BillingMode.payg,
+            Account.customer_id.is_(None),
+            Account.deleted_at.is_(None),
+            Account.status != "deleted_from_marzban",
+        )
+    ).first()
+
+
 async def start_payg_service(session: Session, shop_user: ShopUser,
                             marzban_username: Optional[str] = None) -> ShopOrder:
     """The "📊 سرویس مصرفی" button: creates a metered account with no fixed
@@ -2309,19 +2330,7 @@ async def start_payg_service(session: Session, shop_user: ShopUser,
     # abandoned checkout must not lock the customer out). deleted_from_marzban
     # is excluded: that service no longer exists anywhere, and blocking a new
     # start on it would lock the customer out with no path back.
-    held_payg = session.exec(
-        select(Account)
-        .select_from(ShopOrder)
-        .join(Account, Account.id == ShopOrder.account_id)
-        .where(
-            ShopOrder.shop_user_id == shop_user.id,
-            ShopOrder.status == ShopOrderStatus.delivered,
-            Account.billing_mode == BillingMode.payg,
-            Account.customer_id.is_(None),
-            Account.deleted_at.is_(None),
-            Account.status != "deleted_from_marzban",
-        )
-    ).first()
+    held_payg = held_payg_account(session, shop_user.id)
     if held_payg is not None:
         raise ShopError("ALREADY_HAS_SERVICE: you already have an active service")
 

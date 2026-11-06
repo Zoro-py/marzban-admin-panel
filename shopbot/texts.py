@@ -72,16 +72,19 @@ def support(handle: Optional[str]) -> str:
 
 # ── menu ──────────────────────────────────────────────────────────────────
 
+# Layout A (T2, docs/ZCODE_SHOPBOT_UX_DESIGN.md): at most four top-level
+# doors. The old separate wallet / top-up / pay-debt / new-service / payg /
+# help / support labels below are LEGACY — old chats still show those
+# keyboards, so every one of them keeps routing to its action in
+# handlers/shop.py, but no new menu renders them.
+
 MENU_BUY = "🛒 خرید سرویس"
-# Separate from MENU_BUY on purpose (owner decision 2026-10-22): MENU_BUY
-# always extends whatever account the customer already has (renewal-in-
-# place). This is the only path to a second, INDEPENDENT service — most
-# customers never need it, so it says so in its own label rather than
-# looking like the default choice.
+# Shown INSTEAD of MENU_BUY to a customer who already has services: the same
+# action IS their renewal, and the label should say so.
+MENU_BUY_RENEW = "🛒 خرید / تمدید سرویس"
+# Legacy shape of MENU_BUY (kept so an old chat's keyboard still routes).
 MENU_NEW_SERVICE = "✨ ساخت سرویس جدید (جدا از فعلی)"
-# Only shown when the operator has set a payg rate (owner decision
-# 2026-10-22) — a second billing relationship, not a plan: no fixed volume,
-# billed daily from the wallet for exactly what was used.
+# Legacy top-level label; the button now lives on the buy screen.
 MENU_PAYG = "📊 سرویس مصرفی"
 MENU_TRIAL = "🎁 تست رایگان"
 MENU_ACCOUNTS = "📱 سرویس‌های من"
@@ -89,11 +92,39 @@ MENU_WALLET = "💰 کیف پول"
 MENU_TOPUP = "➕ شارژ کیف پول"
 MENU_HELP = "❓ راهنما"
 MENU_SUPPORT = "💬 پشتیبانی"
-# Council 2026-10-24 (routed books): a linked customer's unpaid statement
-# debt, surfaced in the bot. Its own row ABOVE the wallet row — for someone
-# who owes, paying the debt is the primary action, and purchases are blocked
-# while wallet − debt can't cover the price.
 MENU_PAY_DEBT = "💳 پرداخت بدهی صورت‌حساب"
+
+# The ONE money door. When the customer owes, the debt itself is the label —
+# the answer to "what do I do now" is visible without opening anything.
+MENU_ACCOUNT = "💳 حساب من"
+# Prefix of the owing variant's label (the amount follows it) — the
+# dispatcher routes anything that starts with this to the same screen.
+MENU_ACCOUNT_DEBT_PREFIX = "💳 ماندهٔ پرداخت:"
+
+
+def menu_account_label(debt: float) -> str:
+    if debt > 0:
+        return f"{MENU_ACCOUNT_DEBT_PREFIX} {money(int(debt))}"
+    return MENU_ACCOUNT
+
+
+def is_menu_account_label(text: str) -> bool:
+    """True for BOTH shapes of the money door's button (the plain one and the
+    debt-carrying one) — used by the dispatchers."""
+    return text == MENU_ACCOUNT or text.startswith(MENU_ACCOUNT_DEBT_PREFIX)
+
+
+MENU_HELP_SUPPORT = "❓ راهنما و پشتیبانی"
+
+# Conditional buttons on the BUY screen (not top-level menu items): a second,
+# independent service, and the metered pay-as-you-go start. Each appears only
+# when it is meaningful for this customer (see start_buy).
+NEW_SERVICE_ON_BUY = "✨ سرویس جداگانه (برای دستگاه دیگر)"
+PAYG_ON_BUY = "📊 سرویس مصرفی"
+
+# First button of the debt-receipt amount ask: pays the WHOLE debt without
+# typing the number.
+DEBT_AMOUNT_AS_IS = "همین مبلغ"
 
 CONFIRM_BUY = "✅ تأیید و دریافت"
 # The common sizes are buttons; this is the way out of them for someone who
@@ -432,7 +463,51 @@ def payment_status(status: str, reference: str, order_status: Optional[str],
 def debt_line(debt: float) -> str:
     """The reminder shown when a wallet top-up starts while a debt exists —
     the owner's «موقع شارژ کیف پول بهش گفته بشه»."""
-    return f"ⓘ یادآوری: بدهی صورت‌حساب شما {money(int(debt))} است. اگر قصد پرداخت آن را دارید، از «{MENU_PAY_DEBT}» استفاده کنید."
+    return f"ⓘ یادآوری: ماندهٔ پرداخت‌نشده‌ی شما {money(int(debt))} است. اگر قصد پرداخت آن را دارید، از «{MENU_ACCOUNT}» ادامه دهید."
+
+
+# ── the merged «حساب من» screen (T2) — ONE number per view ────────────────
+
+def account_wallet_view(balance: int, recent_lines: list[str]) -> str:
+    """The positive/zero side of «حساب من»: the balance, one honest hint, and
+    at most three recent transactions. Never shows a debt figure — the debt
+    has its own view (account_debt_view) and the two never render side by
+    side."""
+    if balance < 0:
+        # Only the payg meter and the bounded auto-renew can take the wallet
+        # negative. "منفی X" in words — a bare minus next to Persian digits
+        # detaches in RTL rendering (see confirm_from_wallet's comment).
+        lines = [f"موجودی شما: منفی {money(-int(balance))}",
+                 "با شارژ کردن، اول همین عدد جبران می‌شود."]
+    else:
+        lines = [f"موجودی شما: {money(balance)}"]
+        if balance == 0:
+            lines.append("برای خرید لازم نیست از قبل شارژ کنید — مستقیم از «" + MENU_BUY + "» شروع کنید.")
+    if recent_lines:
+        lines += ["", "آخرین تراکنش‌ها:", *recent_lines]
+    return "\n".join(lines)
+
+
+def account_debt_view(debt: float, exact: bool = True) -> str:
+    """The owing side of «حساب من»: ONE number, then the buttons carry the
+    actions. The per-account breakdown appears only behind «جزئیات» — never
+    by default."""
+    lines = [f"ماندهٔ پرداخت‌نشده: {money(int(debt))}"]
+    if not exact:
+        lines += ["", DEBT_NOT_EXACT]
+    return "\n".join(lines)
+
+
+def debt_receipt_amount_ask(debt: int, max_topup: int) -> str:
+    """The amount ask for a debt payment by card receipt. The whole debt is
+    one button away; typing a smaller number still works (anti-fat-finger
+    floor 1,000 — see handlers)."""
+    return (
+        f"ماندهٔ پرداخت‌نشده: {money(debt)}\n\n"
+        f"«{DEBT_AMOUNT_AS_IS}» را بزنید تا رسیدِ پرداختِ کامل را ثبت کنیم؛ "
+        "یا اگر می‌خواهید کمتر بپردازید، همان مبلغ را بفرستید.\n"
+        f"(حداقل ۱٬۰۰۰ — حداکثر {money(max_topup)})"
+    )
 
 
 def debt_status(debt: float, wallet: int, eta: int, breakdown=None, exact: bool = True) -> str:

@@ -172,37 +172,62 @@ def parse_number(text: str) -> float | None:
 
 
 def main_menu(session: dict | None = None) -> ReplyKeyboardMarkup:
-    """The menu adapts to who is looking at it.
+    """The menu adapts to who is looking at it — layout A (T2, see
+    docs/ZCODE_SHOPBOT_UX_DESIGN.md): at most four doors.
 
-    A first-time visitor sees the trial first, and is NOT shown the wallet — a
-    stored balance is meaningless to someone who has bought nothing, and
-    offering it as a second way to start was the biggest source of confusion
-    in the old flow: two buttons that both looked like "begin here", one of
-    which was a dead end without the other.
+    A trial-eligible newcomer sees the trial FIRST and nothing about money or
+    services they don't have yet. A returning customer gets buy/renew +
+    services on one row, ONE money door («حساب من» — or the debt itself as the
+    label when they owe), and help & support. Everything rarer (a second,
+    separate service; the metered pay-as-you-go start) lives on the buy
+    screen as a conditional button.
 
-    A returning customer gets the wallet, because for them it is what it was
-    always meant to be — a way to skip the card transfer next time.
+    The LEGACY labels (wallet / top-up / pay debt / new service / payg / help
+    / support) are never rendered here again, but every one of them still
+    routes — old chats still carry keyboards with those buttons on them.
     """
     trial = bool(session and session.get("trial_available"))
-    has_wallet = bool(session and session.get("balance", 0) > 0)
+    has_accounts = bool(session and session.get("has_accounts"))
+    debt = (session or {}).get("ledger_debt", 0)
+    balance = (session or {}).get("balance", 0)
     rows: list[list[KeyboardButton]] = []
     if trial:
+        # A stranger who can still take the trial: no accounts, no money
+        # history (trial_available excludes existing customers) — the
+        # smallest possible decision screen.
         rows.append([KeyboardButton(texts.MENU_TRIAL)])
-    rows.append([KeyboardButton(texts.MENU_BUY), KeyboardButton(texts.MENU_ACCOUNTS)])
-    if has_wallet or (session is not None and not trial):
-        rows.append([KeyboardButton(texts.MENU_WALLET), KeyboardButton(texts.MENU_TOPUP)])
-    # Routed-books debt (council 2026-10-24): its own row ABOVE nothing and
-    # BELOW the wallet row — visible for anyone who owes, without reading as
-    # a second "start here" next to MENU_BUY.
-    if session and session.get("ledger_debt", 0) > 0:
-        rows.append([KeyboardButton(texts.MENU_PAY_DEBT)])
-    # Its own row, below the common actions - deliberately not next to
-    # MENU_BUY so it never reads as "the normal way to buy" (see texts.py).
-    rows.append([KeyboardButton(texts.MENU_NEW_SERVICE)])
-    if session and session.get("payg_enabled"):
-        rows.append([KeyboardButton(texts.MENU_PAYG)])
-    rows.append([KeyboardButton(texts.MENU_HELP), KeyboardButton(texts.MENU_SUPPORT)])
+        rows.append([KeyboardButton(texts.MENU_BUY)])
+    else:
+        buy_label = texts.MENU_BUY_RENEW if has_accounts else texts.MENU_BUY
+        rows.append([KeyboardButton(buy_label), KeyboardButton(texts.MENU_ACCOUNTS)])
+        if session is not None:
+            rows.append([KeyboardButton(texts.menu_account_label(debt))])
+    rows.append([KeyboardButton(texts.MENU_HELP_SUPPORT)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+
+# Every label that routes as a menu tap — the NEW four doors, the LEGACY
+# labels old chats still show, and the conditional buy-screen buttons. The
+# mid-ask escape dispatches (username ask, payg ask, rename ask) and the main
+# dispatcher all check against this one set, so a button tap can never be
+# swallowed by an in-flight flow.
+# NOT here on purpose: texts.CANCEL (every flow checks it explicitly, with
+# its own cancel sentence) and texts.DEBT_AMOUNT_AS_IS (a FLOW button — it
+# must be read by the top-up amount branch, not eaten by the menu dispatch).
+_MENU_TEXTS = frozenset({
+    texts.MENU_BUY, texts.MENU_BUY_RENEW, texts.MENU_NEW_SERVICE, texts.NEW_SERVICE_ON_BUY,
+    texts.MENU_PAYG, texts.PAYG_ON_BUY, texts.MENU_TRIAL, texts.MENU_ACCOUNTS,
+    texts.MENU_WALLET, texts.MENU_TOPUP, texts.MENU_PAY_DEBT, texts.MENU_ACCOUNT,
+    texts.MENU_HELP, texts.MENU_SUPPORT, texts.MENU_HELP_SUPPORT,
+    texts.PHONE_LATER,
+})
+
+
+def _is_menu_tap(text: str) -> bool:
+    """A menu button's text — the fixed labels AND the debt-carrying «حساب
+    من» variant, whose label embeds the amount so it cannot be a set
+    member."""
+    return text in _MENU_TEXTS or texts.is_menu_account_label(text)
 
 
 async def _maybe_offer_phone_share(update: Update, context: ContextTypes.DEFAULT_TYPE, session: dict) -> None:
@@ -339,6 +364,13 @@ async def _claim_link(update: Update, token: str) -> None:
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await show_help_support(update, context)
+
+
+async def show_help_support(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The ONE help & support door (T2): how buying works and the human to
+    reach — one screen instead of two sibling buttons. The /help command and
+    both legacy labels land here too."""
     session = await _session(update)
     await _reply(
         update,
@@ -351,8 +383,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def show_support(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    session = await _session(update)
-    await _reply(update, texts.support_text(_handle(session)), session)
+    """Legacy «💬 پشتیبانی» label: the merged help & support screen."""
+    await show_help_support(update, context)
 
 
 # ── the trial ─────────────────────────────────────────────────────────────
@@ -443,9 +475,7 @@ async def _payg_username_answer(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=main_menu(session),
         )
         return
-    if text in (texts.MENU_BUY, texts.MENU_NEW_SERVICE, texts.MENU_ACCOUNTS,
-                texts.MENU_WALLET, texts.MENU_TOPUP, texts.MENU_PAYG,
-                texts.MENU_TRIAL, texts.MENU_HELP):
+    if _is_menu_tap(text):
         context.user_data.clear()
         return await handle_text(update, context)  # re-dispatch as a menu tap
     chosen = None if text == texts.SKIP_NAME else text.strip()
@@ -533,6 +563,15 @@ async def start_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, *, force
     quick = [v for v in QUICK_VOLUMES if session["min_gb"] <= v <= session["max_gb"]]
     keyboard = [[KeyboardButton(texts.gb(v)) for v in quick[i:i + 3]] for i in range(0, len(quick), 3)]
     keyboard.append([KeyboardButton(texts.CUSTOM_VOLUME)])
+    # T2: the rare starts live HERE, not in the main menu — a second,
+    # independent service only makes sense for someone who HAS a service
+    # (a newcomer's first buy is already creates_new), and the metered payg
+    # start only when it is offered AND the customer doesn't hold one yet
+    # (the backend's ALREADY_HAS_SERVICE refusal stays as the safety net).
+    if not force_new and session.get("has_accounts"):
+        keyboard.append([KeyboardButton(texts.NEW_SERVICE_ON_BUY)])
+    if session.get("payg_enabled") and not session.get("has_payg_service"):
+        keyboard.append([KeyboardButton(texts.PAYG_ON_BUY)])
     keyboard.append([KeyboardButton(texts.CANCEL)])
     prompt = texts.buy_prompt(
         session["price_per_gb"], session["min_gb"], session["max_gb"],
@@ -1049,49 +1088,89 @@ async def _submit_receipt(
 # ── paying the statement debt (council 2026-10-24, routed books) ──────────
 
 
-async def start_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """The debt landing: status lines, then the two ways to pay — from the
-    wallet (the single sanctioned cross-system write, one tap) or by a
-    card-to-card receipt DESIGNATED as a debt payment."""
+async def show_account(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The ONE money door (T2): debt flavour when the customer owes, wallet
+    flavour otherwise — never both numbers side by side.
+
+    The debt view's buttons carry their amounts: «پرداخت از کیف پول (X)»
+    pays on the tap (the money goes to the customer's own account, and the
+    amount they are paying was the button they read), «ارسال رسید کارت» opens
+    the receipt flow with the whole debt one button away. The per-account
+    breakdown stays behind «جزئیات»."""
     context.user_data.clear()
-    session = await _session(update)
+    try:
+        session = await _session(update)
+        history = await backend.get("/api/shop/bot/wallet", params={"telegram_id": update.effective_user.id})
+    except ShopApiError:
+        logger.exception("Account view failed for %s", update.effective_user.id)
+        await update.effective_message.reply_text(texts.generic_error(None))
+        return
+
     debt = session.get("ledger_debt", 0)
-    if debt <= 0:
-        await _reply(update, texts.DEBT_NONE, session)
+    if debt > 0:
+        await _send_debt_view(update, session, debt)
         return
-    text = texts.debt_status(debt, session["balance"], session.get("approval_eta_minutes", 30), session.get("debt_breakdown"), session.get("debt_exact", True))
-    if session["balance"] > 0:
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(
-                text=f"💳 پرداخت از کیف پول ({texts.money(min(session['balance'], int(debt)))})",
-                callback_data="debt:wallet",
-            )],
-            [InlineKeyboardButton(text=texts.DEBT_PAY_BY_RECEIPT, callback_data="debt:receipt")],
-        ])
-        await update.effective_message.reply_text(text, reply_markup=keyboard)
+    if not session["balance"] and not history:
+        await _reply(update, texts.WALLET_EMPTY, session)
         return
-    # Empty wallet: the status lines used to be skipped, so the customer never
-    # saw the figure as a headline (owner feedback 2026-10-26).
-    await update.effective_message.reply_text(text)
-    await _start_debt_receipt(update, context, session, debt)
 
-
-async def _start_debt_receipt(update, context, session, debt) -> None:
-    context.user_data[_STATE] = _STATE_CHOOSING_TOPUP
-    context.user_data[_PENDING_FOR_DEBT] = True
+    recent = [f"{_wallet_label(entry)}: {texts.money(abs(entry['amount']))}" for entry in history[:3]]
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     await update.effective_message.reply_text(
-        f"چند تومان می‌خواهید از بدهیِ {texts.money(int(debt))} بپردازید؟"
-        f"\nبرای پرداخت کامل، همین عدد را بفرستید: {int(debt)}"
-        f"\n(حداقل ۱٬۰۰۰ — حداکثر {texts.money(session['max_topup'])})",
-        reply_markup=ReplyKeyboardMarkup([[KeyboardButton(texts.CANCEL)]], resize_keyboard=True),
+        texts.account_wallet_view(session["balance"], recent),
+        # The top-up action rides an inline button so it never clobbers the
+        # main menu on the reply keyboard underneath.
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("➕ شارژ", callback_data="acct:topup"),
+        ]]),
     )
 
 
-async def on_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """The inline keyboard's two entries. Menu buttons cancel any ask and run
-    their own flow — the same resilience rule as the name steps."""
+async def on_account_topup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """«➕ شارژ» on the wallet flavour of «حساب من»: the top-up amount ask."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    await start_topup(update, context)
+
+
+async def _send_debt_view(update: Update, session: dict, debt: float) -> None:
+    """The owing side of «حساب من». One number; the actions sit in the inline
+    keyboard. The main menu STAYS on the reply keyboard underneath — the way
+    back is always visible."""
+    from telegram import InlineKeyboardMarkup
+    await update.effective_message.reply_text(
+        texts.account_debt_view(debt, session.get("debt_exact", True)),
+        reply_markup=InlineKeyboardMarkup(_debt_buttons(session, debt)),
+    )
+
+
+async def on_account_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """«جزئیات»: the per-account split of the debt (where it comes from) —
+    information only, reachable by request, never the default screen."""
+    query = update.callback_query
+    await query.answer()
+    session = await _session(update)
+    debt = session.get("ledger_debt", 0)
+    if debt <= 0:
+        await query.edit_message_text(texts.DEBT_NONE)
+        return
+    detail = texts.debt_status(
+        debt, session["balance"], session.get("approval_eta_minutes", 30),
+        session.get("debt_breakdown"), session.get("debt_exact", True),
+    )
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    await query.edit_message_text(
+        detail,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("بازگشت", callback_data="acct:back"),
+        ]]),
+    )
+
+
+async def on_account_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Back from «جزئیات» to the debt view."""
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
@@ -1100,30 +1179,86 @@ async def on_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if debt <= 0:
         await query.edit_message_text(texts.DEBT_NONE)
         return
-    if query.data == "debt:wallet":
+    from telegram import InlineKeyboardMarkup
+    await query.edit_message_text(
+        texts.account_debt_view(debt, session.get("debt_exact", True)),
+        reply_markup=InlineKeyboardMarkup(_debt_buttons(session, debt)),
+    )
+
+
+def _debt_buttons(session: dict, debt: float) -> list:
+    """The debt view's inline keyboard: the wallet-pay button (with its
+    amount, when the wallet holds anything), the card-receipt route, and
+    «جزئیات» only when the backend actually sent a breakdown."""
+    from telegram import InlineKeyboardButton
+
+    buttons: list[list[InlineKeyboardButton]] = []
+    if session["balance"] > 0:
         pay = min(session["balance"], int(debt))
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-        await query.edit_message_text(
-            texts.debt_status(debt, session["balance"], session.get("approval_eta_minutes", 30), session.get("debt_breakdown"), session.get("debt_exact", True))
-            + f"\n\nپرداخت {texts.money(pay)} از کیف پول؟",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(text=texts.DEBT_PAY_WALLET_CONFIRM, callback_data="debt:wallet:yes"),
-                InlineKeyboardButton(text=texts.CANCEL, callback_data="debt:cancel"),
-            ]]),
-        )
-        return
-    # debt:receipt
-    await _start_debt_receipt(update, context, session, debt)
+        buttons.append([InlineKeyboardButton(
+            text=f"💳 پرداخت از کیف پول ({texts.money(pay)})",
+            callback_data="debt:wallet",
+        )])
+    buttons.append([InlineKeyboardButton(text=texts.DEBT_PAY_BY_RECEIPT, callback_data="debt:receipt")])
+    if session.get("debt_breakdown"):
+        buttons.append([InlineKeyboardButton("جزئیات", callback_data="acct:detail")])
+    return buttons
 
 
-async def on_pay_debt_wallet_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Legacy entry (old chats' «💳 پرداخت بدهی صورت‌حساب» button and the
+    bot.py import): now the merged account view — the debt flavour when they
+    owe, the wallet flavour otherwise."""
+    await show_account(update, context)
+
+
+async def _start_debt_receipt(update, context, session, debt) -> None:
+    """The card-receipt debt flow: the WHOLE debt is one button away, and a
+    smaller typed amount still works."""
+    context.user_data[_STATE] = _STATE_CHOOSING_TOPUP
+    context.user_data[_PENDING_FOR_DEBT] = True
+    await update.effective_message.reply_text(
+        texts.debt_receipt_amount_ask(int(debt), session["max_topup"]),
+        reply_markup=ReplyKeyboardMarkup(
+            [[KeyboardButton(texts.DEBT_AMOUNT_AS_IS)], [KeyboardButton(texts.CANCEL)]],
+            resize_keyboard=True,
+        ),
+    )
+
+
+async def on_pay_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The debt view's two entries (T2 one-tap design).
+
+    debt:wallet pays ON the tap — the button carried the amount, the money
+    goes to the customer's own account, and the screen they tapped it on was
+    already the payment summary. The OLD two-tap confirm (debt:wallet:yes,
+    still sitting in old chats) routes to the same immediate payment.
+    Menu buttons cancel any ask and run their own flow — the same resilience
+    rule as the name steps."""
     query = update.callback_query
     await query.answer()
     context.user_data.clear()
+    if query.data == "debt:wallet":
+        await _pay_debt_from_wallet(update, query)
+        return
+    # debt:receipt
+    session = await _session(update)
+    debt = session.get("ledger_debt", 0)
+    if debt <= 0:
+        await query.edit_message_text(texts.DEBT_NONE)
+        return
+    await _start_debt_receipt(update, context, session, debt)
+
+
+async def _pay_debt_from_wallet(update: Update, query) -> None:
+    """The wallet debt payment itself — shared by the one-tap button and the
+    legacy confirm button (old chats)."""
     session = await _session(update)
     if session.get("ledger_debt", 0) <= 0 or session["balance"] <= 0:
-        await query.edit_message_text(texts.DEBT_NONE if session.get("ledger_debt", 0) <= 0 else "کیف پولتان خالی است — از «ارسال رسید» استفاده کنید.")
+        await query.edit_message_text(
+            texts.DEBT_NONE if session.get("ledger_debt", 0) <= 0
+            else texts.account_debt_view(session.get("ledger_debt", 0), session.get("debt_exact", True))
+        )
         return
     try:
         result = await backend.post("/api/shop/bot/pay-debt-from-wallet",
@@ -1135,6 +1270,15 @@ async def on_pay_debt_wallet_confirm(update: Update, context: ContextTypes.DEFAU
     await query.edit_message_text(
         texts.debt_paid_from_wallet(result["paid"], result["wallet_balance"], result["ledger_debt"])
     )
+
+
+async def on_pay_debt_wallet_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The old «تأیید پرداخت از کیف پول» button, still sitting in chats from
+    before the rebuild: same immediate payment as the new one-tap button."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.clear()
+    await _pay_debt_from_wallet(update, query)
 
 
 async def on_pay_debt_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1150,31 +1294,10 @@ async def on_pay_debt_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def show_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    context.user_data.clear()
-    try:
-        session = await _session(update)
-        history = await backend.get("/api/shop/bot/wallet", params={"telegram_id": update.effective_user.id})
-    except ShopApiError:
-        logger.exception("Wallet lookup failed for %s", update.effective_user.id)
-        await update.effective_message.reply_text(texts.generic_error(None))
-        return
-
-    if not session["balance"] and not history and not session.get("ledger_debt", 0) > 0:
-        await _reply(update, texts.WALLET_EMPTY, session)
-        return
-
-    lines = [texts.wallet_summary(session["balance"], session.get("ledger_debt", 0), session.get("debt_breakdown"), session.get("debt_exact", True))]
-    if history:
-        lines.append("\nآخرین تراکنش‌ها:")
-        for entry in history[:10]:
-            # Rendered as a sentence rather than a signed number. A leading
-            # "+"/"−" is a bidi-neutral character: in right-to-left text it
-            # detaches from its digits and can render on the wrong side, which
-            # on a money line is a support message. The English enum used as a
-            # fallback label leaked through here too.
-            label = _wallet_label(entry)
-            lines.append(f"{label}: {texts.money(abs(entry['amount']))}")
-    await _reply(update, "\n".join(lines), session)
+    """Legacy entry (old chats' «💰 کیف پول» button): the merged account view.
+    The wallet flavour shows the balance; if the customer also owes, the debt
+    flavour wins (ONE number per view)."""
+    await show_account(update, context)
 
 
 def _display_service_name(row: dict) -> str | None:
@@ -1290,9 +1413,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 reply_markup=main_menu(session),
             )
             return
-        if text in (texts.MENU_BUY, texts.MENU_NEW_SERVICE, texts.MENU_ACCOUNTS,
-                    texts.MENU_WALLET, texts.MENU_TOPUP, texts.MENU_PAYG,
-                    texts.MENU_TRIAL, texts.MENU_HELP):
+        if _is_menu_tap(text):
             context.user_data.clear()
             return await handle_text(update, context)  # re-dispatch as a menu tap
         if text == texts.SKIP_NAME:
@@ -1336,9 +1457,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         name = text.strip()
         if name in ("حذف", "پاک کردن"):
             name = ""
-        if name in (texts.MENU_BUY, texts.MENU_NEW_SERVICE, texts.MENU_ACCOUNTS,
-                    texts.MENU_WALLET, texts.MENU_TOPUP, texts.MENU_PAYG,
-                    texts.MENU_TRIAL, texts.MENU_HELP, texts.CANCEL):
+        if name == texts.CANCEL or _is_menu_tap(name):
             context.user_data.clear()
             return await handle_text(update, context)  # re-dispatch as a menu tap
         if len(name) > 40:
@@ -1397,26 +1516,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _reply(update, texts.PHONE_LATER_ACK, session)
         return
 
-    if text == texts.MENU_BUY:
+    if text in (texts.MENU_BUY, texts.MENU_BUY_RENEW):
         return await start_buy(update, context)
-    if text == texts.MENU_NEW_SERVICE:
+    if text in (texts.MENU_NEW_SERVICE, texts.NEW_SERVICE_ON_BUY):
         return await start_new_service(update, context)
-    if text == texts.MENU_PAYG:
+    if text in (texts.MENU_PAYG, texts.PAYG_ON_BUY):
         return await start_payg(update, context)
     if text == texts.MENU_TRIAL:
         return await take_trial(update, context)
     if text == texts.MENU_ACCOUNTS:
         return await show_accounts(update, context)
-    if text == texts.MENU_WALLET:
-        return await show_wallet(update, context)
+    if text in (texts.MENU_WALLET, texts.MENU_PAY_DEBT) or texts.is_menu_account_label(text):
+        return await show_account(update, context)
     if text == texts.MENU_TOPUP:
         return await start_topup(update, context)
-    if text == texts.MENU_PAY_DEBT:
-        return await start_pay_debt(update, context)
-    if text == texts.MENU_HELP:
-        return await help_command(update, context)
-    if text == texts.MENU_SUPPORT:
-        return await show_support(update, context)
+    if text in (texts.MENU_HELP, texts.MENU_SUPPORT, texts.MENU_HELP_SUPPORT):
+        return await show_help_support(update, context)
 
     if text == texts.CANCEL:
         # Only claim a cancellation when something was actually in progress.
@@ -1449,6 +1564,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return await _handle_volume(update, context, volume)
 
     if state == _STATE_CHOOSING_TOPUP:
+        # «همین مبلغ» = the whole debt, no typing (T2). Checked BEFORE the
+        # number parser, which would reject the label.
+        if text == texts.DEBT_AMOUNT_AS_IS:
+            session = await _session(update)
+            debt = session.get("ledger_debt", 0)
+            if debt <= 0:
+                context.user_data.clear()
+                await _reply(update, texts.DEBT_NONE, session)
+                return
+            return await _handle_topup_amount(update, context, debt)
         amount = parse_number(text)
         if amount is None:
             await update.effective_message.reply_text(texts.not_a_number("۲۰۰,۰۰۰"))

@@ -887,6 +887,16 @@ class ShopBotSession(BaseModel):
     trial_gb: float = 0.0
     trial_hours: int = 0
 
+    # T2 menu rebuild (2026-11-06): lets the bot draw its context-adaptive
+    # menu from ONE session call. has_accounts = this person has (or had) a
+    # service — the same predicate that keeps the trial away from existing
+    # customers — so the buy button can read «خرید / تمدید» and the
+    # separate-service button can appear on the buy screen. has_payg_service
+    # = they already hold a metered retail service, so the bot never offers
+    # starting a second one. Both READ-ONLY; neither changes any money path.
+    has_accounts: bool = False
+    has_payg_service: bool = False
+
     # Whether to show the "📊 سرویس مصرفی" button — off whenever the operator
     # hasn't set a payg rate, same convention as trial_enabled above.
     payg_enabled: bool = False

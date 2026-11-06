@@ -1292,7 +1292,7 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
     settings = get_shop_settings(session)
     # Routed-books debt view (council 2026-10-24): read-only, from the ledger.
     ledger_debt = _linked_ledger_debt(session, user)
-    from app.shop_service import linked_debt_is_exact, linked_debt_lines
+    from app.shop_service import held_payg_account, is_existing_customer, linked_debt_is_exact, linked_debt_lines
 
     owing = linked_debt_lines(session, user.id)
     return ShopBotSession(
@@ -1316,6 +1316,11 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
                          and not is_existing_customer(session, user.id)),
         trial_gb=settings.trial_gb,
         trial_hours=settings.trial_hours,
+        # T2 menu rebuild: the bot draws its context-adaptive menu (and the
+        # buy screen's conditional buttons) from these two, computed with the
+        # same predicates the flows themselves enforce. Read-only.
+        has_accounts=is_existing_customer(session, user.id),
+        has_payg_service=held_payg_account(session, user.id) is not None,
         phone=user.phone,
         payg_enabled=bool(settings.payg_enabled and settings.payg_rate_per_gb),
         payg_rate_per_gb=settings.payg_rate_per_gb or 0,

@@ -41,6 +41,9 @@ from handlers.shop import (  # noqa: E402
     handle_contact,
     handle_document,
     handle_other,
+    on_account_back,
+    on_account_detail,
+    on_account_topup,
     on_auto_renew,
     on_pay_debt,
     on_pay_debt_wallet_confirm,
@@ -117,6 +120,11 @@ def main() -> None:
     # the bare debt: handler.
     app.add_handler(CallbackQueryHandler(on_pay_debt_wallet_confirm, pattern=r"^debt:wallet:yes$"))
     app.add_handler(CallbackQueryHandler(on_pay_debt, pattern=r"^debt:(wallet|receipt|cancel)$"))
+    # «حساب من» (T2): the debt breakdown view, its back button, and the
+    # wallet flavour's top-up action.
+    app.add_handler(CallbackQueryHandler(on_account_detail, pattern=r"^acct:detail$"))
+    app.add_handler(CallbackQueryHandler(on_account_back, pattern=r"^acct:back$"))
+    app.add_handler(CallbackQueryHandler(on_account_topup, pattern=r"^acct:topup$"))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     # A receipt sent as a file is still a receipt; anything else at least gets
     # an answer instead of silence.
