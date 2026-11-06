@@ -130,9 +130,8 @@ CONFIRM_BUY = "✅ تأیید و دریافت"
 # wants a size that is not offered.
 CUSTOM_VOLUME = "✏️ حجم دلخواه"
 ASK_CUSTOM_VOLUME = "عدد حجم را به گیگابایت بفرستید — مثلاً ۳۵"
-# The button that renews a service straight from its own warning message.
-RENEW_BUTTON = "🔄 تمدید همین سرویس"
-BUY_BUTTON = "🛒 خرید سرویس"
+# (The old RENEW_BUTTON/BUY_BUTTON went with T3/T6: the card carries
+# CARD_RENEW_BUTTON and the menu carries MENU_BUY — one name each.)
 CANCEL = "❌ انصراف"
 
 # ── T4 buy flow — one screen, one action ──────────────────────────────────
@@ -142,9 +141,9 @@ CANCEL = "❌ انصراف"
 # mandatory path entirely (design decision 3, docs/ZCODE_SHOPBOT_UX_DESIGN.md).
 PREFERRED_NAME_BUTTON = "✏️ نام کاربری دلخواه"
 ASK_PREFERRED_NAME = (
-    "نام کاربری سرویست را انتخاب کن (اختیاری):\n"
+    "نام کاربری سرویس را انتخاب کنید (اختیاری):\n"
     "حروف انگلیسی، عدد و - یا _ — بین ۳ تا ۳۰ کاراکتر، مثلاً fateme.\n"
-    "این همون اسمیه که توی اپ و اشتراکت دیده می‌شه. «بدون نام» = خودکار (مثل shop10)."
+    "همین نام در اپ و اشتراکتان دیده می‌شود. «بدون نام» = خودکار (مثل shop10)."
 )
 # An old inline button whose flow has already moved on (or died with a
 # restart): answered, never silence.
@@ -181,15 +180,11 @@ def welcome(shop_name: Optional[str], trial_available: bool, trial_gb: float, tr
 
 def help_text(price_per_gb: int, days: int, eta_minutes: int, handle: Optional[str]) -> str:
     return (
-        "کار با ربات ساده است:\n\n"
-        f"۱. «{MENU_BUY}» را بزنید و حجم را انتخاب کنید.\n"
-        "۲. مبلغ دقیق و شماره کارت را می‌بینید — کارت‌به‌کارت کنید و عکس رسید را بفرستید، "
-        "یا کد پیگیری تراکنش را همینجا تایپ کنید.\n"
-        f"۳. رسید را که ببینم (معمولاً تا {fa(eta_minutes)} دقیقه)، سرویس‌تان خودکار ساخته می‌شود "
-        "و لینک و کد QR همینجا می‌آید.\n\n"
-        f"قیمت هر گیگابایت {money(price_per_gb)} و همه‌ی سرویس‌ها {fa(days)} روزه‌اند؛ فقط حجمشان فرق می‌کند.\n"
-        "اگر از قبل موجودی کافی داشته باشید، خرید همان لحظه انجام می‌شود.\n"
-        "محدودیتی در تعداد خریدتان نیست — هر چندتا سرویس که بخواهید می‌توانید بخرید."
+        "سفارش اول ثبت می‌شود، بعد پرداخت:\n"
+        f"۱. از «{MENU_BUY}» حجم را انتخاب کنید.\n"
+        "۲. مبلغ دقیق و شماره کارت را می‌بینید؛ عکس رسید را همینجا بفرستید یا کد پیگیری تراکنش را تایپ کنید.\n"
+        f"۳. رسید که بررسی شد (معمولاً تا {fa(eta_minutes)} دقیقه)، لینک و QR سرویس همینجا می‌آید.\n\n"
+        f"هر گیگابایت {money(price_per_gb)}؛ سرویس‌ها {fa(days)} روزه‌اند. با موجودیِ کافی، خرید همان لحظه انجام می‌شود."
         + support(handle)
     )
 
@@ -201,8 +196,7 @@ def help_text(price_per_gb: int, days: int, eta_minutes: int, handle: Optional[s
 # just adds to the existing service), so nobody taps it by mistake expecting
 # a top-up and nobody taps MENU_BUY expecting a second, separate service.
 NEW_SERVICE_INTRO = (
-    "این گزینه یک سرویس کاملاً جدید و جداگانه می‌سازد — سرویس فعلی‌تان "
-    "دست‌نخورده می‌ماند و لینک آن هم همچنان کار می‌کند."
+    "این گزینه سرویسِ جداگانه می‌سازد — سرویس فعلی‌تان دست‌نخورده می‌ماند و لینکش کار می‌کند."
 )
 
 
@@ -211,9 +205,8 @@ def buy_prompt(price_per_gb: int, min_gb: float, max_gb: float, days: int) -> st
     # sense of what's on offer); the rate is still stated plainly right
     # after, nothing hidden - this is reframing, not a discount.
     return (
-        f"حجم سرویستان را به دلخواه انتخاب کنید — از {gb(min_gb)} تا {gb(max_gb)}، همه {fa(days)} روزه.\n"
-        f"هر گیگابایت {money(price_per_gb)}.\n\n"
-        "یکی از گزینه‌ها را بزنید، یا عدد حجم دلخواهتان را بفرستید (مثلاً ۳۵)."
+        f"از {gb(min_gb)} تا {gb(max_gb)}، همه {fa(days)} روزه.\n"
+        f"هر گیگابایت {money(price_per_gb)}."
     )
 
 
@@ -256,12 +249,12 @@ def auto_renew_in_debt(volume_gb: float, owed: int, grace_days: int) -> str:
 
 AUTO_RENEW_ALREADY_IN_DEBT = (
     "یک تمدید خودکار قبلی هنوز تسویه نشده.\n"
-    "برای ادامه، یا موجودی‌تان را شارژ کنید، یا «🔧 تمدید حجم دلخواه» را بزنید."
+    "برای ادامه، موجودی‌تان را شارژ کنید یا از کارت سرویس، «تمدید» را بزنید."
 )
 
 AUTO_RENEW_NO_HISTORY = (
     "برای این سرویس هنوز سابقه‌ی خریدی نیست که میانگینش را بگیرم.\n"
-    "«🔧 تمدید حجم دلخواه» را بزنید."
+    "از کارت سرویس، «تمدید» را بزنید."
 )
 
 
@@ -269,12 +262,10 @@ AUTO_RENEW_NO_HISTORY = (
 
 def payg_intro(rate_per_gb: int) -> str:
     return (
-        "سرویس مصرفی یعنی هیچ حجم یا مدت ثابتی نمی‌خرید — هر روز فقط برای "
-        f"همان مقداری که واقعاً مصرف کرده‌اید، {money(rate_per_gb)} به ازای هر گیگ، "
-        "از موجودی‌تان کم می‌شود.\n\n"
-        "اگر موجودی کافی نباشد، سرویس موقتاً متوقف می‌شود و با شارژ کردن "
-        "خودش دوباره فعال می‌شود — نیازی به تماس با پشتیبانی نیست.\n\n"
-        "برای شروع، همین الان سرویس ساخته می‌شود؛ تا موقعی که مصرفی نداشته باشید چیزی کم نمی‌شود."
+        "حجم ثابتی نمی‌خرید — هر روز فقط به‌اندازهٔ مصرفتان، "
+        f"{money(rate_per_gb)} برای هر گیگ، از موجودی‌تان کم می‌شود.\n"
+        "موجودی که تمام شود سرویس موقتاً متوقف می‌شود و با شارژ، خودش دوباره وصل می‌شود.\n"
+        "همین حالا ساخته می‌شود؛ تا مصرفی نداشته باشید چیزی کم نمی‌شود."
     )
 
 
@@ -297,14 +288,6 @@ def out_of_range(min_gb: float, max_gb: float) -> str:
 
 # ── the trial ─────────────────────────────────────────────────────────────
 
-def trial_offer(trial_gb_value: float, trial_hours: int) -> str:
-    return (
-        f"🎁 {gb(trial_gb_value)} برای {fa(trial_hours)} ساعت، رایگان.\n"
-        "بدون پرداخت و بدون کارت — فقط برای اینکه ببینید کار می‌کند.\n\n"
-        "بزنید تا همین الان بسازمش."
-    )
-
-
 TRIAL_ALREADY_TAKEN = (
     "تست رایگانتان را قبلاً گرفته‌اید 🙂\n"
     f"برای ادامه از «{MENU_BUY}» یک سرویس بگیرید."
@@ -314,11 +297,9 @@ TRIAL_UNAVAILABLE = "تست رایگان فعلاً فعال نیست."
 
 # ── paying ────────────────────────────────────────────────────────────────
 
-ASK_RECEIPT = "حالا عکس رسید را بفرستید، یا کد پیگیری تراکنش را تایپ کنید 📸"
-
 NEED_PHOTO = (
     "این را به‌عنوان رسید متوجه نشدم.\n"
-    "عکس رسید را بفرستید، یا کد پیگیری تراکنش را تایپ کنید (باید چندتا رقم واقعی توش باشه)."
+    "عکس رسید را بفرستید، یا کد پیگیری تراکنش را تایپ کنید."
 )
 
 RECEIPT_ALREADY_WAITING = (
@@ -335,7 +316,7 @@ RECEIPT_AS_FILE = (
 
 RECEIPT_WITHOUT_CONTEXT = (
     "این عکس مربوط به چه پرداختی است؟\n"
-    f"اول از «{MENU_BUY}» سرویس را انتخاب کنید یا «{MENU_TOPUP}» را بزنید، بعد رسید را بفرستید."
+    f"اول از «{MENU_BUY}» سرویس را انتخاب کنید یا از «{MENU_ACCOUNT}» شارژ کنید، بعد رسید را بفرستید."
 )
 
 
@@ -465,8 +446,8 @@ def payment_status(status: str, reference: str, order_status: Optional[str],
         return f"✅ پرداخت {reference} تأیید شد و {what} تحویل شد — در «{MENU_ACCOUNTS}» است."
     if order_status == "awaiting_payment":
         return (
-            f"✅ پرداخت {reference} تأیید شد، ولی برای سرویسی که انتخاب کرده بودید کافی نبود.\n"
-            f"باقی را از «{MENU_BUY}» با همان حجم کامل کنید." + support(handle)
+            f"✅ پرداخت {reference} تأیید شد ولی برای سرویسِ انتخابی کافی نبود.\n"
+            f"برای کامل‌کردن، از «{MENU_BUY}» ادامه دهید؛ سفارشتان سر جایش است." + support(handle)
         )
     return f"✅ پرداخت {reference} تأیید شد و به موجودی‌تان اضافه شد."
 
@@ -547,7 +528,7 @@ DEBT_NONE = "ماندهٔ پرداخت‌نشده‌ای ندارید ✓"
 def debt_receipt_instructions(amount: int, card: str, holder, eta: int) -> str:
     return (
         f"مبلغ {money(amount)} را به کارت زیر واریز کنید و رسید آن را "
-        "دقیقاً همین‌جا بفرستید. این پرداخت روی صورت‌حساب شما ثبت می‌شود "
+        "همین‌جا بفرستید. این پرداخت روی ماندهٔ پرداخت‌نشده‌تان ثبت می‌شود "
         "(شارژ موجودی نمی‌شود — ماندهٔ پرداخت‌نشده کم می‌شود).\n\n"
         f"شماره کارت: `{card}`\n"
         + (f"به نام {holder}\n" if holder else "")
@@ -632,15 +613,15 @@ STATUS_SUSPENDED_BADGE = "⚪️ موقتاً متوقف — با شارژ، خ�
 # ONE string: a stray comma here once made this a tuple, and python-telegram-bot
 # sent its JSON repr («["نام …"]») to a customer (2026-10-26).
 ASK_SERVICE_NAME = (
-    "نام سرویس را بفرست — هر اسمی که برایت مفهوم است، مثلاً «گوشی علی» یا «لپ‌تاپ کار».\n"
-    "برای حذفِ نام فعلی، «حذف» را بفرست."
+    "نام سرویس را بفرستید — هر اسمی که برایتان مفهوم است، مثلاً «گوشی علی».\n"
+    "برای حذفِ نام فعلی، «حذف» را بفرستید."
 )
-SERVICE_NAME_SAVED = "✅ ثبت شد — از این به بعد سرویست با همین نام نشان داده می‌شود."
-SERVICE_NAME_CLEARED = "نام حذف شد — سرویست دوباره با حجمش نام‌گذاری می‌شود."
+SERVICE_NAME_SAVED = "✅ ثبت شد — از این به بعد سرویس‌تان با همین نام نشان داده می‌شود."
+SERVICE_NAME_CLEARED = "نام حذف شد — سرویس‌تان دوباره با حجمش نام‌گذاری می‌شود."
 SERVICE_NAME_TOO_LONG = "نام طولانی است — تا ۴۰ کاراکتر."
 
 SKIP_NAME = "بدون نام"
-PURCHASE_CANCELLED = "خرید لغو شد — هر وقت خواستی از «🛒 خرید سرویس» شروع کن."
+PURCHASE_CANCELLED = f"خرید لغو شد — هر وقت خواستید، از «{MENU_BUY}» شروع کنید."
 
 
 def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional[int],
