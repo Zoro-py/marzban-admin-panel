@@ -896,6 +896,10 @@ class ShopBotSession(BaseModel):
     # starting a second one. Both READ-ONLY; neither changes any money path.
     has_accounts: bool = False
     has_payg_service: bool = False
+    # Capability bit: this backend accepts ShopBotPurchaseRequest.
+    # target_account_id. An OLD backend silently drops the unknown field, so
+    # the bot sends it only when this is True (absent -> False -> old flow).
+    per_account_renewal: bool = False
 
     # Whether to show the "📊 سرویس مصرفی" button — off whenever the operator
     # hasn't set a payg rate, same convention as trial_enabled above.
@@ -941,6 +945,10 @@ class ShopBotPurchaseRequest(BaseModel):
     # lookup so this purchase always mints a brand-new account, even for a
     # customer who already has one (owner decision 2026-10-22).
     force_new_service: bool = False
+    # Per-account renewal: extend exactly THIS one of the customer's own
+    # services (None = whichever renewable_account picks, as before). Must be
+    # the customer's own live service; never combined with force_new_service.
+    target_account_id: Optional[int] = None
     # The customer's own name for the service this purchase creates/extends,
     # asked optionally in the bot's purchase flow. Applied to the account at
     # delivery; stripped/capped in the service layer.
@@ -1040,6 +1048,9 @@ class ShopOrderIntent(BaseModel):
     # customer's existing one) — the bot asks for a chosen username only
     # then; extensions cannot rename.
     creates_new: bool = False
+    # The service a targeted renewal extends, in the customer's own words
+    # (nickname, else the username) - so the confirm screen can say which one.
+    target_label: Optional[str] = None
     card_number: Optional[str] = None
     card_holder: Optional[str] = None
     approval_eta_minutes: int
@@ -1073,6 +1084,9 @@ class ShopBotAccountRow(BaseModel):
     # only — on a multi-service customer every other card would otherwise
     # promise «renew this» and extend a different service.
     renews_here: bool = False
+    # A volume purchase can be added to THIS service (alive, not metered, has
+    # a data cap). Drives the renew button on every card that can take it.
+    can_renew: Optional[bool] = None
     # Whether the «تمدید خودکار» action can work for this row — the SAME rule
     # shop_service.auto_renew_account refuses on: a shop-wallet feature, never
     # for an account an operator-managed customer owns (customer_id set, even

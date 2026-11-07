@@ -509,6 +509,20 @@ async def _provision_order(
     # purpose: the customer explicitly asked for a second, independent
     # service, not a bigger version of the one they already have.
     if order.price > 0 and duration_hours is None and not order.force_new_service:
+        if order.target_account_id is not None:
+            # A TARGETED renewal either extends exactly that account or is
+            # refunded - it must never fall through to minting a brand-new
+            # service the customer did not ask for (and was charged for as a
+            # renewal). Ownership is re-verified here as defence in depth.
+            try:
+                target = resolve_renew_target(session, order.shop_user_id, order.target_account_id)
+            except ShopError as exc:
+                refund_order(session, order, reason=f"The service to renew is no longer available: {exc}")
+                return
+            if await _extend_order(session, order, target):
+                return
+            refund_order(session, order, reason="The service to renew no longer exists on the panel")
+            return
         existing = renewable_account(session, order.shop_user_id)
         if existing is not None and await _extend_order(session, order, existing):
             return
@@ -1206,6 +1220,10 @@ async def pay_awaiting_order(session: Session, order: ShopOrder) -> ShopOrder:
         session.refresh(order)
         if order.status != ShopOrderStatus.awaiting_payment:
             raise ShopError(f"Order #{order.id} is already {order.status.value}.")
+        if order.target_account_id is not None:
+            # Money line: the service this order renews must STILL be this
+            # customer's own live service before a single toman is debited.
+            resolve_renew_target(session, order.shop_user_id, order.target_account_id)
         balance = wallet_balance(session, order.shop_user_id)
         if balance < order.price:
             raise ShopError(
@@ -1423,6 +1441,7 @@ async def grant_trial(session: Session, shop_user: ShopUser) -> ShopOrder:
 def create_awaiting_order(
     session: Session, shop_user: ShopUser, data_limit_gb: float, *, force_new_service: bool = False,
     service_name: Optional[str] = None, marzban_username: Optional[str] = None,
+    target_account_id: Optional[int] = None,
 ) -> ShopOrder:
     """Records what the customer chose, before asking them for any money.
 
@@ -1437,6 +1456,8 @@ def create_awaiting_order(
     """
     if shop_user.is_blocked:
         raise ShopError("This account can't make purchases. Contact support.")
+    if target_account_id is not None and force_new_service:
+        raise ShopError("A renewal of one service cannot also ask for a new separate one.")
     settings = get_shop_settings(session)
     validate_purchase_request(settings, data_limit_gb)
     price = quote_price(settings, data_limit_gb)
@@ -1450,6 +1471,7 @@ def create_awaiting_order(
         force_new_service=force_new_service,
         service_name=(service_name or None),
         requested_username=(marzban_username or None),
+        target_account_id=target_account_id,
     )
     session.add(order)
     session.commit()
@@ -1861,7 +1883,56 @@ def is_existing_customer(session: Session, shop_user_id: int) -> bool:
     ).first() is not None
 
 
-def refuse_unlimited_renewal(session: Session, shop_user_id: int, *, force_new_service: bool = False) -> None:
+def visible_account_ids(session: Session, shop_user_id: int) -> set[int]:
+    """Every account this shop user may act on: the accounts of their delivered
+    orders plus the accounts of the customer(s) linked to their Telegram. The
+    ONE definition of this customer's own services - the rename endpoint and
+    per-account renewal both use it, so they can never disagree."""
+    ids: set[int] = set()
+    orders = session.exec(
+        select(ShopOrder).where(ShopOrder.shop_user_id == shop_user_id,
+                                ShopOrder.status == ShopOrderStatus.delivered)
+    ).all()
+    for order in orders:
+        if order.account_id:
+            ids.add(order.account_id)
+    for linked_customer in linked_customers(session, shop_user_id):
+        for acc in session.exec(select(Account.id).where(Account.customer_id == linked_customer.id)).all():
+            ids.add(acc if isinstance(acc, int) else acc[0])
+    return ids
+
+
+def resolve_renew_target(session: Session, shop_user_id: int,
+                         target_account_id: Optional[int]) -> Optional[Account]:
+    """The account a purchase extends. No target -> renewable_account (the
+    behaviour before per-account renewal, unchanged). With a target the id must
+    be one of THIS customer's own live services - anything else raises
+    ShopError("TARGET_NOT_FOUND ...") with one wording for 'not yours' and
+    'does not exist', so the answer is no oracle about other people's accounts."""
+    if target_account_id is None:
+        return renewable_account(session, shop_user_id)
+    if target_account_id not in visible_account_ids(session, shop_user_id):
+        raise ShopError("TARGET_NOT_FOUND: service not found")
+    account = session.get(Account, target_account_id)
+    if account is None or account.deleted_at is not None \
+            or account.status in ("disabled", "deleted_from_marzban"):
+        raise ShopError("This service is no longer active.")
+    return account
+
+
+def account_can_take_volume(session: Session, account: Account) -> bool:
+    """True when a volume purchase can be added to this account - the same two
+    refusals refuse_unlimited_renewal enforces (metered payg; no data cap) plus
+    'not alive'. Read-only; drives the per-card renew button."""
+    if account.deleted_at is not None or account.status in ("disabled", "deleted_from_marzban"):
+        return False
+    if effective_billing_mode(session, account) == BillingMode.payg:
+        return False
+    return bool(account.data_limit)
+
+
+def refuse_unlimited_renewal(session: Session, shop_user_id: int, *, force_new_service: bool = False,
+                             target_account_id: Optional[int] = None) -> None:
     """Raises ShopError with a stable prefix when the account this customer's
     next purchase would extend cannot take a volume purchase:
 
@@ -1889,7 +1960,7 @@ def refuse_unlimited_renewal(session: Session, shop_user_id: int, *, force_new_s
     """
     if force_new_service:
         return
-    existing = renewable_account(session, shop_user_id)
+    existing = resolve_renew_target(session, shop_user_id, target_account_id)
     if existing is None:
         return
     if effective_billing_mode(session, existing) == BillingMode.payg:

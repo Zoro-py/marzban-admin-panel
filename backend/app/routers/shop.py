@@ -1321,6 +1321,7 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
         # same predicates the flows themselves enforce. Read-only.
         has_accounts=is_existing_customer(session, user.id),
         has_payg_service=held_payg_account(session, user.id) is not None,
+        per_account_renewal=True,
         phone=user.phone,
         payg_enabled=bool(settings.payg_enabled and settings.payg_rate_per_gb),
         payg_rate_per_gb=settings.payg_rate_per_gb or 0,
@@ -1362,10 +1363,12 @@ def bot_quote(body: ShopBotPurchaseRequest, session: Session = Depends(get_sessi
     """
     user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
     if user is not None:
+        if body.target_account_id is not None and body.force_new_service:
+            raise HTTPException(400, "A renewal of one service cannot also ask for a new separate one.")
         try:
-            refuse_unlimited_renewal(session, user.id)
+            refuse_unlimited_renewal(session, user.id, target_account_id=body.target_account_id)
         except ShopError as exc:
-            raise HTTPException(409, str(exc))
+            raise HTTPException(404 if str(exc).startswith("TARGET_NOT_FOUND") else 409, str(exc))
     settings = get_shop_settings(session)
     try:
         validate_purchase_request(settings, body.data_limit_gb)
@@ -1539,10 +1542,13 @@ async def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depe
         raise HTTPException(404, "Unknown shop user — call /session first")
     # Same unlimited refusal as /purchase — here it stops the RECEIPT flow
     # from ever starting for a service that needs nothing.
+    if body.target_account_id is not None and body.force_new_service:
+        raise HTTPException(400, "A renewal of one service cannot also ask for a new separate one.")
     try:
-        refuse_unlimited_renewal(session, user.id, force_new_service=body.force_new_service)
+        refuse_unlimited_renewal(session, user.id, force_new_service=body.force_new_service,
+                                 target_account_id=body.target_account_id)
     except ShopError as exc:
-        raise HTTPException(409, str(exc))
+        raise HTTPException(404 if str(exc).startswith("TARGET_NOT_FOUND") else 409, str(exc))
     try:
         chosen = _clean_chosen_username(body.marzban_username)
     except ShopError as exc:
@@ -1553,7 +1559,8 @@ async def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depe
         raise HTTPException(409, str(exc))
     try:
         order = create_awaiting_order(session, user, body.data_limit_gb, force_new_service=body.force_new_service,
-                                  service_name=_clean_service_name(body.service_name), marzban_username=chosen)
+                                  service_name=_clean_service_name(body.service_name), marzban_username=chosen,
+                                  target_account_id=body.target_account_id)
     except ShopError as exc:
         raise HTTPException(
             409 if str(exc).startswith(("SERVICE_IS_UNLIMITED", "PAYG_TOPUP_INSTEAD")) else 400,
@@ -1562,12 +1569,19 @@ async def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depe
 
     balance = wallet_balance(session, user.id)
     settings = get_shop_settings(session)
+    target_label = None
+    if body.target_account_id is not None:
+        target_acct = session.get(Account, body.target_account_id)
+        if target_acct is not None:
+            target_label = target_acct.service_name or target_acct.marzban_username
     creates_new = body.force_new_service or (
-        renewable_account(session, user.id) is None and order.account_id is None
+        body.target_account_id is None
+        and renewable_account(session, user.id) is None and order.account_id is None
     )
     return ShopOrderIntent(
         order_id=order.id,
         creates_new=creates_new,
+        target_label=target_label,
         data_limit_gb=order.data_limit_gb,
         duration_days=order.duration_days,
         price=order.price,
@@ -1628,7 +1642,7 @@ async def bot_pay_order(order_id: int, body: ShopBotOrderAction, session: Sessio
     try:
         order = await pay_awaiting_order(session, order)
     except ShopError as exc:
-        raise HTTPException(400, str(exc))
+        raise HTTPException(404 if str(exc).startswith("TARGET_NOT_FOUND") else 400, str(exc))
 
     if order.status == ShopOrderStatus.failed:
         raise HTTPException(502, order.error or "Could not create the account")
@@ -2208,12 +2222,15 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
     if target is not None:
         for row in rows:
             row.renews_here = row.account_id == target.id
+    from app.shop_service import account_can_take_volume
+
     for row in rows:
         acct = session.get(Account, row.account_id) if row.account_id else None
         row.auto_renew_ok = bool(
             acct is not None and acct.customer_id is None
             and acct.status not in ("disabled", "deleted_from_marzban")
         )
+        row.can_renew = bool(acct is not None and account_can_take_volume(session, acct))
     return rows
 
 
@@ -2232,21 +2249,9 @@ async def bot_rename_account(account_id: int, body: ShopBotServiceNameRequest,
     if account is None:
         raise HTTPException(404, "not found")
 
-    visible_ids: set[int] = set()
-    orders = session.exec(
-        select(ShopOrder).where(ShopOrder.shop_user_id == user.id,
-                                ShopOrder.status == ShopOrderStatus.delivered)
-    ).all()
-    for order in orders:
-        if order.account_id:
-            visible_ids.add(order.account_id)
-    from app.shop_service import linked_customers
+    from app.shop_service import visible_account_ids
 
-    for linked_customer in linked_customers(session, user.id):
-        for acc in session.exec(select(Account.id).where(Account.customer_id == linked_customer.id)).all():
-            visible_ids.add(acc if isinstance(acc, int) else acc[0])
-
-    if account_id not in visible_ids:
+    if account_id not in visible_account_ids(session, user.id):
         raise HTTPException(404, "not found")
 
     name = (body.name or "").strip()

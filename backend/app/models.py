@@ -725,6 +725,14 @@ class ShopOrder(SQLModel, table=True):
     # unchanged; this only turns off the renewal-in-place lookup.
     force_new_service: bool = Field(default=False)
 
+    # PER-ACCOUNT RENEWAL. When set, this order extends exactly THIS account
+    # (one of the customer's own services, picked by tapping the renew button
+    # on its card) instead of whichever one renewable_account() would choose.
+    # NULL = the old behaviour, unchanged. Frozen at order creation; the owner
+    # of the account is re-verified before any money moves (shop_service.
+    # resolve_renew_target). Never combined with force_new_service.
+    target_account_id: Optional[int] = Field(default=None, index=True)
+
 
 class ShopBindClaim(SQLModel, table=True):
     """A PENDING "bind this customer to their Telegram" instruction the

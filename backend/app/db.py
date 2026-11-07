@@ -541,6 +541,9 @@ def _run_shop_migrations() -> None:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN requested_username VARCHAR"))
         if order_cols and "service_name" not in order_cols:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN service_name VARCHAR"))
+        if order_cols and "target_account_id" not in order_cols:
+            conn.execute(text("ALTER TABLE shoporder ADD COLUMN target_account_id INTEGER"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shoporder_target_account_id ON shoporder (target_account_id)"))
         if order_cols and "force_new_service" not in order_cols:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN force_new_service BOOLEAN NOT NULL DEFAULT 0"))
         if order_cols and "auto_renewed" not in order_cols:
