@@ -189,6 +189,38 @@ async def main() -> None:
           any(c == "svcname:11" for _, c in btns) and any(c == "autorenew:11" for _, c in btns),
           repr(btns))
 
+    # ── 6a. auto-renew is a shop-wallet feature: the panel offers it only for
+    #        shop-bought services (live 2026-11-07: «سرویس اصلی», an
+    #        operator-managed account, got the button and a «مشکل فنی»)
+    ROWS.clear()
+    ROWS.append(row(account_id=11, source="shop"))
+    ROWS.append(row(account_id=12, source="linked", order_id=None))
+    (upd, context), msg = make_update(cb_data="svcmore:12")
+    await shop.on_service_more(upd, context)
+    btns = buttons_of(msg)
+    check("linked service: no تمدید خودکار button", not any(c.startswith("autorenew:") for _, c in btns), repr(btns))
+    check("linked service: نام سرویس still there", any(c == "svcname:12" for _, c in btns), repr(btns))
+    (upd, context), msg = make_update(cb_data="svcmore:11")
+    await shop.on_service_more(upd, context)
+    check("shop service keeps تمدید خودکار",
+          any(c == "autorenew:11" for _, c in buttons_of(msg)), repr(buttons_of(msg)))
+
+    # ── 6a2. a refusal the backend words in English is a calm Persian line,
+    #         never the «مشکل فنی» text
+    from api_client import ShopApiError
+    refusals = ["This service can't be auto-renewed.", "This service is no longer active."]
+    for refusal in refusals:
+        class RefusingBackend(StubBackend):
+            async def post(self, path, json=None, timeout: float = 20, _r=refusal):
+                raise ShopApiError(_r, 400)
+        shop.backend = RefusingBackend()
+        (upd, context), msg = make_update(cb_data="autorenew:12")
+        await shop.on_auto_renew(upd, context)
+        last = msg.replies[-1][0]
+        check(f"refusal «{refusal[:28]}…» -> friendly line, not generic error",
+              last == texts.AUTO_RENEW_NOT_AVAILABLE, repr(last))
+    shop.backend = StubBackend()
+
     # ── 6b. multi-service: renew button only on the card that renews ────
     ROWS.clear()
     ROWS.append(row(account_id=11, renews_here=True))

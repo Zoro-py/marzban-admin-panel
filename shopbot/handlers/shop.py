@@ -733,6 +733,11 @@ async def on_auto_renew(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await _reply(update, texts.AUTO_RENEW_ALREADY_IN_DEBT, session)
         elif "NO_HISTORY" in text:
             await _reply(update, texts.AUTO_RENEW_NO_HISTORY, session)
+        elif "can't be auto-renewed" in text or "no longer active" in text:
+            # The backend's plain refusals (an operator-managed service, a
+            # disabled one): information with the way forward, not a «technical
+            # problem» — nothing is wrong, this service just does not do this.
+            await _reply(update, texts.AUTO_RENEW_NOT_AVAILABLE, session)
         else:
             logger.exception("Auto-renew failed for account %s", account_id)
             await _reply(update, texts.generic_error(_handle(session)), session)
@@ -1557,12 +1562,26 @@ async def on_service_more(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.effective_message.reply_text(texts.STALE_BUTTON)
         return
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    buttons = [[InlineKeyboardButton("✏️ نام سرویس", callback_data=f"svcname:{account_id}")]]
+    # Auto-renew debits the SHOP wallet, so the backend refuses it for a
+    # service the operator manages («linked» rows). Offer it only where it can
+    # work. If the list cannot be fetched the button stays (the backend and
+    # the friendly refusal line still guard it).
+    offer_auto_renew = True
+    try:
+        rows = await backend.get("/api/shop/bot/accounts",
+                                 params={"telegram_id": update.effective_user.id})
+        row = next((r for r in rows if str(r.get("account_id")) == account_id), None)
+        if row is not None and row.get("source") != "shop":
+            offer_auto_renew = False
+    except ShopApiError:
+        logger.debug("Could not check the service source for the more-panel", exc_info=True)
+    if offer_auto_renew:
+        buttons.append([InlineKeyboardButton(texts.AUTO_RENEW_BUTTON,
+                                             callback_data=f"autorenew:{account_id}")])
     await update.effective_message.reply_text(
         texts.SERVICE_MORE_HINT,
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✏️ نام سرویس", callback_data=f"svcname:{account_id}")],
-            [InlineKeyboardButton(texts.AUTO_RENEW_BUTTON, callback_data=f"autorenew:{account_id}")],
-        ]),
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
