@@ -149,6 +149,17 @@ ASK_PREFERRED_NAME = (
 # restart): answered, never silence.
 STALE_BUTTON = "این دکمه قدیمی شده — از منوی پایین ادامه دهید."
 
+# Per-service renewal: the card the customer tapped no longer exists or is no
+# longer theirs to renew. Information plus the way forward, nothing alarming.
+RENEW_TARGET_GONE = "این سرویس دیگر در دسترس نیست. «سرویس‌های من» را دوباره باز کنید."
+
+
+def renew_target_line(label: str) -> str:
+    """The one line that says WHICH service a renewal is for - shown on the
+    confirm / payment screens so a customer with several services sees where
+    the volume will go before paying."""
+    return f"🔄 تمدید «{label}»"
+
 # Offered once, after a first real purchase (never on /start — see
 # handlers/shop.py) — never required for anything.
 SHARE_PHONE_BUTTON = "📞 اشتراک‌گذاری شماره"

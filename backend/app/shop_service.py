@@ -1752,7 +1752,10 @@ async def warn_customers_before_service_ends(session: Session) -> int:
         renew_gb = settings.min_gb if is_trial else order.data_limit_gb
         manual_button = {
             "text": "🛒 خرید سرویس" if is_trial else "🔧 تمدید حجم دلخواه",
-            "callback_data": f"renew:{renew_gb:g}",
+            # A real (non-trial) warning is about ONE account: its button must
+            # renew THAT account, not whichever renewable_account would pick
+            # for a customer with several. Old chats keep their renew: buttons.
+            "callback_data": f"renew:{renew_gb:g}" if is_trial else f"ren:{account.id}:{renew_gb:g}",
         }
         # The auto-renew-by-average option only makes sense at the USAGE
         # warning for a real paid account (not a trial, which has no usage

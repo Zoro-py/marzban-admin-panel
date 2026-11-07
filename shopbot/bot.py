@@ -50,6 +50,7 @@ from handlers.shop import (  # noqa: E402
     on_pay_debt,
     on_pay_debt_wallet_confirm,
     on_renew,
+    on_renew_target,
     on_service_more,
     on_service_name,
     on_username_ask,
@@ -118,6 +119,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(on_renew, pattern=r"^renew:"))
+    app.add_handler(CallbackQueryHandler(on_renew_target, pattern=r"^ren:"))
     app.add_handler(CallbackQueryHandler(on_service_more, pattern=r"^svcmore:"))
     app.add_handler(CallbackQueryHandler(on_service_name, pattern=r"^svcname:"))
     # T4 buy flow: the inline volume screen, its optional username pre-pick,

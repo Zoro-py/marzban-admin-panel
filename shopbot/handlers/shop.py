@@ -80,6 +80,11 @@ _PENDING_FOR_DEBT = "pending_for_debt"
 # read once, in _handle_volume, to tell the backend not to extend whatever
 # account the customer already has.
 _FORCE_NEW_SERVICE = "force_new_service"
+# Set by a service card's renew button (ren:<account_id>:<gb>): the order must
+# extend exactly THAT service. Only sent to a backend that advertises
+# session["per_account_renewal"] - an older backend would drop the field and
+# renew the wrong service.
+_TARGET_ACCOUNT_ID = "target_account_id"
 _PENDING_VOLUME = "pending_volume"
 # Per-process, not persisted: worst case a bot restart offers the phone
 # prompt one more time than intended, which is a fully dismissible, harmless
@@ -697,6 +702,33 @@ async def on_renew(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _handle_volume(update, context, volume)
 
 
+async def on_renew_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The renew button on ONE service card: ren:<account_id>:<gb>. Renews
+    exactly that service with the same size - one tap to the summary. A
+    malformed or stale payload is the usual «این دکمه قدیمی شده»."""
+    query = update.callback_query
+    await query.answer()
+    try:
+        _, raw_id, raw_gb = query.data.split(":", 2)
+        account_id = int(raw_id)
+        volume = float(raw_gb)
+    except (AttributeError, ValueError):
+        await update.effective_message.reply_text(texts.STALE_BUTTON)
+        return
+
+    context.user_data.clear()
+    session = await _session(update)
+    if session["is_blocked"]:
+        await _reply(update, texts.blocked(_handle(session)), session)
+        return
+    if not session["is_open"]:
+        await _reply(update, texts.shop_closed(_handle(session)), session)
+        return
+    if session.get("per_account_renewal"):
+        context.user_data[_TARGET_ACCOUNT_ID] = account_id
+    await _handle_volume(update, context, volume)
+
+
 async def on_auto_renew(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """The "⚡ تمدید خودکار (میانگین مصرفم)" button on the usage warning —
     one tap, no volume to pick: the backend renews by this account's own
@@ -769,6 +801,8 @@ def _payment_request_text(intent: dict, ask: int | None = None) -> str:
     literally credits. None means "the shortfall as-is" (the old shape).
     """
     head = f"🛒 {texts.gb(intent['data_limit_gb'])} — {texts.fa(intent['duration_days'])} روزه\n"
+    if intent.get("target_label"):
+        head = texts.renew_target_line(intent["target_label"]) + "\n" + head
     if intent["balance"] > 0:
         head += (
             f"قیمت: {texts.money(intent['price'])}\n"
@@ -803,10 +837,20 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
     chosen_name = context.user_data.get(_PENDING_PREFERRED_NAME)
     if chosen_name:
         payload["marzban_username"] = chosen_name
+    target_id = context.user_data.get(_TARGET_ACCOUNT_ID)
+    if target_id is not None and session.get("per_account_renewal"):
+        payload["target_account_id"] = target_id
+        payload["force_new_service"] = False
 
     try:
         intent = await backend.post("/api/shop/bot/orders", json=payload)
     except ShopApiError as exc:
+        if target_id is not None and (getattr(exc, "status", 0) == 404 or "no longer active" in str(exc)):
+            # The tapped card is gone / not theirs any more: no order was
+            # created, nothing moved. Say so and point back at the list.
+            context.user_data.clear()
+            await _reply(update, texts.RENEW_TARGET_GONE, session)
+            return
         if getattr(exc, "status", 0) == 409 and "SERVICE_IS_UNLIMITED" in str(exc):
             # Their current service has no cap — a volume purchase has nothing
             # to add to it, and the backend refused before any money moved.
@@ -875,11 +919,14 @@ async def _payment_screens(update: Update, context: ContextTypes.DEFAULT_TYPE,
         # Enough credit already: one tap, no card, no human in the loop.
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         context.user_data[_STATE] = _STATE_CONFIRMING_WALLET_BUY
+        confirm_text = texts.confirm_from_wallet(
+            intent["data_limit_gb"], intent["duration_days"],
+            intent["price"], intent["balance"],
+        )
+        if intent.get("target_label"):
+            confirm_text = texts.renew_target_line(intent["target_label"]) + "\n" + confirm_text
         await update.effective_message.reply_text(
-            texts.confirm_from_wallet(
-                intent["data_limit_gb"], intent["duration_days"],
-                intent["price"], intent["balance"],
-            ),
+            confirm_text,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton(texts.CONFIRM_BUY, callback_data="buy:confirm")],
                 [InlineKeyboardButton(texts.CANCEL, callback_data="buy:cancel")],
@@ -1521,7 +1568,13 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # card of a multi-service customer carries no renew button, so no
         # tap can extend (and charge for) the wrong service. A backend that
         # predates the field is treated as before (button shown).
-        can_renew = row.get("renews_here", True)
+        per_account = bool(session.get("per_account_renewal")) and row.get("can_renew") is not None
+        if per_account:
+            # Every card that can take a volume purchase carries ITS OWN renew
+            # button, and the button names this service.
+            can_renew = bool(row.get("can_renew"))
+        else:
+            can_renew = row.get("renews_here", True)
         if ended and can_renew:
             lines.append(texts.RENEW_HINT_ENDED)
         # The card carries its own actions (T3): تمدید starts the renewal of
@@ -1534,8 +1587,9 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         buttons = []
         if can_renew and limit_gb is not None and row.get("account_id"):
-            buttons.append([InlineKeyboardButton(texts.CARD_RENEW_BUTTON,
-                                                 callback_data=f"renew:{round(limit_gb, 2):g}")])
+            renew_cb = (f"ren:{row['account_id']}:{round(limit_gb, 2):g}" if per_account
+                        else f"renew:{round(limit_gb, 2):g}")
+            buttons.append([InlineKeyboardButton(texts.CARD_RENEW_BUTTON, callback_data=renew_cb)])
         if row["subscription_url"]:
             buttons.append([InlineKeyboardButton("🔗 لینک اشتراک", url=row["subscription_url"])])
         if row.get("account_id"):
