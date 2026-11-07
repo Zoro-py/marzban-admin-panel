@@ -1073,6 +1073,13 @@ class ShopBotAccountRow(BaseModel):
     # only — on a multi-service customer every other card would otherwise
     # promise «renew this» and extend a different service.
     renews_here: bool = False
+    # Whether the «تمدید خودکار» action can work for this row — the SAME rule
+    # shop_service.auto_renew_account refuses on: a shop-wallet feature, never
+    # for an account an operator-managed customer owns (customer_id set, even
+    # when the customer also bought through the shop) and never for a
+    # disabled/deleted one. None = not computed (old backend): the bot then
+    # falls back to its own guess.
+    auto_renew_ok: Optional[bool] = None
 
 
 # ── shop-bot link for EXISTING customers (operator-created accounts) ──────

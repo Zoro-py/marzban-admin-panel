@@ -200,6 +200,18 @@ async def main() -> None:
     btns = buttons_of(msg)
     check("linked service: no تمدید خودکار button", not any(c.startswith("autorenew:") for _, c in btns), repr(btns))
     check("linked service: نام سرویس still there", any(c == "svcname:12" for _, c in btns), repr(btns))
+    # the backend's own verdict wins over the source guess: a shop-sourced row
+    # the backend marks auto_renew_ok=False (customer-owned account that also
+    # has shop orders — live «سرویس اصلی») gets no button
+    ROWS.clear()
+    ROWS.append(row(account_id=13, source="shop", auto_renew_ok=False))
+    (upd, context), msg = make_update(cb_data="svcmore:13")
+    await shop.on_service_more(upd, context)
+    check("shop-sourced but auto_renew_ok=False: no تمدید خودکار",
+          not any(c.startswith("autorenew:") for _, c in buttons_of(msg)), repr(buttons_of(msg)))
+    ROWS.clear()
+    ROWS.append(row(account_id=11, source="shop"))
+    ROWS.append(row(account_id=12, source="linked", order_id=None))
     (upd, context), msg = make_update(cb_data="svcmore:11")
     await shop.on_service_more(upd, context)
     check("shop service keeps تمدید خودکار",

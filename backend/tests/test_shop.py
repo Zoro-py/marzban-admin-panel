@@ -560,6 +560,32 @@ def test_accounts_mark_the_one_renewable_service() -> None:
     check("unknown user: still empty", stranger, [])
 
 
+def test_accounts_auto_renew_ok_matches_the_refusal_rule() -> None:
+    print("\n[12c] auto_renew_ok == what auto_renew_account would accept")
+    from app.models import Customer
+    fake = FakeMarzban()
+    client = _reset(fake)
+    buyer = _make_user(client, telegram_id=777)
+    _credit(buyer, 200_000)
+    client.post("/api/shop/bot/purchase", headers=BOT_HEADERS,
+                json={"telegram_id": 777, "data_limit_gb": 10})
+    rows = client.get("/api/shop/bot/accounts", headers=BOT_HEADERS, params={"telegram_id": 777}).json()
+    check("plain shop service: auto-renew ok", [r["auto_renew_ok"] for r in rows], [True])
+    # live 2026-11-07 («سرویس اصلی»): a shop-ordered account that ALSO belongs
+    # to an operator-managed customer is refused by auto_renew_account
+    with Session(engine) as s:
+        cust = Customer(name="zz_cust")
+        s.add(cust); s.commit(); s.refresh(cust)
+        acct = s.get(Account, rows[0]["account_id"])
+        acct.customer_id = cust.id
+        s.add(acct); s.commit()
+    rows = client.get("/api/shop/bot/accounts", headers=BOT_HEADERS, params={"telegram_id": 777}).json()
+    check("shop-ordered but customer-owned: NOT ok", [r["auto_renew_ok"] for r in rows], [False])
+    r = client.post(f"/api/shop/bot/accounts/{rows[0]['account_id']}/auto-renew", headers=BOT_HEADERS,
+                    json={"telegram_id": 777})
+    check("...and the backend does refuse it", r.status_code, 400)
+
+
 def main() -> int:
     init_db()
     for test in (
@@ -578,6 +604,7 @@ def main() -> int:
         test_cannot_open_shop_half_configured,
         test_accounts_are_scoped_to_their_buyer,
         test_accounts_mark_the_one_renewable_service,
+        test_accounts_auto_renew_ok_matches_the_refusal_rule,
         test_order_first_approval_delivers,
         test_order_first_short_approval_waits,
         test_order_paid_from_wallet,

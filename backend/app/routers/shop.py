@@ -2208,6 +2208,12 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
     if target is not None:
         for row in rows:
             row.renews_here = row.account_id == target.id
+    for row in rows:
+        acct = session.get(Account, row.account_id) if row.account_id else None
+        row.auto_renew_ok = bool(
+            acct is not None and acct.customer_id is None
+            and acct.status not in ("disabled", "deleted_from_marzban")
+        )
     return rows
 
 

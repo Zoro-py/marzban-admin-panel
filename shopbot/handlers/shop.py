@@ -1572,8 +1572,11 @@ async def on_service_more(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         rows = await backend.get("/api/shop/bot/accounts",
                                  params={"telegram_id": update.effective_user.id})
         row = next((r for r in rows if str(r.get("account_id")) == account_id), None)
-        if row is not None and row.get("source") != "shop":
-            offer_auto_renew = False
+        if row is not None:
+            ok = row.get("auto_renew_ok")
+            # The backend's own verdict wins; an older backend (no field)
+            # falls back to the shop/linked source guess.
+            offer_auto_renew = bool(ok) if ok is not None else row.get("source") == "shop"
     except ShopApiError:
         logger.debug("Could not check the service source for the more-panel", exc_info=True)
     if offer_auto_renew:
