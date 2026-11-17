@@ -692,6 +692,12 @@ class ShopOrder(SQLModel, table=True):
     # blocked by the very customer it is trying to keep.
     expiry_warned_at: Optional[datetime] = None
     usage_warned_at: Optional[datetime] = None
+    # The third mark in the same anti-spam family: the once-per-end-event
+    # push («سرویست قطع شد») fired when the service ACTUALLY dies — the
+    # warnings above stop just before death on purpose. Renewals mint a NEW
+    # order on the same account and only the newest order speaks, so each
+    # end-event gets exactly one push with no extra bookkeeping.
+    ended_warned_at: Optional[datetime] = None
 
     # Set only by the usage warning's "⚡ تمدید خودکار" button (owner decision
     # 2026-10-22) — excluded from the average-volume calculation the NEXT

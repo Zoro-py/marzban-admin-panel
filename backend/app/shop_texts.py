@@ -363,6 +363,31 @@ def data_almost_gone(volume_gb: float, percent_used: int, handle: Optional[str])
     )
 
 
+def service_ended(volume_gb: float, reason: str, handle: Optional[str]) -> str:
+    """The moment the service actually dies. The 3-day and 80% warnings fire
+    BEFORE death by design, and nothing used to fire AT death — the customer
+    discovered the outage by their VPN failing and had to open the bot to
+    learn why (2026-11-18, owner GO). One calm push with the renew button
+    riding on it closes the reminder chain: reason first, then the one-tap
+    way back, then the link reassurance (renewal in place)."""
+    return (
+        f"🔴 سرویس {fa_num(volume_gb)} گیگی‌تان قطع شد — {reason}\n"
+        "دکمهٔ «تمدید» پایین، یک تپ دوباره وصلش می‌کند — لینک‌تان بعد از تمدید همان می‌ماند."
+        + support_line(handle)
+    )
+
+
+def trial_ended(handle: Optional[str]) -> str:
+    """The free trial just expired. The 2-hour nudge already made the ask;
+    this is the death moment — one line, the offer sitting on the button
+    below, no second deadline."""
+    return (
+        "🔴 تست رایگانتان تمام شد.\n"
+        "اگر راضی بودید، دکمهٔ پایین با کمترین پلنِ واقعی همین سرویس را دوباره وصل می‌کند."
+        + support_line(handle)
+    )
+
+
 # ── bounded-debt auto-renew ("⚡ تمدید خودکار") ─────────────────────────────
 #
 # The TAP's own reply (success / already-in-debt / no-history) is rendered

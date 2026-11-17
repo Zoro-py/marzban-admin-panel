@@ -530,6 +530,8 @@ def _run_shop_migrations() -> None:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN expiry_warned_at DATETIME"))
         if order_cols and "usage_warned_at" not in order_cols:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN usage_warned_at DATETIME"))
+        if order_cols and "ended_warned_at" not in order_cols:
+            conn.execute(text("ALTER TABLE shoporder ADD COLUMN ended_warned_at DATETIME"))
         if order_cols and "extends_account_id" not in order_cols:
             conn.execute(text("ALTER TABLE shoporder ADD COLUMN extends_account_id INTEGER"))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_shoporder_extends_account_id ON shoporder (extends_account_id)"))

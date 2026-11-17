@@ -1757,6 +1757,30 @@ async def warn_customers_before_service_ends(session: Session) -> int:
                 message = shop_texts.data_almost_gone(account_gb, percent, handle)
                 mark = "usage"
 
+        # 2026-11-18 (owner GO): the two warnings above deliberately stop just
+        # BEFORE death (`0 < seconds_left`, `percent < 100`) — which left the
+        # death moment itself silent: the customer discovered the outage by
+        # their VPN failing and had to open the bot to learn why. One calm
+        # push with the renew button on it closes the reminder chain. Once per
+        # end-event: a renewal delivers a NEW order on the same account and
+        # only the newest order speaks, so the mark resets with no extra
+        # bookkeeping.
+        if message is None and order.ended_warned_at is None:
+            if is_trial:
+                if account.expire and account.expire <= now_ts:
+                    message = shop_texts.trial_ended(handle)
+                    mark = "ended"
+            else:
+                volume_ended = bool(account.data_limit and account.used_traffic >= account.data_limit)
+                time_ended = bool(account.expire and account.expire <= now_ts)
+                if volume_ended or time_ended:
+                    message = shop_texts.service_ended(
+                        account_gb,
+                        "حجمش تمام شد." if volume_ended else "زمانش تمام شد.",
+                        handle,
+                    )
+                    mark = "ended"
+
         if message is None:
             continue
         # The renewal button IS the point of warning them: the customer who
@@ -1795,8 +1819,10 @@ async def warn_customers_before_service_ends(session: Session) -> int:
             continue
         if mark == "expiry":
             order.expiry_warned_at = utcnow()
-        else:
+        elif mark == "usage":
             order.usage_warned_at = utcnow()
+        else:
+            order.ended_warned_at = utcnow()
         session.add(order)
         session.commit()
         sent += 1
