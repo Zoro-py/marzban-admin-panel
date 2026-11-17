@@ -78,6 +78,13 @@ git checkout 8dc4755 -- backend/ shopbot/
 docker compose up -d --build backend shopbot
 ```
 
-## نتیجهٔ اجرا
+## نتیجهٔ اجرا (۲۰۲۶-۱۱-۱۷، ~19:13–19:19 به وقتِ سرور)
 
-- (پس از اجرا ثبت می‌شود — هشِ بکاپ، خروجی اسموک‌ها، وضعیت کانتینرها.)
+- **پوش:** `8dc4755..51c6d17 → origin` (۴ کامیتِ راندها + برگه‌ها).
+- **مرج:** سرور `--ff-only` به `51c6d17` — درختِ tracked تمیز (فقط .env.bakهای untrackedِ قبلی).
+- **بکاپ:** `pre-shopbot-rounds-ab-20261117-191348.db`، **۱۳۰٬۲۸۵٬۵۶۸ بایت**، در `/app/data/manual_backups/` (API رسمیِ sqlite `.backup`، WAL-safe).
+- **backend:** `docker compose up -d --build backend` → Up؛ اسموکِ تصویر سبز (هر ۴ ثابتِ جدید + نبودِ «کسرشی»/«همینجا»/«بدهیِ صورت‌حسابی» در سورسِ تصویر + import موفقِ `routers.shop` و `shop_service` + ثابتِ دکمه در shop_service)؛ اسکنِ لاگِ ۲دقیقه‌ای: صفر خطا.
+- **shopbot:** `docker compose up -d --build shopbot` → Up؛ اسموکِ تصویر سبز (`USERNAME_INVALID` موجود — تا دیروز AttributeError؛ مثالِ درستِ `ASK_PREFERRED_NAME`؛ `debt_receipt_done` با واژگانِ درست؛ `handlers.shop` ایمپورت)؛ لاگ: `Application started` + getUpdates 200 — پولینگِ زنده.
+- **دست‌نخورده‌ها:** bot / delegate_bot / receipts_bot / frontend همچنان Up (۳هفته) — rebuild نشدند، طبق برگه.
+- **باقی‌مانده برای مالک:** اسموکِ ۷مرحله‌ایِ تلگرامی با اکانتِ دورریز (بخشِ مربوط در برگهٔ 11-06) — روی دستِ مالک است، مسدودکننده نیست.
+- **Rollback:** همان دستورِ بالا (کد → `8dc4755`، بدون هیچ برگشتِ داده؛ بکاپِ بالا هم برای هر سناریویِ DB موجود است).
