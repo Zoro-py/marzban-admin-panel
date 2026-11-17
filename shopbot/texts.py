@@ -142,8 +142,19 @@ CANCEL = "❌ انصراف"
 PREFERRED_NAME_BUTTON = "✏️ نام کاربری دلخواه"
 ASK_PREFERRED_NAME = (
     "نام کاربری سرویس را انتخاب کنید (اختیاری):\n"
-    "حروف انگلیسی، عدد و - یا _ — بین ۳ تا ۳۰ کاراکتر، مثلاً fateme.\n"
+    "حروف انگلیسی، عدد و - یا _ — بین ۳ تا ۳۰ کاراکتر (مثلاً fateme)\n"
     "همین نام در اپ و اشتراکتان دیده می‌شود. «بدون نام» = خودکار (مثل shop10)."
+)
+# The reply when the typed name fails the very pattern the ask states. Both
+# call sites (the optional preferred-name pre-pick, shop.py preferred-name
+# branch; and the PAYG start's username ask) send this and STAY in their ask
+# state, so a retry, «بدون نام» or «انصراف» remain one tap away. Missing once
+# (found live 2026-11-17): the AttributeError crashed the reply into
+# on_error's generic "technical problem" — for the most likely input there,
+# a Persian name.
+USERNAME_INVALID = (
+    "نام کاربری فقط می‌تواند حروف انگلیسی، عدد و - یا _ داشته باشد، بین ۳ تا ۳۰ کاراکتر.\n"
+    "یک نام دیگر بفرستید، یا «بدون نام» را بزنید تا خودکار ساخته شود."
 )
 # An old inline button whose flow has already moved on (or died with a
 # restart): answered, never silence.
