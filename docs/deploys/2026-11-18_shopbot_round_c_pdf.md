@@ -65,6 +65,12 @@ git checkout 51c6d17 -- backend/ shopbot/
 docker compose up -d --build backend shopbot
 ```
 
-## نتیجهٔ اجرا
+## نتیجهٔ اجرا (۲۰۲۶-۱۱-۱۷ ~22:09–22:11 به وقتِ سرور)
 
-- (پس از اجرا ثبت می‌شود.)
+- **پوش:** `ae7ccb7..b1a7663 → origin`؛ مرجِ `--ff-only` سرور به `b1a7663` — درختِ tracked تمیز.
+- **بکاپ:** `pre-shopbot-round-c-pdf-20261117-220954.db`، **۱۳۰٬۲۸۵٬۵۶۸ بایت** (API رسمی، WAL-safe).
+- **backend:** rebuild → Up؛ اسموک سبز (`sendDocument`+`%PDF-` در تصویر، `warning_renew_callback` موجود، روترها import)؛ اسکنِ لاگ صفر خطا.
+- **shopbot:** rebuild → Up؛ اسموک سبز (`_RENEW_BUTTON_MAX_AGE_S`=۷روز، PDF در پرامپت‌ها، `application/pdf` در تصویر، `RENEW_BUTTON_STALE` موجود)؛ `Application started` + getUpdates 200ها — پولینگِ زنده.
+- **دست‌نخورده‌ها:** bot / delegate_bot / receipts_bot / frontend (Up ۳هفته).
+- **باقی‌مانده برای مالک:** اسموکِ تلگرامی + موردِ جدیدِ PDF (با اکانتِ دورریز یک رسیدِ PDF بفرستید → «✅ رسیدتان با موفقیت دریافت شد» + در receipts_bot به‌صورت document با دکمه‌ها).
+- **Rollback:** `git checkout 51c6d17 -- backend/ shopbot/ && docker compose up -d --build backend shopbot` (بکاپِ بالا موجود).
