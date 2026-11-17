@@ -237,14 +237,29 @@ async def relay_shop_photo_to_admin(file_id: str, caption: str, reply_markup: di
     if settings.bot_receipts_thread_id is not None:
         data["message_thread_id"] = settings.bot_receipts_thread_id
     filename = file_path.rsplit("/", 1)[-1] or "receipt.jpg"
+    # A banking app can save the receipt as a PDF — the customer must not be
+    # bounced for the export format their bank chose, and the operator must
+    # still see the receipt next to the decision buttons. Telegram's file_path
+    # keeps the original extension and the bytes are self-describing; either
+    # signal picks sendDocument over sendPhoto. No schema change: the bot
+    # passes the same receipt_file_id through, the relay just reads what it
+    # downloaded.
+    is_pdf = file_path.lower().endswith(".pdf") or blob.content[:5] == b"%PDF-"
     async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            f"https://api.telegram.org/bot{upload_bot_token}/sendPhoto",
-            data=data,
-            files={"photo": (filename, blob.content, "image/jpeg")},
-        )
+        if is_pdf:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{upload_bot_token}/sendDocument",
+                data=data,
+                files={"document": (filename, blob.content, "application/pdf")},
+            )
+        else:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{upload_bot_token}/sendPhoto",
+                data=data,
+                files={"photo": (filename, blob.content, "image/jpeg")},
+            )
     if resp.status_code != 200:
-        raise RuntimeError(f"Telegram rejected the receipt photo ({resp.status_code}): {resp.text}")
+        raise RuntimeError(f"Telegram rejected the receipt ({resp.status_code}): {resp.text}")
 
 
 async def forward_photo_to_admin(file_id: str, caption: str, reply_markup: dict | None = None) -> None:

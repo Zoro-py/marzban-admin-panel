@@ -1177,13 +1177,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """A receipt sent as a FILE rather than a photo.
 
     Telegram sends an image as a document whenever the sender picks "send as
-    file", and some banking apps save receipts as PDF. Neither used to reach
-    any handler at all, so the customer got silence after paying — the worst
-    possible moment for the bot to say nothing.
+    file", and banking apps save receipts as PDF (2026-11-18: PDFs are
+    accepted — the backend relay renders them to the operator as a document,
+    same decision buttons). Anything genuinely unopenable still gets an
+    honest answer instead of silence.
     """
     doc = update.message.document
     mime = (doc.mime_type or "") if doc else ""
-    if mime.startswith("image/"):
+    filename = (getattr(doc, "file_name", "") or "") if doc else ""
+    if (mime.startswith("image/") or mime == "application/pdf"
+            or filename.lower().endswith(".pdf")):
         await handle_photo(update, context, file_id=doc.file_id)
         return
     session = await _session(update)
