@@ -566,8 +566,8 @@ def debt_receipt_instructions(amount: int, card: str, holder, eta: int) -> str:
 
 
 def debt_receipt_done(reference, eta: int) -> str:
-    lines = ["✅ رسید پرداخت بدهی شما دریافت شد.",
-             f"معمولاً تا {fa(eta)} دقیقه بررسی و روی صورت‌حسابتان ثبت می‌شود.",
+    lines = ["✅ رسید پرداخت شما دریافت شد.",
+             f"معمولاً تا {fa(eta)} دقیقه بررسی و روی ماندهٔ پرداخت‌نشده‌تان ثبت می‌شود.",
              "لازم نیست ربات را باز نگه دارید — خبرش همین‌جا می‌آید."]
     if reference:
         lines.append(f"کد پیگیری این پرداخت: {reference}")

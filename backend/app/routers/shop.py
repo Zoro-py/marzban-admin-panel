@@ -426,6 +426,11 @@ async def approve_topup_endpoint(
     # the operator into approving twice.
     if user is not None:
         try:
+            # The buy-door label a notification names must match the shape
+            # this customer's keyboard renders (Round B): every account-holder
+            # sees «خرید / تمدید سرویس», a newcomer the plain one. Same helper
+            # the bot session endpoint uses, so the two cannot drift.
+            has_accounts = is_existing_customer(session, user.id)
             if delivered_order is not None and delivered_order.status == ShopOrderStatus.delivered:
                 # The order-first path: this payment was sent FOR a plan, and
                 # that plan has just been paid and provisioned. Confirm the
@@ -462,6 +467,7 @@ async def approve_topup_endpoint(
                         user.telegram_id,
                         shop_texts.topup_approved_no_service(
                             topup.approved_amount, balance, shop_settings.support_handle,
+                            has_accounts=has_accounts,
                         ),
                     )
                 else:
@@ -469,15 +475,17 @@ async def approve_topup_endpoint(
                     # beat the receipt, say). The credit is simply credit.
                     await send_to_shop_user(
                         user.telegram_id,
-                        shop_texts.topup_approved_plain(
-                            topup.approved_amount, balance, shop_settings.support_handle,
-                        ),
-                    )
+                    shop_texts.topup_approved_plain(
+                        topup.approved_amount, balance, shop_settings.support_handle,
+                        has_accounts=has_accounts,
+                    ),
+                )
             else:
                 await send_to_shop_user(
                     user.telegram_id,
                     shop_texts.topup_approved_plain(
                         topup.approved_amount, balance, shop_settings.support_handle,
+                        has_accounts=has_accounts,
                     ),
                 )
         except Exception:
@@ -1927,7 +1935,7 @@ async def bot_pay_debt_from_wallet(
     from app.shop_service import allocate_debt_payment, linked_customers, linked_debt, sole_account_id
 
     if not linked_customers(session, user.id):
-        raise HTTPException(400, "این حساب بدهیِ صورت‌حسابی ندارد (به مشتری وصل نیست).")
+        raise HTTPException(400, shop_texts.PAY_DEBT_NOTHING_TO_PAY)
 
     async with billing_lock:
         wallet = wallet_balance(session, user.id)
@@ -1939,7 +1947,7 @@ async def bot_pay_debt_from_wallet(
             # with the action that exists on both bot versions: send a receipt.
             raise HTTPException(400, "موجودی‌تان خالی است — برای پرداختِ مانده، رسید کارت‌به‌کارت بفرستید.")
         if debt <= 0:
-            raise HTTPException(400, "بدهیِ صورت‌حسابی ندارید.")
+            raise HTTPException(400, shop_texts.PAY_DEBT_NONE_DETAIL)
         if pay < 1000:
             raise HTTPException(400, "مبلغ پرداخت باید حداقل ۱٬۰۰۰ تومان باشد.")
 

@@ -1751,7 +1751,7 @@ async def warn_customers_before_service_ends(session: Session) -> int:
         # offers the smallest real plan instead.
         renew_gb = settings.min_gb if is_trial else order.data_limit_gb
         manual_button = {
-            "text": "🛒 خرید سرویس" if is_trial else "🔧 تمدید حجم دلخواه",
+            "text": shop_texts.MENU_BUY_LABEL if is_trial else shop_texts.WARNING_RENEW_BUTTON,
             # A real (non-trial) warning is about ONE account: its button must
             # renew THAT account, not whichever renewable_account would pick
             # for a customer with several. Old chats keep their renew: buttons.

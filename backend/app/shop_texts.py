@@ -65,6 +65,34 @@ def support_line(handle: Optional[str]) -> str:
     return f"\n\nسؤالی داشتید: @{handle.lstrip('@')}"
 
 
+# ── the buy door's labels, mirrored from the bot's menu ──────────────────
+#
+# Byte-identical to shopbot/texts.py MENU_BUY / MENU_BUY_RENEW (pinned by
+# tests/test_shop_texts_copy.py): an instruction may only name a button the
+# customer's keyboard actually shows — every account-holder's keyboard
+# renders the «/ تمدید» shape, a newcomer's the plain one.
+
+MENU_BUY_LABEL = "🛒 خرید سرویس"
+MENU_BUY_RENEW_LABEL = "🛒 خرید / تمدید سرویس"
+
+# The pay-debt-from-wallet refusals the shopbot relays VERBATIM (R1-3):
+# customer Persian in the settled vocabulary (T5: «ماندهٔ پرداخت‌نشده» —
+# the ledger-speak word for a debt is retired everywhere the customer reads).
+# Two distinct causes, two distinct sentences, so a support conversation can
+# tell them apart.
+
+PAY_DEBT_NOTHING_TO_PAY = "الان ماندهٔ پرداخت‌نشده‌ای برای پرداخت نیست."
+PAY_DEBT_NONE_DETAIL = "ماندهٔ پرداخت‌نشده‌ای ندارید."
+
+# The inline buttons the expiry/usage warning sweeps attach. A real
+# account's warning renews THAT account at its own size — the old inline
+# label «🔧 تمدید حجم دلخواه» promised a volume choice the tap does not
+# offer. The trial's button starts a purchase (its account is not worth
+# renewing) and reuses MENU_BUY_LABEL.
+
+WARNING_RENEW_BUTTON = "🔄 تمدید همین سرویس"
+
+
 # ── delivery ──────────────────────────────────────────────────────────────
 #
 # The single most support-generating moment in the product. The customer has
@@ -134,7 +162,7 @@ def order_refunded(amount: int, reason: Optional[str] = None,
     why = f"\nعلت: {reason}" if reason else ""
     return (
         f"سلام — سفارشتان ساخته نشد و {money_fa(amount)} کامل به موجودی‌تان برگشت.\n"
-        "هیچ کسرشی نشده؛ هر وقت خواستید دوباره خرید کنید."
+        "هیچ کسری نشده؛ هر وقت خواستید دوباره خرید کنید."
         + why
         + support_line(handle)
     )
@@ -152,12 +180,18 @@ def delivery_link(url: str) -> str:
 
 # ── payment outcomes ──────────────────────────────────────────────────────
 
-def topup_approved_plain(amount: int, balance: int, handle: Optional[str]) -> str:
-    """A wallet top-up with no plan attached — the repeat-customer path."""
+def topup_approved_plain(amount: int, balance: int, handle: Optional[str],
+                         has_accounts: bool = False) -> str:
+    """A wallet top-up with no plan attached — the repeat-customer path.
+
+    `has_accounts` picks the buy-door label the customer's keyboard actually
+    renders (the bot's menu shows «خرید / تمدید سرویس» to an account-holder,
+    the plain shape to a newcomer — see MENU_BUY_LABEL above)."""
+    label = MENU_BUY_RENEW_LABEL if has_accounts else MENU_BUY_LABEL
     return (
         f"✅ پرداختتان تأیید شد و {money_fa(amount)} به موجودی‌تان اضافه شد.\n"
         f"موجودی فعلی: {money_fa(balance)}\n\n"
-        "حالا می‌توانید از «🛒 خرید سرویس» ادامه بدهید."
+        f"حالا می‌توانید از «{label}» ادامه بدهید."
         + support_line(handle)
     )
 
@@ -182,17 +216,21 @@ def topup_approved_with_order(amount: int, balance: int) -> str:
     )
 
 
-def topup_approved_no_service(amount: int, balance: int, handle: Optional[str]) -> str:
+def topup_approved_no_service(amount: int, balance: int, handle: Optional[str],
+                              has_accounts: bool = False) -> str:
     """The payment was fine; building the service was not.
 
     The money is back in the wallet, so the honest thing is to say both parts
     in that order. Saying only "approved" - which is what used to happen -
-    left the customer waiting for a QR that was never coming."""
+    left the customer waiting for a QR that was never coming. `has_accounts`
+    picks the buy-door label the keyboard actually renders (same as
+    topup_approved_plain)."""
+    label = MENU_BUY_RENEW_LABEL if has_accounts else MENU_BUY_LABEL
     return (
         f"✅ پرداختتان تأیید شد — {money_fa(amount)}.\n"
         "اما ساخت سرویس این بار انجام نشد و مبلغ در موجودی‌تان ماند.\n"
         f"موجودی فعلی: {money_fa(balance)}\n\n"
-        "با «🛒 خرید سرویس» دوباره امتحان کنید؛ چیزی از دست نرفته."
+        f"با «{label}» دوباره امتحان کنید؛ چیزی از دست نرفته."
         + support_line(handle)
     )
 
@@ -220,7 +258,7 @@ def topup_approved_short(
         card = (
             f"\n\nبرای تکمیل، {money_fa(shortfall)} دیگر به همان کارت واریز کنید:\n"
             f"`{plain_digits(card_number)}`{holder}\n"
-            "و عکس رسیدش را همینجا بفرستید — سفارشتان نگه داشته شده است."
+            "و عکس رسیدش را همین‌جا بفرستید — سفارشتان نگه داشته شده است."
         )
     return (
         f"✅ {money_fa(amount)} از پرداختتان رسید و در موجودی‌تان محفوظ است.\n"
@@ -295,7 +333,7 @@ def payment_overdue(reference: Optional[str], handle: Optional[str]) -> str:
     code = f" (کد {reference})" if reference else ""
     return (
         f"⏳ بررسی پرداختتان{code} از زمانی که گفته بودم طولانی‌تر شده — ببخشید.\n"
-        "رسیدتان ثبت شده و گم نمی‌شود؛ به محض بررسی همینجا خبر می‌دهم."
+        "رسیدتان ثبت شده و گم نمی‌شود؛ به محض بررسی همین‌جا خبر می‌دهم."
         + support_line(handle)
     )
 
@@ -307,51 +345,12 @@ def plain_digits(card_number: str) -> str:
     return "".join(ch for ch in card_number if ch.isdigit()) or card_number
 
 
-# ── the order-first payment request ───────────────────────────────────────
-
-def payment_request(
-    volume_gb: float,
-    days: int,
-    price: int,
-    card_number: str,
-    card_holder: Optional[str],
-    eta_minutes: int,
-    from_wallet: int = 0,
-) -> str:
-    """One exact number, one card, one code.
-
-    The old flow asked the customer to invent an amount before choosing
-    anything, then do the multiplication themselves. This asks for a single
-    figure they never have to compute, for a thing they have already chosen.
-
-    The amount is in LATIN digits because it is typed into a bank app.
-    """
-    holder = f"\nبه نام: {card_holder}" if card_holder else ""
-    wallet_line = (
-        f"\n(از این مبلغ، {money_fa(from_wallet)} از موجودی‌تان کم می‌شود)"
-        if from_wallet > 0 else ""
-    )
-    return (
-        f"🛒 {fa_num(volume_gb)} گیگ — {fa_num(days)} روزه\n"
-        f"سفارشتان ثبت شد؛ برای تکمیل {money_latin(price)} باقی مانده.{wallet_line}\n\n"
-        f"این مبلغ را به این کارت واریز کنید:\n"
-        f"`{card_number}`{holder}\n\n"
-        f"بعد عکس رسید را همینجا بفرستید؛ "
-        f"معمولاً تا {fa_num(eta_minutes)} دقیقه بررسی و سرویستان خودکار ساخته می‌شود."
-    )
-
-
-# "Receipt received" is NOT here: it is the bot's immediate reply to the
-# customer's own action, so it lives in shopbot/handlers/shop.py. The backend
-# never sends it, and a second copy would only drift.
-
-
 # ── expiry ────────────────────────────────────────────────────────────────
 
 def expiring_soon(volume_gb: float, days_left: int, handle: Optional[str]) -> str:
     return (
         f"⏳ سرویس {fa_num(volume_gb)} گیگی‌تان {fa_num(days_left)} روز دیگر تمام می‌شود.\n"
-        "اگر نمی‌خواهید قطع شود، از «🛒 خرید سرویس» سرویس بعدی را بگیرید."
+        "اگر نمی‌خواهید قطع شود، از «🛒 خرید / تمدید سرویس» سرویس بعدی را بگیرید."
         + support_line(handle)
     )
 
@@ -376,14 +375,14 @@ def data_almost_gone(volume_gb: float, percent_used: int, handle: Optional[str])
 
 def debt_reminder(owed: int, days_left: int) -> str:
     return (
-        f"⏳ یادآوری: ماندهٔ پرداخت‌نشده‌ی شما {money_fa(owed)} است.\n"
+        f"⏳ یادآوری: ماندهٔ پرداخت‌نشدهٔ شما {money_fa(owed)} است.\n"
         f"تا {fa_num(max(days_left, 0))} روز دیگر برای شارژ وقت دارید، وگرنه سرویس موقتاً متوقف می‌شود."
     )
 
 
 def debt_suspended(owed: int) -> str:
     return (
-        f"⛔ سرویستان به‌دلیل {money_fa(owed)} بدهی تسویه‌نشده موقتاً متوقف شد.\n"
+        f"⛔ سرویستان به‌دلیل ماندهٔ پرداخت‌نشدهٔ {money_fa(owed)} موقتاً متوقف شد.\n"
         "به محض شارژ، خودش دوباره فعال می‌شود — لازم نیست با پشتیبانی تماس بگیرید."
     )
 
@@ -420,6 +419,6 @@ def trial_ending(hours_left: int, handle: Optional[str]) -> str:
     after it has gone silent on them."""
     return (
         f"⏳ تست رایگانتان تا {fa_num(hours_left)} ساعت دیگر تمام می‌شود.\n"
-        "اگر راضی بودید، از «🛒 خرید سرویس» یک سرویس بگیرید تا قطع نشوید."
+        "اگر راضی بودید، از «🛒 خرید / تمدید سرویس» یک سرویس بگیرید تا قطع نشوید."
         + support_line(handle)
     )

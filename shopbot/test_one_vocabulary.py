@@ -101,6 +101,12 @@ async def main() -> None:
     check("wallet_summary is gone (its two-number job split into the two views)",
           not hasattr(texts, "wallet_summary"))
 
+    # ── 7. debt_receipt_done: the «صورت‌حساب»/«بدهی» leftovers R2 missed ──
+    done = texts.debt_receipt_done("ABCD", 30)
+    check("debt_receipt_done speaks the settled vocabulary",
+          "صورت‌حساب" not in done and "بدهی" not in done
+          and "ماندهٔ پرداخت‌نشده" in done, repr(done))
+
 
 asyncio.run(main())
 
