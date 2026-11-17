@@ -141,9 +141,11 @@ async def main() -> None:
     (upd, ctx), msg = make_update()
     await shop.show_accounts(upd, ctx)
     check("four cards", len(msg.replies) == 4, repr(len(msg.replies)))
-    expected = ["ren:11:30", "ren:12:50", "ren:13:20", "ren:14:100"]
+    now = int(time.time())
+    expected = [f"ren:11:30:{now}", f"ren:12:50:{now}", f"ren:13:20:{now}", f"ren:14:100:{now}"]
     got = [next((c for c in cbs(m) if c.startswith("ren:")), None) for _, m in msg.replies]
-    check("each card renews ITSELF (ren:<id>:<gb>)", got == expected, repr(got))
+    check("each card renews ITSELF (ren:<id>:<gb>, M-2 fresh ts)",
+          got == expected, repr(got))
     check("no ambiguous legacy renew: button on any card",
           not any(c.startswith("renew:") for _, m in msg.replies for c in cbs(m)))
 

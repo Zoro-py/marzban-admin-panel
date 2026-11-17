@@ -1658,6 +1658,20 @@ EXPIRY_WARN_DAYS = 3
 # Share of the data allowance used before a usage warning. 80% leaves room for
 # a renewal to land before the connection actually stops.
 USAGE_WARN_PERCENT = 80
+
+
+def warning_renew_callback(is_trial: bool, account_id: Optional[int], renew_gb: float) -> str:
+    """The warning push's renew button, carrying its creation time (M-2,
+    2026-11-17): a tap days later must not silently create an order with that
+    week's volume — the service may have been extended elsewhere since. The
+    shopbot reads the ts out of the callback and refuses taps older than its
+    own 7-day window; buttons from before the timestamp existed (old chats,
+    the old-backend deploy window) carry none and keep working — compat,
+    deliberate. Nothing here touches pricing or volume: string shaping only."""
+    ts = int(utcnow().timestamp())
+    if is_trial:
+        return f"renew:{renew_gb:g}:{ts}"
+    return f"ren:{account_id}:{renew_gb:g}:{ts}"
 # A trial is measured in hours, so its warning is too.
 TRIAL_WARN_HOURS = 2
 # Deliveries hold ALL warnings off for this long. A customer who paid MINUTES
@@ -1755,7 +1769,10 @@ async def warn_customers_before_service_ends(session: Session) -> int:
             # A real (non-trial) warning is about ONE account: its button must
             # renew THAT account, not whichever renewable_account would pick
             # for a customer with several. Old chats keep their renew: buttons.
-            "callback_data": f"renew:{renew_gb:g}" if is_trial else f"ren:{account.id}:{renew_gb:g}",
+            # M-2: the callback carries the button's creation time — see
+            # warning_renew_callback.
+            "callback_data": warning_renew_callback(is_trial, None if is_trial else account.id,
+                                                    renew_gb),
         }
         # The auto-renew-by-average option only makes sense at the USAGE
         # warning for a real paid account (not a trial, which has no usage

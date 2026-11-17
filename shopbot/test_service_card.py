@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from types import SimpleNamespace
 
 os.environ.setdefault("SHOP_BOT_TOKEN", "")
@@ -136,8 +137,10 @@ async def main() -> None:
     btns = buttons_of(msg)
     check("card carries تمدید / لینک اشتراک / ⋯ بیشتر in that order",
           [t for t, _ in btns] == ["🔄 تمدید", "🔗 لینک اشتراک", "⋯ بیشتر"], repr(btns))
-    check("تمدید callback = renew:30 (existing renew path)",
-          btns[0][1] == "renew:30", repr(btns[0]))
+    check("تمدید callback = renew:30:<ts> (M-2: carries its creation time)",
+          btns[0][1].startswith("renew:30:")
+          and len(btns[0][1].split(":")) == 3
+          and abs(int(btns[0][1].split(":")[2]) - time.time()) < 120, repr(btns[0]))
     check("لینک is a URL button", btns[1][1] == "https://sub.example.com/s/abc")
     check("بیشتر callback = svcmore:11", btns[2][1] == "svcmore:11")
 

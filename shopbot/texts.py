@@ -160,6 +160,18 @@ USERNAME_INVALID = (
 # restart): answered, never silence.
 STALE_BUTTON = "این دکمه قدیمی شده — از منوی پایین ادامه دهید."
 
+# A renew button tapped long after it was created (M-2, 2026-11-17): the
+# warning sweep and the service cards stamp their creation time into the
+# callback data, and the bot refuses taps older than _RENEW_BUTTON_MAX_AGE_S
+# — a week-old button renews with that week's size, after the service may
+# have already been extended elsewhere. Refusing is the safe direction: no
+# order, no price, just the way forward to the live card.
+RENEW_BUTTON_STALE = (
+    "این دکمه قدیمی است — غیرفعالش کردم تا سفارشِ اشتباه نسازد.\n"
+    f"برای تمدید، از «{MENU_ACCOUNTS}» دکمهٔ «تمدید» روی کارتِ سرویس را بزنید؛ "
+    "حجم و قیمت تازه همان‌جا نشان داده می‌شود."
+)
+
 # Per-service renewal: the card the customer tapped no longer exists or is no
 # longer theirs to renew. Information plus the way forward, nothing alarming.
 RENEW_TARGET_GONE = "این سرویس دیگر در دسترس نیست. «سرویس‌های من» را دوباره باز کنید."

@@ -97,6 +97,24 @@ _PHONE_ASKED = "phone_asked"
 # question they are holding it for.
 _CODE_PATTERN = re.compile(r"[ACDEFGHJKMNPQRTUVWXYZ2345789]{4}|R[0-9A-F]{6}")
 
+# M-2 (2026-11-17): renew buttons carry their creation time in the callback
+# data (`renew:<gb>:<ts>` / `ren:<id>:<gb>:<ts>`); a tap on one older than
+# this window refuses instead of creating an order with that week's volume —
+# the service may have already been extended elsewhere since. The window is
+# deliberately generous: expiry warnings fire 3 days ahead and renewing an
+# already-expired service is legitimate, so the gate only kills genuinely
+# abandoned buttons.
+_RENEW_BUTTON_MAX_AGE_S = 7 * 86400
+
+
+def _renew_button_stale(callback_ts: int | None) -> bool:
+    """True only for a timestamped button past its window. None (a button
+    from before the timestamp existed — old chats, the old-backend deploy
+    window) keeps working: compat with both, deliberate (see M-2)."""
+    if callback_ts is None:
+        return False
+    return (datetime.now(timezone.utc).timestamp() - callback_ts) > _RENEW_BUTTON_MAX_AGE_S
+
 # Wallet history is labelled by what happened, in Persian. It used to print
 # the operator's internal English note ("Card payment approved (top-up #12)"),
 # which reads to a customer like a glitch.
@@ -677,19 +695,30 @@ async def on_renew(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     actually renewing is where the customer is lost: they read the message,
     mean to deal with it later, and later is after it stopped working. One tap
     puts them straight on the payment screen for the same plan they had.
+
+    M-2: the backend stamps the button's creation time into the callback
+    (`renew:<gb>:<ts>`); a tap past the window refuses instead of silently
+    creating an order with that week's volume. Buttons without a ts (old
+    chats, the old-backend window) keep working.
     """
     query = update.callback_query
     await query.answer()
+    parts = query.data.split(":") if query.data else []
     try:
-        volume = float(query.data.split(":", 1)[1])
+        volume = float(parts[1])
+        ts = int(parts[2]) if len(parts) > 2 else None
     except (AttributeError, IndexError, ValueError):
         return
     # The button is removed once used, so an old warning cannot open a second
-    # order days later.
+    # order days later — and an ABANDONED one (past the window) refuses.
     try:
         await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
         logger.debug("Could not clear the renew button", exc_info=True)
+    if _renew_button_stale(ts):
+        session = await _session(update)
+        await _reply(update, texts.RENEW_BUTTON_STALE, session)
+        return
 
     context.user_data.clear()
     session = await _session(update)
@@ -703,17 +732,29 @@ async def on_renew(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def on_renew_target(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """The renew button on ONE service card: ren:<account_id>:<gb>. Renews
-    exactly that service with the same size - one tap to the summary. A
-    malformed or stale payload is the usual «این دکمه قدیمی شده»."""
+    """The renew button on ONE service card or warning:
+    ren:<account_id>:<gb>[:<ts>]. Renews exactly that service with the same
+    size - one tap to the summary. A malformed or stale payload is the usual
+    «این دکمه قدیمی شده»; a timestamped button past its window (M-2) refuses
+    with the way forward instead of creating an order nobody expects."""
     query = update.callback_query
     await query.answer()
+    parts = query.data.split(":") if query.data else []
     try:
-        _, raw_id, raw_gb = query.data.split(":", 2)
-        account_id = int(raw_id)
-        volume = float(raw_gb)
-    except (AttributeError, ValueError):
+        account_id = int(parts[1])
+        volume = float(parts[2])
+        ts = int(parts[3]) if len(parts) > 3 else None
+    except (AttributeError, IndexError, ValueError):
         await update.effective_message.reply_text(texts.STALE_BUTTON)
+        return
+
+    if _renew_button_stale(ts):
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            logger.debug("Could not clear the stale renew button", exc_info=True)
+        session = await _session(update)
+        await _reply(update, texts.RENEW_BUTTON_STALE, session)
         return
 
     context.user_data.clear()
@@ -1587,8 +1628,11 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         buttons = []
         if can_renew and limit_gb is not None and row.get("account_id"):
-            renew_cb = (f"ren:{row['account_id']}:{round(limit_gb, 2):g}" if per_account
-                        else f"renew:{round(limit_gb, 2):g}")
+            # M-2: the renderer stamps its creation time — the card lives in
+            # the chat until tapped, so the tap's age is checkable.
+            ts = int(datetime.now(timezone.utc).timestamp())
+            renew_cb = (f"ren:{row['account_id']}:{round(limit_gb, 2):g}:{ts}" if per_account
+                        else f"renew:{round(limit_gb, 2):g}:{ts}")
             buttons.append([InlineKeyboardButton(texts.CARD_RENEW_BUTTON, callback_data=renew_cb)])
         if row["subscription_url"]:
             buttons.append([InlineKeyboardButton("🔗 لینک اشتراک", url=row["subscription_url"])])
