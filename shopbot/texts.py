@@ -118,7 +118,7 @@ MENU_HELP_SUPPORT = "❓ راهنما و پشتیبانی"
 # Conditional buttons on the BUY screen (not top-level menu items): a second,
 # independent service, and the metered pay-as-you-go start. Each appears only
 # when it is meaningful for this customer (see start_buy).
-NEW_SERVICE_ON_BUY = "✨ سرویس جداگانه (برای دستگاه دیگر)"
+NEW_SERVICE_ON_BUY = "✨ سرویس جداگانه برای دستگاه دیگر"
 PAYG_ON_BUY = "📊 سرویس مصرفی"
 
 # First button of the debt-receipt amount ask: pays the WHOLE debt without
@@ -265,8 +265,22 @@ def buy_prompt(price_per_gb: int, min_gb: float, max_gb: float, days: int) -> st
     # after, nothing hidden - this is reframing, not a discount.
     return (
         f"از {gb(min_gb)} تا {gb(max_gb)}، همه {fa(days)} روزه.\n"
-        f"هر گیگابایت {money(price_per_gb)}."
+        f"قیمت هر گیگابایت {money(price_per_gb)} — روی خودِ دکمه‌ها هم نوشته شده."
     )
+
+
+# The volume screen's first line for an account-holder: their buy is an
+# in-place extension, not a second service (owner report 2026-11-18: the
+# screen never said WHICH of the two things «خرید / تمدید» would do).
+EXTEND_NOTE = "حجمِ زیر به سرویس فعلی‌تان اضافه می‌شود — لینک‌تان همان می‌ماند."
+
+
+def volume_button(volume: float, price_per_gb: int) -> str:
+    """A volume pick that names its own price (owner report 2026-11-18:
+    sizes-only buttons made the customer multiply in their head, and the two
+    special flows sitting in the same grid read as more sizes). Two lines:
+    the size, then what it costs — the number they'd otherwise compute."""
+    return f"{gb(volume)}\n{money(int(volume * price_per_gb))}"
 
 
 def confirm_from_wallet(volume: float, days: int, price: int, balance: int) -> str:

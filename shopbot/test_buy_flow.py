@@ -165,6 +165,29 @@ async def main() -> None:
           not any(c == "uname:ask" for _, c in inline_buttons(msg)), repr(inline_buttons(msg)))
     STATE["session"] = dict(SESSION)
 
+    # ── 1b. the volume screen reads at a glance (owner report 2026-11-18:
+    #        «این منو خیلی گیج کننده است») ──────────────────────────────────
+    STATE["session"] = {**SESSION, "has_accounts": True}
+    (upd, context), msg = make_update(texts.MENU_BUY)
+    await shop.handle_text(upd, context)
+    btns = inline_buttons(msg)
+    labels = [t for t, _ in btns]
+    check("every volume button carries its OWN price (تومان on the label)",
+          sum(1 for t in labels if "گیگ" in t) >= 5
+          and all("تومان" in t for t in labels if "گیگ" in t and "دلخواه" not in t),
+          repr(labels))
+    check("the two special flows are NOT rows shared with volumes",
+          all(len(r_) == 1 for r_ in msg.replies[-1][1].inline_keyboard
+              if any("جداگانه" in b.text or "مصرفی" in b.text for b in r_)),
+          repr(msg.replies[-1][1].inline_keyboard))
+    check("an extender's prompt says the buy ADDS to their current service",
+          "اضافه می‌شود" in msg.replies[-1][0], repr(msg.replies[-1][0]))
+    STATE["session"] = dict(SESSION)
+    (upd, context), msg = make_update(texts.MENU_BUY)
+    await shop.handle_text(upd, context)
+    check("a newcomer's prompt does NOT promise an add-to-existing",
+          "اضافه می‌شود" not in msg.replies[-1][0], repr(msg.replies[-1][0]))
+
     # ── 2. newcomer: order first, then the MANDATORY ask ──────────────────
     STATE["order_posts"].clear()
     STATE["session"] = dict(SESSION)

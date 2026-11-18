@@ -616,8 +616,13 @@ async def _render_volume_screen(update: Update, session: dict, *, force_new: boo
     # volume tap at extending the EXISTING service. The plain form stays
     # valid (a round-1 screen's `vol:30` re-seeds a plain buy).
     suffix = ":f" if force_new else ""
+    price = session["price_per_gb"]
     quick = [v for v in QUICK_VOLUMES if session["min_gb"] <= v <= session["max_gb"]]
-    keyboard = [[InlineKeyboardButton(texts.gb(v), callback_data=f"vol:{v:g}{suffix}")
+    # Every size names its own price on the button (owner report 2026-11-18:
+    # sizes-only buttons made the customer multiply in their head). The two
+    # special flows each get their OWN full-width row so they cannot read as
+    # more volume options.
+    keyboard = [[InlineKeyboardButton(texts.volume_button(v, price), callback_data=f"vol:{v:g}{suffix}")
                  for v in quick[i:i + 3]] for i in range(0, len(quick), 3)]
     keyboard.append([InlineKeyboardButton(texts.CUSTOM_VOLUME, callback_data=f"vol:custom{suffix}")])
     # The rare starts live HERE, not in the main menu (T2): a second,
@@ -632,7 +637,9 @@ async def _render_volume_screen(update: Update, session: dict, *, force_new: boo
         session["plan_duration_days"],
     )
     if force_new:
-        prompt = texts.NEW_SERVICE_INTRO + "\n\n" + prompt
+        prompt = texts.NEW_SERVICE_INTRO + "\n" + prompt
+    elif session.get("has_accounts"):
+        prompt = texts.EXTEND_NOTE + "\n" + prompt
     await update.effective_message.reply_text(prompt, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
