@@ -1612,8 +1612,13 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         lines = [texts.account_line(limit_gb, used_gb, days_left,
                                      status=row.get("status"), name=_display_service_name(row))]
         # T3: an ended card states what happened AND what one tap does, and
-        # its تمدید button becomes the FIRST thing on the card.
-        ended = (limit_gb is not None and used_gb >= limit_gb) or (days_left is not None and days_left <= 0)
+        # its تمدید button becomes the FIRST thing on the card. The volume
+        # threshold is 10 MB (matching account_line): Marzban cuts a user off
+        # a hair before the exact byte, and the old `used >= limit` check let
+        # a 100%-rounded card read as alive with no red line (owner report
+        # 2026-11-18).
+        ended = ((limit_gb is not None and (limit_gb - used_gb) <= 0.01)
+                 or (days_left is not None and days_left <= 0))
         # A renewal extends ONE service (the backend's renewable_account), not
         # the card it was tapped on. The backend marks that card; every other
         # card of a multi-service customer carries no renew button, so no

@@ -222,9 +222,13 @@ async def main() -> None:
 
     # ── F11: account_line suspended badge on/off ──────────────────────────
     plain = texts.account_line(10.0, 2.5, 20)
-    check("no status passed → rendering unchanged (exact legacy string)",
+    # 2026-11-18: the card format deliberately changed (bar alone on its
+    # line, no percentage — owner report: cluttered + bidi-reordered); the
+    # frozen string below pins the NEW canonical shape.
+    check("no status passed → rendering unchanged (exact canonical string)",
           plain == "🔑 سرویس ۱۰ گیگ\n"
-                   "▰▰▱▱▱▱▱▱▱▱ ۷٫۵ گیگ باقی مانده (۲۵٪ مصرف شده)\n"
+                   "▰▰▱▱▱▱▱▱▱▱\n"
+                   "۷٫۵ گیگ باقی مانده\n"
                    "۲۰ روز مانده", repr(plain))
     with_badge = texts.account_line(10.0, 2.5, 20, status="disabled")
     check("disabled status appends exactly the badge line",

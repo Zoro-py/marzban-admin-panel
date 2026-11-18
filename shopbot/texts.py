@@ -164,10 +164,11 @@ def username_taken_note(chosen: str, final: str) -> str:
 # The gentle naming nudge (owner-approved proposal, 2026-11-18): shown once,
 # under a multi-service customer's cards, while at least one service has no
 # nickname — the ended-service push names the service, so unnamed services
-# are the ones that read ambiguously.
+# are the ones that read ambiguously. No arrows: a «←» between quoted RTL
+# labels renders reordered (owner report, same day).
 NAMING_HINT = (
-    "💡 برای اینکه بعداً بدانید کدام سرویس است، می‌توانید به هر سرویس یک نام بدهید:\n"
-    "روی کارتش «⋯ بیشتر» ← «✏️ نام سرویس»."
+    "💡 می‌توانید به هر سرویس یک نام بدهید تا بعداً راحت پیدایش کنید:\n"
+    "روی کارت سرویس، «⋯ بیشتر» را بزنید و بعد «✏️ نام سرویس» را انتخاب کنید."
 )
 # The reply when the typed name fails the very pattern the ask states. Both
 # call sites (the optional preferred-name pre-pick, shop.py preferred-name
@@ -698,9 +699,18 @@ def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional
     software's name into a consumer screen.
 
     Three renderings by state, because one shape cannot fit all:
-      capped + volume left  → bar, remaining gigabytes FIRST (that is the
-                              number they act on), then the percentage
-      capped + volume gone  → plainly finished, no bar to squint at
+      capped + volume left  → the bar ALONE on its own line (symbols between
+                              Persian words get bidi-reordered — owner report
+                              2026-11-18: the line read as gibberish), then
+                              plain remaining gigabytes, NO percentage (the
+                              third representation of the same number was
+                              the clutter)
+      capped + volume gone  → plainly finished, no bar to squint at; the
+                              threshold is 10 MB, not zero: Marzban stops a
+                              user a hair before the exact byte and the old
+                              `used >= limit` check left such cards reading
+                              «۱۰۰٪ مصرف شده» with no red line and no renew
+                              button first (owner report, same day)
       unlimited             → no bar and no percentage at ALL — dividing by
                               a fabricated cap is how a name-unlimited
                               service got shown as "94% used" (live
@@ -726,12 +736,12 @@ def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional
         text = f"{title} نامحدود\nمصرف تا امروز: {fa(round(used_gb, 2))} گیگ\n{life}"
     else:
         remaining = max(0.0, volume_gb - used_gb)
-        if remaining <= 0:
+        if remaining <= 0.01:  # under ~10 MB: Marzban has already cut it off
             text = f"{title} {gb(volume_gb)}\n🔴 حجم سرویس تمام شد\n{life}"
         else:
-            pct = int(used_gb * 100 / volume_gb) if volume_gb else 0
-            bar = f"{usage_bar(used_gb, volume_gb)} {fa(round(remaining, 2))} گیگ باقی مانده ({fa(pct)}٪ مصرف شده)"
-            text = f"{title} {gb(volume_gb)}\n{bar}\n{life}"
+            text = (f"{title} {gb(volume_gb)}\n"
+                    f"{usage_bar(used_gb, volume_gb)}\n"
+                    f"{fa(round(remaining, 2))} گیگ باقی مانده\n{life}")
     if status == "disabled":
         text += "\n" + STATUS_SUSPENDED_BADGE
     return text

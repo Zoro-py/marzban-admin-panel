@@ -164,6 +164,30 @@ async def main() -> None:
           "تمام شده" in msg.replies[-1][0] and "فعال" in msg.replies[-1][0]
           and buttons_of(msg)[0][0] == "🔄 تمدید", repr(msg.replies[-1][0]))
 
+    # ── 3b. NEAR-ended (owner report 2026-11-18: a 100%-rounded card with a
+    #        sliver of bytes left read as alive, without renew or red line) ─
+    ROWS.clear()
+    ROWS.append(row(used_traffic=30 * 1024 ** 3 - 512 * 1024))  # 0.5 MB left
+    (upd, context), msg = make_update()
+    await shop.show_accounts(upd, context)
+    text = msg.replies[-1][0]
+    check("0.5MB-left card reads as ENDED (red line + تمدید first)",
+          "حجم سرویس تمام شد" in text and buttons_of(msg)[0][0] == "🔄 تمدید", repr(text))
+    check("no misleading «۱۰۰٪ مصرف شده» parenthetical on ANY card",
+          "مصرف شده" not in text, repr(text))
+
+    # ── 3c. card clutter (owner: «شیوه نمایش گیج‌کننده است») ──────────────
+    ROWS.clear()
+    ROWS.append(row())  # 5 of 30 GB used
+    (upd, context), msg = make_update()
+    await shop.show_accounts(upd, context)
+    text = msg.replies[-1][0]
+    lines = text.splitlines()
+    check("the bar sits ALONE on its own line (bidi-safe)",
+          any(set(l) <= set("▰▱") for l in lines), repr(lines))
+    check("remaining GB stated plainly, WITHOUT the percentage",
+          "باقی مانده" in text and "مصرف شده" not in text and "٪" not in text, repr(text))
+
     # ── 4. unlimited service: no تمدید ───────────────────────────────────
     ROWS.clear()
     ROWS.append(row(data_limit=None, data_limit_gb=0))
