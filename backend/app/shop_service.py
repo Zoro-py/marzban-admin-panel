@@ -1778,6 +1778,11 @@ async def warn_customers_before_service_ends(session: Session) -> int:
                         account_gb,
                         "حجمش تمام شد." if volume_ended else "زمانش تمام شد.",
                         handle,
+                        # WHICH service (owner report 2026-11-18): the
+                        # customer's own nickname leads the message when
+                        # they set one — the size alone collides across
+                        # services of the same size.
+                        name=account.service_name or None,
                     )
                     mark = "ended"
 

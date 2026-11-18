@@ -75,7 +75,7 @@ async def _capture(chat_id, text, reply_markup=None):
 
 
 def _mk_order(session: Session, *, tg: int, username: str, used: int, limit: int,
-              expire: int | None, price: int = 100_000) -> ShopOrder:
+              expire: int | None, price: int = 100_000, nick: str | None = None) -> ShopOrder:
     """A delivered paid (or trial, price=0) order on its own account, whose
     delivery is older than the 24h warning grace."""
     user = ShopUser(telegram_id=tg, display_name=f"u{tg}")
@@ -83,7 +83,7 @@ def _mk_order(session: Session, *, tg: int, username: str, used: int, limit: int
     session.commit()
     session.refresh(user)
     account = Account(marzban_username=username, used_traffic=used, data_limit=limit,
-                      expire=expire, status="active")
+                      expire=expire, status="active", service_name=nick)
     session.add(account)
     session.commit()
     session.refresh(account)
@@ -181,7 +181,35 @@ async def main() -> None:
                       for row_ in hit[2].get("inline_keyboard", []) for b in row_),
               repr(hit[2] if hit else None))
 
-        # ── 4. a healthy account still says nothing ────────────────────────
+        # ── 4. WHICH service? (owner report 2026-11-18: «قابل فهم نیست کدوم
+        #      اکانت تموم شده») ─────────────────────────────────────────────
+        # a named service → the push LEADS with the customer's own nickname
+        with Session(engine) as session:
+            _mk_order(session, tg=775, username="ended-nick", used=30 * GB,
+                      limit=30 * GB, expire=NOW + 20 * 86400, nick="گوشی علی")
+        _SENT.clear()
+        await _sweep()
+        hit = next((s for s in _SENT if s[0] == 775), None)
+        check("named service → the push leads with «گوشی علی»",
+              hit is not None and "«گوشی علی»" in hit[1] and "قطع شد" in hit[1],
+              repr(hit[1] if hit else None))
+        check("named push still names the death reason",
+              hit is not None and "حجمش تمام شد" in hit[1], repr(hit[1] if hit else None))
+
+        # an UNNAMED service (multi-service customer, same sizes) → a pointer
+        # to «سرویس‌های من», because the size alone cannot disambiguate
+        with Session(engine) as session:
+            _mk_order(session, tg=776, username="ended-unnamed", used=30 * GB,
+                      limit=30 * GB, expire=NOW + 20 * 86400)
+        _SENT.clear()
+        await _sweep()
+        hit = next((s for s in _SENT if s[0] == 776), None)
+        check("unnamed service → the push points to «سرویس‌های من»",
+              hit is not None and "سرویس‌های من" in hit[1], repr(hit[1] if hit else None))
+        check("unnamed push keeps the button-reassures line",
+              hit is not None and "همین سرویس" in hit[1], repr(hit[1] if hit else None))
+
+        # ── 5. a healthy account still says nothing ────────────────────────
         with Session(engine) as session:
             _mk_order(session, tg=774, username="healthy", used=1 * GB,
                       limit=10 * GB, expire=NOW + 20 * 86400)

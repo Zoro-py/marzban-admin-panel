@@ -363,18 +363,33 @@ def data_almost_gone(volume_gb: float, percent_used: int, handle: Optional[str])
     )
 
 
-def service_ended(volume_gb: float, reason: str, handle: Optional[str]) -> str:
+def service_ended(volume_gb: float, reason: str, handle: Optional[str],
+                  name: Optional[str] = None) -> str:
     """The moment the service actually dies. The 3-day and 80% warnings fire
     BEFORE death by design, and nothing used to fire AT death — the customer
     discovered the outage by their VPN failing and had to open the bot to
     learn why (2026-11-18, owner GO). One calm push with the renew button
     riding on it closes the reminder chain: reason first, then the one-tap
-    way back, then the link reassurance (renewal in place)."""
-    return (
-        f"🔴 سرویس {fa_num(volume_gb)} گیگی‌تان قطع شد — {reason}\n"
-        "دکمهٔ «تمدید» پایین، یک تپ دوباره وصلش می‌کند — لینک‌تان بعد از تمدید همان می‌ماند."
-        + support_line(handle)
-    )
+    way back, then the link reassurance (renewal in place).
+
+    WHICH service (owner report the same day: «قابل فهم نیست کدوم اکانت
+    تموم شده»): a customer's own nickname, when they set one, LEADS the
+    message — the size alone collides as soon as two services share it.
+    Without a nickname the message says what the renew button targets and
+    points at «سرویس‌های من», whose ended card carries the state."""
+    if name:
+        head = f"🔴 سرویس «{name}» قطع شد — {reason}"
+        body = (
+            f"حجم این سرویس: {fa_num(volume_gb)} گیگ.\n"
+            "دکمهٔ «تمدید» پایین، یک تپ دوباره وصلش می‌کند — لینک‌تان بعد از تمدید همان می‌ماند."
+        )
+    else:
+        head = f"🔴 سرویس {fa_num(volume_gb)} گیگی‌تان قطع شد — {reason}"
+        body = (
+            "دکمهٔ «تمدید» پایین، همین سرویسِ قطع‌شده را وصل می‌کند — لینک‌تان بعد از تمدید همان می‌ماند.\n"
+            "کدام سرویس؟ «📱 سرویس‌های من» را باز کنید؛ کارتِ همین سرویس وضعیت قطع را نشان می‌دهد."
+        )
+    return f"{head}\n{body}" + support_line(handle)
 
 
 def trial_ended(handle: Optional[str]) -> str:
