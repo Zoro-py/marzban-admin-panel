@@ -37,6 +37,9 @@ print("shopbot image OK")
 PY
 ```
 
-## نتیجهٔ اجرا
+## نتیجهٔ اجرا (۲۰۲۶-۱۱-۱۸ ~16:56)
 
-- (پس از اجرا ثبت می‌شود.)
+- پوش `f3cde02..abb8121`؛ سرور `--ff-only` به `abb8121`؛ درخت تمیز.
+- بکاپ `pre-round-f-20261118-165559.db`.
+- rebuild backend → اسموک سبز (سه فیلد/مدل جدید در تصویر)؛ rebuild shopbot → اسموک سبز (extend_target_note/AUTORENEW_STATE/on_auto_toggle)؛ لاگ پاک؛ پولینگ زنده.
+- Rollback: `git checkout d03c59d -- backend/ shopbot/ && docker compose up -d --build backend shopbot`.
