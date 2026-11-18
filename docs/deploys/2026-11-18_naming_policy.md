@@ -66,6 +66,11 @@ git checkout b1a7663 -- backend/ shopbot/
 docker compose up -d --build backend shopbot
 ```
 
-## نتیجهٔ اجرا
+## نتیجهٔ اجرا (۲۰۲۶-۱۱-۱۸ ~11:18–11:19 به وقتِ سرور)
 
-- (پس از اجرا ثبت می‌شود.)
+- **پوش + مرج:** `a467814..edbac20 → origin`؛ سرور `--ff-only` به `edbac20` — درخت تمیز.
+- **بکاپ:** `pre-naming-policy-20261118-111808.db` (API رسمی، WAL-safe).
+- **backend rebuild → اسموک سبز:** `_resolve_unique_username` روی تصویرِ زنده یک نامِ آزاد را دست‌نخورده برمی‌گرداند؛ روتر import؛ لاگ پاک.
+- **shopbot rebuild → اسموک سبز:** `AUTO_NAME_RETIRED`/`NAMING_HINT`/`username_taken_note` و `_PENDING_INTENT`+`creates_new` در تصویر؛ پولینگِ زنده (getUpdates 200).
+- **باقی‌مانده برای مالک:** اسموکِ تلگرامی — خریدِ نوآمد (باید پرسشِ نام بیاید، «بدون نام» جملهٔ بازنشستگی بدهد، نامِ تکراری روی صفحهٔ پرداخت با نامِ نهایی اعلام شود) و hint یک‌بارِ «سرویس‌های من» چند-سرویسی.
+- **Rollback:** `git checkout b1a7663 -- backend/ shopbot/ && docker compose up -d --build backend shopbot` (بکاپ موجود).
