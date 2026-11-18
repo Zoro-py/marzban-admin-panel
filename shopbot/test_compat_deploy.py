@@ -133,13 +133,16 @@ async def main() -> None:
     check("old-backend session: buy label is plain «خرید سرویس» (no «/ تمدید»)",
           texts.MENU_BUY in labels and texts.MENU_BUY_RENEW not in labels, repr(labels))
 
-    # Buy screen: the conditional buttons degrade to the username pre-pick.
+    # Buy screen renders (2026-11-18: the username pre-pick button is gone
+    # everywhere — the ask is mandatory after the order on a NEW backend; on
+    # an OLD backend the order simply carries no name and the auto-name
+    # fallback still provisions it).
     (upd, context), msg = make_update(texts.MENU_BUY)
     await shop.handle_text(upd, context)
     inline = msg.replies[-1][1].inline_keyboard
     cbs = [b.callback_data for row in inline for b in row]
-    check("old backend: buy screen renders with the username pre-pick (not «سرویس جداگانه»)",
-          "uname:ask" in cbs and "menu:newservice" not in cbs, repr(cbs))
+    check("old backend: buy screen renders, no username button, no «سرویس جداگانه»",
+          "uname:ask" not in cbs and "menu:newservice" not in cbs, repr(cbs))
 
     # Services list: renews_here missing → renew button on the card (old
     # behaviour; renewal still extends renewable_account server-side).

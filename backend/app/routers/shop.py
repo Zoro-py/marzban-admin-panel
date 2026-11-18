@@ -1625,16 +1625,21 @@ async def bot_set_order_username(order_id: int, body: ShopBotServiceNameRequest,
     try:
         chosen = _clean_chosen_username(body.name)
         if chosen:
-            await _ensure_username_available(chosen)
+            # Owner decision 2026-11-18: a TAKEN name is uniquified
+            # (ali → ali-2) instead of bouncing the customer; `was_taken`
+            # lets the bot tell them their final name on the payment screen.
+            from app.shop_service import _resolve_unique_username
+            final = await _resolve_unique_username(chosen)
+        else:
+            final = None
     except ShopError as exc:
-        # Invalid pattern -> 400, taken -> 409; both carry the Persian
-        # sentence the bot shows verbatim so the customer can retry IN the
-        # ask (the state stays open on a 409).
-        raise HTTPException(409 if "قبلاً گرفته شده" in str(exc) else 400, str(exc))
-    order.requested_username = chosen
+        # Invalid pattern -> 400; the rare all-50-taken -> 409; both carry
+        # the Persian sentence the bot shows verbatim.
+        raise HTTPException(409 if "گرفته شده‌اند" in str(exc) else 400, str(exc))
+    order.requested_username = final
     session.add(order)
     session.commit()
-    return {"ok": True, "requested_username": order.requested_username}
+    return {"ok": True, "requested_username": final, "was_taken": final != chosen}
 
 
 @bot_router.post("/orders/{order_id}/pay", response_model=ShopPurchaseResult)

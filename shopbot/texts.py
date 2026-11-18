@@ -136,14 +136,38 @@ CANCEL = "❌ انصراف"
 
 # ── T4 buy flow — one screen, one action ──────────────────────────────────
 
-# Inline button on the volume screen: the OPTIONAL pre-pick of the Marzban
-# username. Default stays the auto shop{id} name — the ask is off the
-# mandatory path entirely (design decision 3, docs/ZCODE_SHOPBOT_UX_DESIGN.md).
+# Owner decision 2026-11-18: NO more auto naming. The Marzban username is
+# the customer's own choice, asked mandatorily on every new-service buy
+# (between the order and the payment); a TAKEN name is uniquified by the
+# backend (ali → ali-2) and the payment screen says so. The old optional
+# pre-pick button no longer renders — old inline screens still carry it and
+# its callback opens the (now mandatory) ask; stale screens get the usual
+# «قدیمی شده» answer.
 PREFERRED_NAME_BUTTON = "✏️ نام کاربری دلخواه"
 ASK_PREFERRED_NAME = (
-    "نام کاربری سرویس را انتخاب کنید (اختیاری):\n"
-    "حروف انگلیسی، عدد و - یا _ — بین ۳ تا ۳۰ کاراکتر (مثلاً fateme)\n"
-    "همین نام در اپ و اشتراکتان دیده می‌شود. «بدون نام» = خودکار (مثل shop10)."
+    "نام کاربری سرویس را انتخاب کنید — همین نام در اپ و اشتراکتان دیده می‌شود:\n"
+    "حروف انگلیسی، عدد و - یا _ — بین ۳ تا ۳۰ کاراکتر (مثلاً fateme)"
+)
+# Old chats still carry the pre-2026-11-18 ask keyboard with «بدون نام»;
+# tapping it now gets this line instead of a silently auto-named order.
+AUTO_NAME_RETIRED = (
+    "از این به بعد نام سرویس را خودتان انتخاب می‌کنید —\n"
+    "یک نام انگلیسی بفرستید (حروف انگلیسی، عدد، - یا _)."
+)
+
+
+def username_taken_note(chosen: str, final: str) -> str:
+    """Said on the payment screen when the backend uniquified the pick."""
+    return f"نام «{chosen}» قبلاً گرفته شده بود — نام کاربری سرویس: {final} شد."
+
+
+# The gentle naming nudge (owner-approved proposal, 2026-11-18): shown once,
+# under a multi-service customer's cards, while at least one service has no
+# nickname — the ended-service push names the service, so unnamed services
+# are the ones that read ambiguously.
+NAMING_HINT = (
+    "💡 برای اینکه بعداً بدانید کدام سرویس است، می‌توانید به هر سرویس یک نام بدهید:\n"
+    "روی کارتش «⋯ بیشتر» ← «✏️ نام سرویس»."
 )
 # The reply when the typed name fails the very pattern the ask states. Both
 # call sites (the optional preferred-name pre-pick, shop.py preferred-name
@@ -154,7 +178,7 @@ ASK_PREFERRED_NAME = (
 # a Persian name.
 USERNAME_INVALID = (
     "نام کاربری فقط می‌تواند حروف انگلیسی، عدد و - یا _ داشته باشد، بین ۳ تا ۳۰ کاراکتر.\n"
-    "یک نام دیگر بفرستید، یا «بدون نام» را بزنید تا خودکار ساخته شود."
+    "یک نام دیگر بفرستید."
 )
 # An old inline button whose flow has already moved on (or died with a
 # restart): answered, never silence.

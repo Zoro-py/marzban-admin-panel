@@ -61,11 +61,14 @@ _STATE_CONFIRMING_WALLET_BUY = "confirming_wallet_buy"
 _STATE_CONFIRMING_PAYG_START = "confirming_payg_start"
 _STATE_CHOOSING_TOPUP = "choosing_topup"
 _STATE_AWAITING_RECEIPT = "awaiting_receipt"
-# T4: the OPTIONAL pre-pick of the new service's Marzban username, asked on
-# the volume screen (never between the volume and the payment — the old
-# post-order ask and its dead _STATE_AWAITING_OPTIONAL_NAME twin are gone).
+# Owner decision 2026-11-18 (no more auto naming): the MANDATORY Marzban
+# username ask, sitting between the order and the payment screens whenever
+# the order creates a new service (intent.creates_new — a newcomer's first
+# buy or «سرویس جداگانه»; extend-in-place and ren: renewals never ask). The
+# chosen name rides POST /orders/{id}/username, which resolves a taken one
+# (ali → ali-2) and reports it, so the payment screen can say the final.
 _STATE_AWAITING_PREFERRED_NAME = "awaiting_preferred_name"
-_PENDING_PREFERRED_NAME = "pending_preferred_name"
+_PENDING_INTENT = "pending_intent"
 _STATE_AWAITING_PAYG_USERNAME = "awaiting_payg_username"
 _PENDING_PAYG_PAYLOAD = "pending_payg_payload"
 _STATE_AWAITING_SERVICE_NAME = "awaiting_service_name"
@@ -90,6 +93,10 @@ _PENDING_VOLUME = "pending_volume"
 # prompt one more time than intended, which is a fully dismissible, harmless
 # repeat, not a reason to migrate a new column for it.
 _PHONE_ASKED = "phone_asked"
+# The naming hint fires once per chat, in-process (same reasoning as
+# _PHONE_ASKED: a harmless possible repeat after a restart, not worth a
+# persistence column).
+_NAMING_HINT_DONE = "naming_hint_done"
 
 # A reference code as the backend issues them (4 unambiguous characters, or
 # the rare R+6-hex fallback). Typed back into the chat, it returns that
@@ -474,12 +481,13 @@ async def start_payg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         "display_name": " ".join(filter(None, [update.effective_user.first_name,
                                                update.effective_user.last_name])) or None,
     }
-    # The username ask rides the SAME screen as the billing intro: one
-    # message, one optional answer, same named-escape discipline.
+    # The username ask rides the SAME screen as the billing intro. Owner
+    # decision 2026-11-18: mandatory — no «بدون نام» (the name is the
+    # customer's own choice, and the backend uniquifies a taken one).
     await update.effective_message.reply_text(
         texts.payg_intro(session["payg_rate_per_gb"]) + "\n\n" + texts.ASK_PREFERRED_NAME,
         reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton(texts.SKIP_NAME)], [KeyboardButton(texts.CANCEL)]],
+            [[KeyboardButton(texts.CANCEL)]],
             resize_keyboard=True,
         ),
     )
@@ -506,8 +514,12 @@ async def _payg_username_answer(update: Update, context: ContextTypes.DEFAULT_TY
     if _is_menu_tap(text):
         context.user_data.clear()
         return await handle_text(update, context)  # re-dispatch as a menu tap
-    chosen = None if text == texts.SKIP_NAME else text.strip()
-    if chosen and not re.match(r"^[a-zA-Z0-9_-]{3,30}$", chosen):
+    if text == texts.SKIP_NAME:
+        # Old PAYG keyboards still carry the button; auto naming is gone.
+        await update.effective_message.reply_text(texts.AUTO_NAME_RETIRED)
+        return
+    chosen = text.strip()
+    if not re.match(r"^[a-zA-Z0-9_-]{3,30}$", chosen):
         await update.effective_message.reply_text(texts.USERNAME_INVALID)
         return
     payload["marzban_username"] = chosen
@@ -592,10 +604,11 @@ async def start_buy(update: Update, context: ContextTypes.DEFAULT_TYPE, *, force
 
 
 async def _render_volume_screen(update: Update, session: dict, *, force_new: bool) -> None:
-    """The volume choice itself. T4: INLINE buttons — the main menu stays
+    """The volume choice itself. INLINE buttons — the main menu stays
     visible on the reply keyboard underneath, and a typed volume is still
-    accepted (the state branch in handle_text). The optional username pre-pick
-    sits here too, only when this purchase can actually mint a new service."""
+    accepted (the state branch in handle_text). The username is asked
+    mandatorily AFTER the order when it creates a new service (owner
+    decision 2026-11-18) — the old optional pre-pick button is gone."""
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     # R1-2 (review 2026-11-06): the volume callbacks carry the force-new flag
     # (`vol:30:f`) so a STALE screen — the customer tapped «سرویس جداگانه»,
@@ -609,12 +622,9 @@ async def _render_volume_screen(update: Update, session: dict, *, force_new: boo
     keyboard.append([InlineKeyboardButton(texts.CUSTOM_VOLUME, callback_data=f"vol:custom{suffix}")])
     # The rare starts live HERE, not in the main menu (T2): a second,
     # independent service only makes sense for someone who HAS a service (a
-    # newcomer's first buy is already creates_new) — and so does the optional
-    # username, which is why it shows under the same condition.
+    # newcomer's first buy is already creates_new).
     if session.get("has_accounts") or force_new:
         keyboard.append([InlineKeyboardButton(texts.NEW_SERVICE_ON_BUY, callback_data="menu:newservice")])
-    else:
-        keyboard.append([InlineKeyboardButton(texts.PREFERRED_NAME_BUTTON, callback_data="uname:ask")])
     if session.get("payg_enabled") and not session.get("has_payg_service"):
         keyboard.append([InlineKeyboardButton(texts.PAYG_ON_BUY, callback_data="menu:payg")])
     prompt = texts.buy_prompt(
@@ -656,18 +666,17 @@ async def on_volume_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def on_username_ask(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """«نام کاربری دلخواه» on the volume screen: the OPTIONAL pre-pick. The
-    answer re-renders the volume screen; the name rides the order POST."""
+    """«نام کاربری دلخواه» on a STALE pre-2026-11-18 volume screen: with the
+    mandatory ask the button is gone from new renders, and a tap on an old
+    screen only makes sense if a freshly-created order is actually waiting
+    for its name — otherwise it is the usual dead button."""
     query = update.callback_query
     await query.answer()
-    context.user_data[_STATE] = _STATE_AWAITING_PREFERRED_NAME
-    await update.effective_message.reply_text(
-        texts.ASK_PREFERRED_NAME,
-        reply_markup=ReplyKeyboardMarkup(
-            [[KeyboardButton(texts.SKIP_NAME)], [KeyboardButton(texts.CANCEL)]],
-            resize_keyboard=True,
-        ),
-    )
+    if (context.user_data.get(_STATE) == _STATE_AWAITING_PREFERRED_NAME
+            and context.user_data.get(_ORDER_ID)):
+        await update.effective_message.reply_text(texts.ASK_PREFERRED_NAME)
+        return
+    await update.effective_message.reply_text(texts.STALE_BUTTON)
 
 
 async def on_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -861,10 +870,11 @@ def _payment_request_text(intent: dict, ask: int | None = None) -> str:
 
 
 async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, volume: float) -> None:
-    """Volume chosen. Creates the ORDER — which takes no money — carrying the
-    customer's pre-picked username when they chose one on the volume screen
-    (T4: the ask is OFF the mandatory path; skip = the auto shop{id} name).
-    Straight to the payment screen from here, whichever flavour applies."""
+    """Volume chosen. Creates the ORDER — which takes no money. When the
+    order creates a NEW service (intent.creates_new — a newcomer's first buy
+    or «سرویس جداگانه»; owner decision 2026-11-18: no more auto naming), the
+    MANDATORY username ask sits here, before the payment screens; extend-
+    in-place buys and renewals go straight to payment."""
     session = await _session(update)
     if not (session["min_gb"] <= volume <= session["max_gb"]):
         await update.effective_message.reply_text(texts.out_of_range(session["min_gb"], session["max_gb"]))
@@ -875,9 +885,6 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
         "data_limit_gb": volume,
         "force_new_service": bool(context.user_data.get(_FORCE_NEW_SERVICE)),
     }
-    chosen_name = context.user_data.get(_PENDING_PREFERRED_NAME)
-    if chosen_name:
-        payload["marzban_username"] = chosen_name
     target_id = context.user_data.get(_TARGET_ACCOUNT_ID)
     if target_id is not None and session.get("per_account_renewal"):
         payload["target_account_id"] = target_id
@@ -906,21 +913,6 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
             context.user_data.clear()
             await _reply(update, texts.PAYG_TOPUP_INSTEAD, session)
             return
-        if getattr(exc, "status", 0) == 409 and "قبلاً گرفته شده" in str(exc):
-            # The pre-picked username is taken (live availability check ran
-            # server-side). The backend's sentence already says "pick another"
-            # — reopen the ask so they can.
-            context.user_data.pop(_PENDING_PREFERRED_NAME, None)
-            context.user_data[_STATE] = _STATE_AWAITING_PREFERRED_NAME
-            await update.effective_message.reply_text(str(exc))
-            await update.effective_message.reply_text(
-                texts.ASK_PREFERRED_NAME,
-                reply_markup=ReplyKeyboardMarkup(
-                    [[KeyboardButton(texts.SKIP_NAME)], [KeyboardButton(texts.CANCEL)]],
-                    resize_keyboard=True,
-                ),
-            )
-            return
         logger.exception("Could not create an order for %s", update.effective_user.id)
         context.user_data.clear()
         await _reply(update, texts.generic_error(_handle(session)), session)
@@ -928,7 +920,18 @@ async def _handle_volume(update: Update, context: ContextTypes.DEFAULT_TYPE, vol
 
     context.user_data[_ORDER_ID] = intent["order_id"]
     context.user_data[_PENDING_VOLUME] = intent["data_limit_gb"]
-    context.user_data.pop(_PENDING_PREFERRED_NAME, None)  # consumed
+
+    if intent.get("creates_new"):
+        # No more auto naming: the customer types their own username before
+        # any payment screen. «انصراف» + the menu ride underneath, and a
+        # taken name is uniquified by the backend (reported on the screen).
+        context.user_data[_STATE] = _STATE_AWAITING_PREFERRED_NAME
+        context.user_data[_PENDING_INTENT] = intent
+        await update.effective_message.reply_text(
+            texts.ASK_PREFERRED_NAME,
+            reply_markup=_cancel_keyboard(session),
+        )
+        return
 
     return await _payment_screens(update, context, intent)
 
@@ -948,12 +951,13 @@ def _cancel_keyboard(session: dict | None) -> ReplyKeyboardMarkup:
 
 
 async def _payment_screens(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                           intent: dict) -> None:
+                           intent: dict, username_note: str | None = None) -> None:
     """The two payment screens (one-tap wallet confirm / card-to-card receipt
     ask), driven by the order intent. The confirm carries ONE button —
     «تأیید و دریافت» — as an INLINE keyboard, so the main menu on the reply
     keyboard stays visible underneath; the old typed «تأیید» path keeps
-    working for reply keyboards still sitting in old chats."""
+    working for reply keyboards still sitting in old chats. `username_note`
+    (when the backend uniquified the pick) rides on both shapes."""
     session = await _session(update)
 
     if intent["payable_from_wallet"]:
@@ -966,6 +970,8 @@ async def _payment_screens(update: Update, context: ContextTypes.DEFAULT_TYPE,
         )
         if intent.get("target_label"):
             confirm_text = texts.renew_target_line(intent["target_label"]) + "\n" + confirm_text
+        if username_note:
+            confirm_text = username_note + "\n" + confirm_text
         await update.effective_message.reply_text(
             confirm_text,
             reply_markup=InlineKeyboardMarkup([
@@ -988,8 +994,9 @@ async def _payment_screens(update: Update, context: ContextTypes.DEFAULT_TYPE,
     ask = max(int(intent["shortfall"]), int(session.get("min_topup") or 0))
     context.user_data[_STATE] = _STATE_AWAITING_RECEIPT
     context.user_data[_PENDING_AMOUNT] = ask
+    head = f"{username_note}\n" if username_note else ""
     await update.effective_message.reply_text(
-        _payment_request_text(intent, ask),
+        head + _payment_request_text(intent, ask),
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_cancel_keyboard(session),
     )
@@ -1648,6 +1655,16 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # (No wallet trailer: money has its own door — «حساب من» — and mixing the
     # two on the services screen is the T0 finding this rebuild removes.)
 
+    # The gentle naming nudge (owner-approved, 2026-11-18): a multi-service
+    # customer with an unnamed service is the one the ended-service push
+    # cannot name. Once per chat, in-process (a restart may repeat it once —
+    # harmless, same reasoning as _PHONE_ASKED).
+    if (len(rows) >= 2
+            and any(not (r.get("service_name") or "").strip() for r in rows)
+            and not context.chat_data.get(_NAMING_HINT_DONE)):
+        context.chat_data[_NAMING_HINT_DONE] = True
+        await _reply(update, texts.NAMING_HINT, session)
+
 
 async def on_service_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """«⋯ بیشتر» on a service card: the rarer per-service actions, one level
@@ -1721,37 +1738,57 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     """
     text = (update.message.text or "").strip()
 
-    # The OPTIONAL username pre-pick (T4) answers BEFORE the menu dispatch —
-    # named escapes only: «انصراف» returns to the volume screen, a menu button
-    # cancels AND runs its menu, «بدون نام» clears the pick, anything else is
-    # the chosen username.
+    # The MANDATORY username ask (owner decision 2026-11-18 — no more auto
+    # naming) answers BEFORE the menu dispatch, with the same escape
+    # discipline as the other asks: «انصراف» cancels the pending buy, a menu
+    # button cancels AND runs its menu, «بدون نام» (old keyboards) gets the
+    # retired line, anything pattern-valid names the order via the backend —
+    # which uniquifies a taken name and reports it for the payment screen.
     if context.user_data.get(_STATE) == _STATE_AWAITING_PREFERRED_NAME:
+        order_id = context.user_data.get(_ORDER_ID)
         if text == texts.CANCEL:
-            context.user_data.pop(_PENDING_PREFERRED_NAME, None)
-            context.user_data[_STATE] = _STATE_CHOOSING_VOLUME
+            context.user_data.clear()
             session = await _session(update)
-            await _render_volume_screen(update, session,
-                                        force_new=bool(context.user_data.get(_FORCE_NEW_SERVICE)))
+            await _reply(update, texts.CANCELLED, session)
             return
         if _is_menu_tap(text):
             context.user_data.clear()
             return await handle_text(update, context)  # re-dispatch as a menu tap
         if text == texts.SKIP_NAME:
-            context.user_data.pop(_PENDING_PREFERRED_NAME, None)  # auto shop{id}
-        else:
-            chosen = text.strip()
-            # Instant local pattern check; the definitive availability check
-            # runs server-side at order creation, and AGAIN at create_user (a
-            # race refunds, never double-charges).
-            if not re.match(r"^[a-zA-Z0-9_-]{3,30}$", chosen):
+            # Old ask keyboards still carry the button; auto naming is gone.
+            await update.effective_message.reply_text(texts.AUTO_NAME_RETIRED)
+            return
+        chosen = text.strip()
+        if not re.match(r"^[a-zA-Z0-9_-]{3,30}$", chosen):
+            await update.effective_message.reply_text(texts.USERNAME_INVALID)
+            return
+        try:
+            result = await backend.post(f"/api/shop/bot/orders/{order_id}/username",
+                                        json={"telegram_id": update.effective_user.id,
+                                              "name": chosen})
+        except ShopApiError as exc:
+            detail = str(exc)
+            if getattr(exc, "status", 0) == 400 or "حروف انگلیسی" in detail:
                 await update.effective_message.reply_text(texts.USERNAME_INVALID)
-                return
-            context.user_data[_PENDING_PREFERRED_NAME] = chosen
-        context.user_data[_STATE] = _STATE_CHOOSING_VOLUME
-        session = await _session(update)
-        await _render_volume_screen(update, session,
-                                    force_new=bool(context.user_data.get(_FORCE_NEW_SERVICE)))
-        return
+            else:
+                logger.exception("Could not set the username on order %s", order_id)
+                context.user_data.clear()
+                session = await _session(update)
+                await _reply(update, texts.generic_error(_handle(session)), session)
+            return
+        intent = context.user_data.get(_PENDING_INTENT)
+        context.user_data.pop(_PENDING_INTENT, None)
+        context.user_data[_STATE] = None
+        if intent is None:
+            # Unreachable through the flow (the ask is only entered with the
+            # intent stashed); guard anyway rather than crash on a restart.
+            context.user_data.clear()
+            session = await _session(update)
+            await _reply(update, texts.generic_error(_handle(session)), session)
+            return
+        note = (texts.username_taken_note(chosen, result["requested_username"])
+                if result.get("was_taken") else None)
+        return await _payment_screens(update, context, intent, username_note=note)
 
     if context.user_data.get(_STATE) == _STATE_AWAITING_PAYG_USERNAME:
         return await _payg_username_answer(update, context)

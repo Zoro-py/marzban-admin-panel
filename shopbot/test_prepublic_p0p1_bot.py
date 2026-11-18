@@ -119,7 +119,7 @@ def order_intent(**overrides) -> dict:
         "order_id": 77, "data_limit_gb": 10, "duration_days": 30,
         "price": 100_000, "balance": 0, "shortfall": 100_000,
         "payable_from_wallet": False, "card_number": "6037-9911-2222-3333",
-        "creates_new": True,
+        "creates_new": False,
         "card_holder": None, "approval_eta_minutes": 30,
     }
     intent.update(overrides)

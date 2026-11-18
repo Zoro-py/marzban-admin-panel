@@ -71,7 +71,7 @@ SESSION = {
     "phone": None,
 }
 ORDER = {
-    "order_id": 77, "creates_new": True, "data_limit_gb": 10,
+    "order_id": 77, "creates_new": False, "data_limit_gb": 10,
     "duration_days": 30, "price": 100_000, "balance": 0,
     "shortfall": 100_000, "payable_from_wallet": False,
     "card_number": "6037", "card_holder": "x", "approval_eta_minutes": 30,

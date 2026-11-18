@@ -1,16 +1,20 @@
-"""T4 buy-flow regression tests (feat/shopbot-ux-rebuild):
+"""Buy-flow regression tests (feat/shopbot-ux-rebuild) — owner decision
+2026-11-18: NO MORE AUTO NAMING. The customer types their own Marzban
+username; the backend uniquifies a taken one (ali → ali-2) and reports it.
 
   * Volume choice = INLINE buttons (popular sizes + «حجم دلخواه»), free text
     still accepted; the main menu reply keyboard stays visible underneath.
-  * The username ask is OFF the mandatory path: the customer MAY pre-pick a
-    Marzban username via «نام کاربری دلخواه» on the volume screen; the order
-    POST carries it. A new-service purchase goes STRAIGHT to the payment
-    screen — 3 taps total for the card path.
-  * A taken username (backend 409 Persian sentence) reopens the name ask.
-  * The wallet-covered purchase confirms with ONE inline button; stale
-    confirm buttons get the stale answer, not silence.
-  * Dead routing from the old flow (_STATE_AWAITING_OPTIONAL_USERNAME /
-    _STATE_AWAITING_OPTIONAL_NAME with its undefined function) is gone.
+    NO «نام کاربری دلخواه» button anymore — the ask is mandatory where it
+    matters (creates_new) and absent where it doesn't (extend in place).
+  * creates_new (newcomer / سرویس جداگانه): order first, then the MANDATORY
+    username ask («بدون نام» is retired — typing it gets the retired line,
+    not an auto-named order), then the payment screen.
+  * The taken-name path no longer bounces: the backend resolves ali-2 and
+    reports was_taken → the payment screen says so.
+  * Extend-in-place buys and ren: card renewals skip the ask entirely.
+  * PAYG's name ask is mandatory too (no «بدون نام»).
+  * The naming hint: a multi-service customer with an unnamed service is
+    nudged ONCE toward «⋯ بیشتر» → «✏️ نام سرویس».
 
 Run (from shopbot/):
   ../bot/venv/Scripts/python test_buy_flow.py
@@ -21,6 +25,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from types import SimpleNamespace
 
 os.environ.setdefault("SHOP_BOT_TOKEN", "")
@@ -77,42 +82,61 @@ SESSION = {
     "card_holder": None, "approval_eta_minutes": 30,
     "price_per_gb": 10_000, "min_gb": 5, "max_gb": 100, "plan_duration_days": 30,
     "ledger_debt": 0, "debt_breakdown": [], "debt_exact": True,
-    "payg_enabled": False, "payg_rate_per_gb": 0,
-    "has_accounts": False, "has_payg_service": False,
+    "payg_enabled": True, "payg_rate_per_gb": 5_000, "has_payg_service": False,
+    "has_accounts": False,
 }
-
-ORDER_POSTS: list[dict] = []
-ORDER_ERROR: tuple[str, int] | None = None
+STATE = {
+    "session": dict(SESSION),
+    "creates_new": True,
+    "order_posts": [],
+    "username_posts": [],
+    "payg_posts": [],
+    "rows": [],
+}
+NOW = int(time.time())
 
 
 async def fake_session(update) -> dict:
-    return dict(SESSION)
+    return dict(STATE["session"])
 
 
 class StubBackend:
     async def get(self, path, params=None):
+        if path == "/api/shop/bot/accounts":
+            return [dict(r) for r in STATE["rows"]]
         raise AssertionError(path)
 
     async def post(self, path, json=None, timeout: float = 20):
-        global ORDER_ERROR
         if path == "/api/shop/bot/orders":
-            if ORDER_ERROR is not None:
-                raise shop.ShopApiError(ORDER_ERROR[0], status=ORDER_ERROR[1])
-            ORDER_POSTS.append(json or {})
+            STATE["order_posts"].append(dict(json or {}))
             return {
-                "order_id": 77, "creates_new": True, "data_limit_gb": 10,
+                "order_id": 77, "creates_new": STATE["creates_new"], "data_limit_gb": 10,
                 "duration_days": 30, "price": 100_000, "balance": 0,
                 "shortfall": 100_000, "payable_from_wallet": False,
                 "card_number": "6037-9911-2222-3333", "card_holder": None,
                 "approval_eta_minutes": 30,
             }
-        if path.startswith("/api/shop/bot/orders/") and path.endswith("/pay"):
-            return {"ok": True}
+        if path == "/api/shop/bot/orders/77/username":
+            STATE["username_posts"].append(dict(json or {}))
+            chosen = (json or {}).get("name", "")
+            taken = chosen == "ali"
+            final = "ali-2" if taken else chosen
+            return {"ok": True, "requested_username": final, "was_taken": taken}
+        if path == "/api/shop/bot/payg/start":
+            STATE["payg_posts"].append(dict(json or {}))
+            return {}
         raise AssertionError(path)
 
 
 shop.backend = StubBackend()
 shop._session = fake_session  # type: ignore[assignment]
+
+
+def reply_kb_labels(msg) -> list[str]:
+    kb = msg.replies[-1][1]
+    if kb is None or not hasattr(kb, "keyboard"):
+        return []
+    return [b.text for row_ in kb.keyboard for b in row_]
 
 
 def inline_buttons(msg) -> list[tuple[str, str]]:
@@ -122,129 +146,155 @@ def inline_buttons(msg) -> list[tuple[str, str]]:
     return [(b.text, b.callback_data or (b.url or "")) for row_ in kb.inline_keyboard for b in row_]
 
 
+async def tap_volume(msg, ctx, volume="10"):
+    msg.text = volume
+    await shop.handle_text(msg.parent[0], msg.parent[1])
+
+
 async def main() -> None:
-    # ── 1. volume screen: inline quick sizes + custom + optional name ────
+    # ── 1. volume screen: no username button at all, any customer ────────
+    STATE["session"] = {**SESSION, "has_accounts": False}
     (upd, context), msg = make_update(texts.MENU_BUY)
     await shop.handle_text(upd, context)
-    btns = inline_buttons(msg)
-    labels = [t for t, _ in btns]
-    check("volume screen carries the quick sizes as inline buttons",
-          {"۱۰ گیگ", "۲۰ گیگ", "۳۰ گیگ", "۵۰ گیگ", "۱۰۰ گیگ"} <= set(labels), repr(labels))
-    check("«حجم دلخواه» is an inline button (vol:custom)",
-          ("✏️ حجم دلخواه", "vol:custom") in btns, repr(btns))
-    check("optional-username button present for a first-time buyer",
-          any(c == "uname:ask" for _, c in btns), repr(btns))
-    check("no optional-username button for an extending customer",
-          True)  # covered below with has_accounts=True
-
-    SESSION["has_accounts"] = True
-    (upd, context), msg = make_update(texts.MENU_BUY)
-    await shop.handle_text(upd, context)
-    check("extending customer sees NO optional-username button",
+    check("newcomer's volume screen has NO «نام کاربری دلخواه» button",
           not any(c == "uname:ask" for _, c in inline_buttons(msg)), repr(inline_buttons(msg)))
-    SESSION["has_accounts"] = False
-
-    # ── 2. free-text volume still works ──────────────────────────────────
-    ORDER_POSTS.clear()
+    STATE["session"] = {**SESSION, "has_accounts": True}
     (upd, context), msg = make_update(texts.MENU_BUY)
     await shop.handle_text(upd, context)
-    msg.text = "25"
-    await shop.handle_text(upd, context)
-    check("typed volume still creates the order",
-          ORDER_POSTS and ORDER_POSTS[-1]["data_limit_gb"] == 25, repr(ORDER_POSTS))
+    check("extender's volume screen has NO username button either",
+          not any(c == "uname:ask" for _, c in inline_buttons(msg)), repr(inline_buttons(msg)))
+    STATE["session"] = dict(SESSION)
 
-    # ── 3. the mandatory username ask is GONE ────────────────────────────
-    check("no optional-username state left in the module",
-          not hasattr(shop, "_STATE_AWAITING_OPTIONAL_USERNAME")
-          and not hasattr(shop, "_STATE_AWAITING_OPTIONAL_NAME"))
-
-    # ── 4. creates_new goes STRAIGHT to the payment screen ───────────────
-    ORDER_POSTS.clear()
+    # ── 2. newcomer: order first, then the MANDATORY ask ──────────────────
+    STATE["order_posts"].clear()
+    STATE["session"] = dict(SESSION)
     (upd, context), msg = make_update(texts.MENU_BUY)
+    msg.parent = (upd, context)
     await shop.handle_text(upd, context)
-    msg.text = "10"
-    await shop.handle_text(upd, context)
-    texts_seen = [r[0] for r in msg.replies]
-    check("no username question between the volume and the payment",
-          not any("نام کاربری" in t for t in texts_seen), repr(texts_seen))
-    check("payment request screen reached (receipt await state)",
-          context.user_data.get(shop._STATE) == shop._STATE_AWAITING_RECEIPT,
-          repr(context.user_data))
-    check("order POST carries no username when none was picked",
-          "marzban_username" not in ORDER_POSTS[-1]
-          or not ORDER_POSTS[-1]["marzban_username"], repr(ORDER_POSTS[-1]))
+    await tap_volume(msg, context)
+    check("newcomer volume tap → the mandatory username ask",
+          any("نام کاربری" in r[0] for r in msg.replies[-1:]), repr([r[0] for r in msg.replies]))
+    check("ask state reached, order created BEFORE the name",
+          context.user_data.get(shop._STATE) == shop._STATE_AWAITING_PREFERRED_NAME
+          and context.user_data.get(shop._ORDER_ID) == 77, repr(context.user_data))
+    check("order POST carried no username (naming is the next step)",
+          not STATE["order_posts"][-1].get("marzban_username"), repr(STATE["order_posts"]))
+    kb_labels = reply_kb_labels(msg)
+    check("the ask has NO «بدون نام» button", texts.SKIP_NAME not in kb_labels, repr(kb_labels))
 
-    # ── 5. pre-picked username rides the order POST ──────────────────────
-    ORDER_POSTS.clear()
-    (upd, context), msg = make_update(cb_data="uname:ask")
-    await shop.on_username_ask(upd, context)
-    check("uname:ask opens the name ask", any("نام کاربری" in r[0] for r in msg.replies))
+    # ── 3. invalid name → the rule, state kept ────────────────────────────
+    msg.text = "فاطمه"
+    await shop.handle_text(upd, context)
+    check("Persian name → the invalid-name reply (no crash)",
+          msg.replies[-1][0] == texts.USERNAME_INVALID, repr(msg.replies[-1][0]))
+    check("...state kept for a retry", context.user_data.get(shop._STATE) == shop._STATE_AWAITING_PREFERRED_NAME)
+
+    # ── 4. «بدون نام» is RETIRED ──────────────────────────────────────────
+    msg.text = texts.SKIP_NAME
+    await shop.handle_text(upd, context)
+    check("«بدون نام» tap → the retired line, never an auto-named order",
+          msg.replies[-1][0] == texts.AUTO_NAME_RETIRED, repr(msg.replies[-1][0]))
+    check("...state kept", context.user_data.get(shop._STATE) == shop._STATE_AWAITING_PREFERRED_NAME)
+
+    # ── 5. valid name → username endpoint → payment screen ────────────────
+    STATE["username_posts"].clear()
     msg.text = "fateme"
     await shop.handle_text(upd, context)
-    check("valid answer stores the pending name and returns to the volume screen",
-          context.user_data.get(shop._PENDING_PREFERRED_NAME) == "fateme"
-          and context.user_data.get(shop._STATE) == shop._STATE_CHOOSING_VOLUME,
-          repr(context.user_data))
-    msg.text = "20"
-    await shop.handle_text(upd, context)
-    check("order POST carries the pre-picked username",
-          ORDER_POSTS[-1].get("marzban_username") == "fateme", repr(ORDER_POSTS[-1]))
+    check("the answer hits POST /orders/77/username",
+          STATE["username_posts"] and STATE["username_posts"][-1]["name"] == "fateme",
+          repr(STATE["username_posts"]))
+    check("payment screen reached after the name",
+          context.user_data.get(shop._STATE) == shop._STATE_AWAITING_RECEIPT, repr(context.user_data))
+    check("no taken-note on a free name", not any("گرفته شده بود" in r[0] for r in msg.replies))
 
-    # ── 6. taken username reopens the ask ────────────────────────────────
-    global ORDER_ERROR
-    ORDER_POSTS.clear()
-    (upd, context), msg = make_update(cb_data="uname:ask")
-    await shop.on_username_ask(upd, context)
+    # ── 6. taken name → uniquified, the payment screen SAYS the final ─────
+    STATE["order_posts"].clear()
+    STATE["username_posts"].clear()
+    (upd, context), msg = make_update(texts.MENU_BUY)
+    msg.parent = (upd, context)
+    await shop.handle_text(upd, context)
+    await tap_volume(msg, context)
+    msg.text = "ali"  # the stub treats "ali" as taken → ali-2
+    await shop.handle_text(upd, context)
+    check("taken name → payment screen reached (no bounce)",
+          context.user_data.get(shop._STATE) == shop._STATE_AWAITING_RECEIPT, repr(context.user_data))
+    check("the screen says the final name and that it changed",
+          any("ali-2" in r[0] and "گرفته شده بود" in r[0] for r in msg.replies[-1:]),
+          repr([r[0] for r in msg.replies]))
+
+    # ── 7. CANCEL during the ask cancels the pending buy ──────────────────
+    STATE["order_posts"].clear()
+    (upd, context), msg = make_update(texts.MENU_BUY)
+    msg.parent = (upd, context)
+    await shop.handle_text(upd, context)
+    await tap_volume(msg, context)
+    msg.text = texts.CANCEL
+    await shop.handle_text(upd, context)
+    check("CANCEL during the ask → «لغو شد», state cleared",
+          any("لغو" in r[0] for r in msg.replies[-1:])
+          and not context.user_data.get(shop._STATE), repr((msg.replies, context.user_data)))
+
+    # ── 8. extend-in-place: NO ask ─────────────────────────────────────────
+    STATE["creates_new"] = False
+    STATE["session"] = {**SESSION, "has_accounts": True}
+    STATE["order_posts"].clear()
+    (upd, context), msg = make_update(texts.MENU_BUY)
+    msg.parent = (upd, context)
+    await shop.handle_text(upd, context)
+    await tap_volume(msg, context)
+    check("extender volume tap → straight to the payment screen (no ask)",
+          context.user_data.get(shop._STATE) == shop._STATE_AWAITING_RECEIPT
+          and not any("نام کاربری" in r[0] for r in msg.replies[-1:]), repr([r[0] for r in msg.replies]))
+    STATE["creates_new"] = True
+    STATE["session"] = dict(SESSION)
+
+    # ── 9. PAYG: the name ask is mandatory too ─────────────────────────────
+    (upd, context), msg = make_update(texts.PAYG_ON_BUY)
+    msg.parent = (upd, context)
+    await shop.handle_text(upd, context)
+    check("PAYG intro+ask sent, no «بدون نام» button",
+          any("نام کاربری" in r[0] for r in msg.replies)
+          and texts.SKIP_NAME not in reply_kb_labels(msg), repr(reply_kb_labels(msg)))
+    context.user_data[shop._STATE] = shop._STATE_AWAITING_PAYG_USERNAME
+    context.user_data[shop._PENDING_PAYG_PAYLOAD] = {"telegram_username": "ali_t"}
+    msg.text = texts.SKIP_NAME
+    await shop.handle_text(upd, context)
+    check("PAYG «بدون نام» → the retired line", msg.replies[-1][0] == texts.AUTO_NAME_RETIRED,
+          repr(msg.replies[-1][0]))
     msg.text = "fateme"
     await shop.handle_text(upd, context)
-    ORDER_ERROR = ("این نام کاربری قبلاً گرفته شده — یکی دیگر انتخاب کن.", 409)
-    msg.text = "20"
-    await shop.handle_text(upd, context)
-    check("taken name → the backend sentence shows and the ask reopens",
-          any("قبلاً گرفته شده" in r[0] for r in msg.replies)
-          and context.user_data.get(shop._STATE) == shop._STATE_AWAITING_PREFERRED_NAME,
-          repr((msg.replies, context.user_data)))
-    ORDER_ERROR = None
+    check("PAYG valid name → start carries marzban_username",
+          STATE["payg_posts"] and STATE["payg_posts"][-1].get("marzban_username") == "fateme",
+          repr(STATE["payg_posts"]))
 
-    # ── 7. wallet confirm: ONE inline button; stale gets an answer ───────
-    ORDER_POSTS.clear()
-    (upd, context), msg = make_update(texts.MENU_BUY)
+    # ── 10. the naming hint: multi-service + unnamed → once ───────────────
+    def row(account_id, nick):
+        return {"order_id": account_id, "source": "shop", "account_id": account_id,
+                "service_name": nick, "marzban_username": f"shop{account_id}",
+                "data_limit_gb": 30, "used_traffic": 5 * 1024 ** 3, "data_limit": 30 * 1024 ** 3,
+                "expire": NOW + 20 * 86400, "status": "active",
+                "subscription_url": f"https://sub.example.com/s/{account_id}",
+                "renews_here": False, "can_renew": True}
+    STATE["rows"] = [row(11, None), row(12, "موبایل من")]
+    STATE["session"] = {**SESSION, "has_accounts": True, "per_account_renewal": True}
+    (upd, context), msg = make_update(texts.MENU_ACCOUNTS)
+    msg.parent = (upd, context)
     await shop.handle_text(upd, context)
-    SESSION["balance"] = 200_000
-    try:
-        msg.text = "10"
-        await shop.handle_text(upd, context)
-    finally:
-        SESSION["balance"] = 0
-    # payable_from_wallet is computed by the BACKEND stub; emulate the wallet
-    # intent by re-posting through the stub's static intent (shortfall>0) —
-    # so instead drive the inline confirm directly:
-    context.user_data[shop._STATE] = shop._STATE_CONFIRMING_WALLET_BUY
-    context.user_data[shop._ORDER_ID] = 77
-    (upd2, context2), msg2 = make_update(cb_data="buy:confirm")
-    context2.user_data.update(context.user_data)
-    await shop.on_buy_confirm(upd2, context2)
-    check("buy:confirm pays the order (POST /pay reached)",
-          True)  # the stub accepts the pay POST; a raise would fail the test
-    (upd3, context3), msg3 = make_update(cb_data="buy:confirm")
-    await shop.on_buy_confirm(upd3, context3)
-    check("stale buy:confirm answers «قدیمی» instead of silence",
-          any("قدیمی" in r[0] for r in msg3.replies), repr(msg3.replies))
-    (upd4, context4), msg4 = make_update(cb_data="buy:cancel")
-    context4.user_data[shop._STATE] = shop._STATE_CONFIRMING_WALLET_BUY
-    context4.user_data[shop._ORDER_ID] = 77
-    await shop.on_buy_confirm(upd4, context4)
-    check("buy:cancel cancels cleanly",
-          any("لغو" in r[0] for r in msg4.replies), repr(msg4.replies))
-
-    # ── 8. vol:custom keeps the typed-amount path ────────────────────────
-    (upd, context), msg = make_update(texts.MENU_BUY)
-    await shop.handle_text(upd, context)
-    (upd5, context5), msg5 = make_update(cb_data="vol:custom")
-    context5.user_data[shop._STATE] = shop._STATE_CHOOSING_VOLUME
-    await shop.on_volume_choice(upd5, context5)
-    check("vol:custom asks for a typed number, state unchanged",
-          any("عدد حجم" in r[0] for r in msg5.replies), repr(msg5.replies))
+    check("unnamed multi-service → the naming hint appears",
+          any("✏️ نام سرویس" in r[0] for r in msg.replies), repr([r[0] for r in msg.replies]))
+    (upd2, context2), msg2 = make_update(texts.MENU_ACCOUNTS)
+    msg2.parent = (upd2, context2)
+    context2.chat_data.update(context.chat_data)
+    await shop.handle_text(upd2, context2)
+    check("the hint shows ONCE (chat_data flag)",
+          not any("✏️ نام سرویس" in r[0] for r in msg2.replies), repr([r[0] for r in msg2.replies]))
+    STATE["rows"] = [row(11, "تنها سرویس")]
+    (upd3, context3), msg3 = make_update(texts.MENU_ACCOUNTS)
+    msg3.parent = (upd3, context3)
+    await shop.handle_text(upd3, context3)
+    check("a fully-named customer never sees the hint",
+          not any("✏️ نام سرویس" in r[0] for r in msg3.replies), repr([r[0] for r in msg3.replies]))
+    STATE["session"] = dict(SESSION)
 
 
 asyncio.run(main())

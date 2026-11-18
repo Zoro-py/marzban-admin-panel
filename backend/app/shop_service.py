@@ -534,6 +534,17 @@ async def _provision_order(
     # purchase flow; the auto shop{id} name is the fallback. Extensions never
     # reach this with a rename — Marzban usernames are immutable identity.
     username = order.requested_username or f"{settings.username_prefix}{order.id}"
+    # Owner decision 2026-11-18: re-resolve HERE. Order creation and approval
+    # can be hours apart (a receipt waiting for the operator), and another
+    # customer can take the name in that window — the create must not fail
+    # on it. (The tiny residual race after this check is still covered by the
+    # _find_our_marzban_user recovery below.)
+    try:
+        username = await _resolve_unique_username(username)
+    except ShopError as exc:
+        logger.error("Shop order #%s: %s — refunding", order.id, exc)
+        refund_order(session, order, reason=str(exc))
+        return
     payload = {
         "username": username,
         "expire": int(utcnow().timestamp()) + seconds,
@@ -1658,6 +1669,32 @@ EXPIRY_WARN_DAYS = 3
 # Share of the data allowance used before a usage warning. 80% leaves room for
 # a renewal to land before the connection actually stops.
 USAGE_WARN_PERCENT = 80
+
+
+async def _resolve_unique_username(name: str) -> str:
+    """Owner decision 2026-11-18: a TAKEN customer-chosen username is
+    uniquified with a numeric suffix (ali → ali-2 → ali-3 …) instead of
+    bouncing the customer — «یونیکش کن که مرزبان قبول کنه». The base is
+    truncated to stay inside Marzban's own 30-char rule as the suffix grows.
+    The full 50-way exhaustion raises ShopError with a Persian sentence
+    (practically unreachable: it means 50 near-collisions).
+
+    Live-panel checks only — get_user, never a create. Order creation and
+    provisioning can be HOURS apart (a receipt awaiting approval), so
+    provisioning re-resolves through this too: the window between the
+    endpoint's check and create_user is real time in which another customer
+    can take the name."""
+    base = name.strip()
+    candidates = [base]
+    for n in range(2, 51):
+        suffix = f"-{n}"
+        candidates.append(base[: 30 - len(suffix)] + suffix)
+    for candidate in candidates:
+        if not candidate or len(candidate) < 3:
+            continue
+        if await marzban_client.get_user(candidate) is None:
+            return candidate
+    raise ShopError("همهٔ نام‌های نزدیک به این نام گرفته شده‌اند — یک نام کاملاً متفاوت بفرستید.")
 
 
 def warning_renew_callback(is_trial: bool, account_id: Optional[int], renew_gb: float) -> str:
