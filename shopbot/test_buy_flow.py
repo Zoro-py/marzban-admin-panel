@@ -182,6 +182,13 @@ async def main() -> None:
           repr(msg.replies[-1][1].inline_keyboard))
     check("an extender's prompt says the buy ADDS to their current service",
           "اضافه می‌شود" in msg.replies[-1][0], repr(msg.replies[-1][0]))
+    STATE["session"] = {**SESSION, "has_accounts": True, "renewable_label": "گوشی علی"}
+    (upd, context), msg = make_update(texts.MENU_BUY)
+    await shop.handle_text(upd, context)
+    check("the screen NAMES which account the buy extends (owner question: «کدوم اکانتم؟»)",
+          "گوشی علی" in msg.replies[-1][0] and "اضافه می‌شود" in msg.replies[-1][0],
+          repr(msg.replies[-1][0]))
+    STATE["session"] = dict(SESSION)
     STATE["session"] = dict(SESSION)
     (upd, context), msg = make_update(texts.MENU_BUY)
     await shop.handle_text(upd, context)

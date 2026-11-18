@@ -89,6 +89,7 @@ from app.schemas import (
     ShopLinkInviteRequest,
     ShopLinkState,
     ShopBotServiceNameRequest,
+    ShopBotAutoRenewToggleRequest,
     ShopTelegramBindRequest,
     ShopTelegramBindResult,
     ShopAutoRenewResult,
@@ -1300,9 +1301,10 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
     settings = get_shop_settings(session)
     # Routed-books debt view (council 2026-10-24): read-only, from the ledger.
     ledger_debt = _linked_ledger_debt(session, user)
-    from app.shop_service import held_payg_account, is_existing_customer, linked_debt_is_exact, linked_debt_lines
+    from app.shop_service import held_payg_account, is_existing_customer, linked_debt_is_exact, linked_debt_lines, renewable_account
 
     owing = linked_debt_lines(session, user.id)
+    ra = renewable_account(session, user.id)
     return ShopBotSession(
         shop_user_id=user.id,
         is_blocked=user.is_blocked,
@@ -1330,6 +1332,7 @@ def bot_session(body: ShopBotSessionRequest, session: Session = Depends(get_sess
         has_accounts=is_existing_customer(session, user.id),
         has_payg_service=held_payg_account(session, user.id) is not None,
         per_account_renewal=True,
+        renewable_label=((ra.service_name or ra.marzban_username) if ra is not None else None),
         phone=user.phone,
         payg_enabled=bool(settings.payg_enabled and settings.payg_rate_per_gb),
         payg_rate_per_gb=settings.payg_rate_per_gb or 0,
@@ -1582,6 +1585,16 @@ async def bot_create_order(body: ShopBotPurchaseRequest, session: Session = Depe
         target_acct = session.get(Account, body.target_account_id)
         if target_acct is not None:
             target_label = target_acct.service_name or target_acct.marzban_username
+    elif not body.force_new_service:
+        # Round F (owner question 2026-11-18: «کدوم اکانتم شارژ میشه؟»): a
+        # plain buy extends renewable_account — NAME it on the intent, so the
+        # payment screen shows «🔄 تمدید «X»» before any money moves. A
+        # plain buy by someone with nothing extendable creates a NEW
+        # service; no promise is made.
+        from app.shop_service import renewable_account as _renewable
+        ra = _renewable(session, user.id)
+        if ra is not None:
+            target_label = ra.service_name or ra.marzban_username
     creates_new = body.force_new_service or (
         body.target_account_id is None
         and renewable_account(session, user.id) is None and order.account_id is None
@@ -2244,6 +2257,11 @@ def bot_list_accounts(telegram_id: int, session: Session = Depends(get_session))
             and acct.status not in ("disabled", "deleted_from_marzban")
         )
         row.can_renew = bool(acct is not None and account_can_take_volume(session, acct))
+        # The standing auto-renew state, for the bot's «⋯ بیشتر» panel
+        # (owner 2026-11-18: the customer can finally see and flip it; until
+        # today only the operator could). None only when the account itself
+        # is gone — the panel then shows no toggle at all.
+        row.auto_renew_enabled = acct.auto_renew_enabled if acct is not None else None
     return rows
 
 
@@ -2281,6 +2299,40 @@ async def bot_rename_account(account_id: int, body: ShopBotServiceNameRequest,
     ))
     session.commit()
     return {"ok": True, "service_name": account.service_name}
+
+
+@bot_router.post("/accounts/{account_id}/auto-renew-toggle")
+async def bot_toggle_auto_renew(account_id: int, body: ShopBotAutoRenewToggleRequest,
+                                session: Session = Depends(get_session)):
+    """Round F (owner decision 2026-11-18): the CUSTOMER can finally see and
+    flip the standing per-account auto-renew flag — until today only the
+    operator's panel could, so a family member could neither turn it on nor
+    off (J6/J7). The flag gates the sync job's notify-first auto-queue; this
+    endpoint moves no money. Ownership is the SAME scoping the rename and
+    listing use."""
+    user = session.exec(select(ShopUser).where(ShopUser.telegram_id == body.telegram_id)).first()
+    if user is None:
+        raise HTTPException(404, "Unknown shop user — call /session first")
+    account = session.get(Account, account_id)
+    if account is None:
+        raise HTTPException(404, "not found")
+
+    from app.shop_service import visible_account_ids
+
+    if account_id not in visible_account_ids(session, user.id):
+        raise HTTPException(404, "not found")
+
+    old = account.auto_renew_enabled
+    account.auto_renew_enabled = bool(body.enabled)
+    session.add(account)
+    session.add(AccountEvent(
+        account_id=account.id,
+        action="auto_renew_toggled",
+        detail=f"{bool(old)} -> {bool(body.enabled)} (set by the customer in the shop bot)",
+        created_by=f"telegram:{body.telegram_id}",
+    ))
+    session.commit()
+    return {"ok": True, "auto_renew_enabled": account.auto_renew_enabled}
 
 
 @router.get("/issues")

@@ -22,6 +22,7 @@ import asyncio
 import os
 import sys
 import time
+from datetime import datetime as _dt, timezone as _tz, timedelta as _td
 from types import SimpleNamespace
 
 os.environ.setdefault("SHOP_BOT_TOKEN", "")
@@ -187,6 +188,24 @@ async def main() -> None:
           any(set(l) <= set("▰▱") for l in lines), repr(lines))
     check("remaining GB stated plainly, WITHOUT the percentage",
           "باقی مانده" in text and "مصرف شده" not in text and "٪" not in text, repr(text))
+
+    # ── 3c-b. average consumption (owner journey 3: «میانگین مصرفم رو ببینم») ─
+    ROWS.clear()
+    old = _dt.now(_tz.utc) - _td(days=10)
+    ROWS.append(row(created_at=old.isoformat(), used_traffic=20 * 1024 ** 3))
+    (upd, context), msg = make_update()
+    await shop.show_accounts(upd, context)
+    text = msg.replies[-1][0]
+    check("10 days / 20 GB → «مصرف روزانه: حدود ۲ گیگ»",
+          "مصرف روزانه" in text and "۲ گیگ" in text, repr(text))
+    check("…and the pace line: تا حدود ۵ روز دیگر",
+          "۵ روز دیگر" in text, repr(text))
+    ROWS.clear()
+    ROWS.append(row(created_at=_dt.now(_tz.utc).isoformat(), used_traffic=0))
+    (upd, context), msg = make_update()
+    await shop.show_accounts(upd, context)
+    check("a fresh account shows NO average (nothing to average yet)",
+          "مصرف روزانه" not in msg.replies[-1][0], repr(msg.replies[-1][0]))
 
     # ── 4. unlimited service: no تمدید ───────────────────────────────────
     ROWS.clear()

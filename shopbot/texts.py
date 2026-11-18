@@ -275,6 +275,13 @@ def buy_prompt(price_per_gb: int, min_gb: float, max_gb: float, days: int) -> st
 EXTEND_NOTE = "حجمِ زیر به سرویس فعلی‌تان اضافه می‌شود — لینک‌تان همان می‌ماند."
 
 
+def extend_target_note(label: str) -> str:
+    """Round F (owner question: «۱۰ گیگ بزنم کدوم اکانتم شارژ میشه؟»): the
+    backend now NAMES the extendable service on the session — the screen
+    says its name, not just «سرویس فعلی»."""
+    return f"این خرید به سرویس «{label}» اضافه می‌شود — لینک‌تان همان می‌ماند."
+
+
 def volume_button(volume: float, price_per_gb: int) -> str:
     """A volume pick that names its own price (owner report 2026-11-18:
     sizes-only buttons made the customer multiply in their head, and the two
@@ -665,6 +672,19 @@ CARD_RENEW_BUTTON = "🔄 تمدید"
 CARD_MORE_BUTTON = "⋯ بیشتر"
 SERVICE_MORE_HINT = "تنظیمات همین سرویس:"
 AUTO_RENEW_BUTTON = "⚡ تمدید خودکار (میانگین مصرفم)"
+# Round F (owner journeys 6+7): the STANDING per-account auto-renew — until
+# 2026-11-18 only the operator could flip it; now the «⋯ بیشتر» panel shows
+# the state and the customer toggles it. The one-shot button above stays.
+AUTORENEW_STATE_ON = "⚡ تمدید خودکار: روشن — خاموشش کن"
+AUTORENEW_STATE_OFF = "⚡ تمدید خودکار: خاموش — روشنش کن"
+AUTORENEW_TURNED_ON = (
+    "✅ تمدید خودکار روشن شد — نزدیکِ تمام‌شدنِ حجم یا زمان، خودش سفارش را آماده "
+    "می‌کند و همین‌جا خبرش را می‌دهد."
+)
+AUTORENEW_TURNED_OFF = (
+    "تمدید خودکار خاموش شد — دیگر خودش سفارش آماده نمی‌کند.\n"
+    "تمدیدِ دستی همیشه از دکمهٔ «تمدید» روی کارت سرویس است."
+)
 # Under an ended card (volume gone or days up): what happened, and what one
 # tap does — stated as information, never an order.
 RENEW_HINT_ENDED = "سرویس قطع است. دکمهٔ «تمدید» همان حجم را دوباره فعال می‌کند."
@@ -705,7 +725,8 @@ PURCHASE_CANCELLED = f"خرید لغو شد — هر وقت خواستید، ا�
 
 
 def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional[int],
-                 status: Optional[str] = None, name: Optional[str] = None) -> str:
+                 status: Optional[str] = None, name: Optional[str] = None,
+                 avg_daily_gb: Optional[float] = None) -> str:
     """One subscription, named by what it IS rather than by its panel username.
 
     The previous version printed the raw Marzban username — a Latin identifier
@@ -729,6 +750,12 @@ def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional
                               a fabricated cap is how a name-unlimited
                               service got shown as "94% used" (live
                               2026-10-01). Usage is a plain "so far" figure.
+
+    `avg_daily_gb` (owner journey 3: «میانگین مصرفم رو ببینم»): the account's
+    own pace, used GB / days alive, computed by the caller from the row's
+    created_at. Rendered as a round daily figure plus the one forecast the
+    customer acts on — how many days the volume lasts at this pace. Skipped
+    when the caller passes None (an account too fresh to average).
 
     `status` is optional (the backend's accounts list always carries it; the
     default None keeps every rendering byte-identical for callers that don't
@@ -756,6 +783,12 @@ def account_line(volume_gb: Optional[float], used_gb: float, days_left: Optional
             text = (f"{title} {gb(volume_gb)}\n"
                     f"{usage_bar(used_gb, volume_gb)}\n"
                     f"{fa(round(remaining, 2))} گیگ باقی مانده\n{life}")
+            if avg_daily_gb:
+                days_more = int(remaining / avg_daily_gb + 0.999)  # ceil
+                pace = f"مصرف روزانه: حدود {fa(round(avg_daily_gb, 2))} گیگ"
+                if days_more >= 1:
+                    pace += f"\nبا این روند، حجم تا حدود {fa(days_more)} روز دیگر تمام می‌شود"
+                text += "\n" + pace
     if status == "disabled":
         text += "\n" + STATUS_SUSPENDED_BADGE
     return text

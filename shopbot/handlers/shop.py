@@ -638,6 +638,9 @@ async def _render_volume_screen(update: Update, session: dict, *, force_new: boo
     )
     if force_new:
         prompt = texts.NEW_SERVICE_INTRO + "\n" + prompt
+    elif session.get("renewable_label"):
+        # Round F (owner: «۱۰ گیگ بزنم کدوم اکانتم شارژ میشه؟») — NAME it.
+        prompt = texts.extend_target_note(session["renewable_label"]) + "\n" + prompt
     elif session.get("has_accounts"):
         prompt = texts.EXTEND_NOTE + "\n" + prompt
     await update.effective_message.reply_text(prompt, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -784,6 +787,36 @@ async def on_renew_target(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if session.get("per_account_renewal"):
         context.user_data[_TARGET_ACCOUNT_ID] = account_id
     await _handle_volume(update, context, volume)
+
+
+async def on_auto_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The standing auto-renew TOGGLE (Round F, owner journeys 6+7): flips
+    the per-account flag the sync job's auto-queue gates on. No money moves
+    here; ownership is re-checked server-side like every other action."""
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split(":") if query.data else []
+    try:
+        account_id = int(parts[1])
+        enabled = parts[2] == "on"
+    except (AttributeError, IndexError, ValueError):
+        await update.effective_message.reply_text(texts.STALE_BUTTON)
+        return
+    session = await _session(update)
+    if session["is_blocked"]:
+        await _reply(update, texts.blocked(_handle(session)), session)
+        return
+    try:
+        await backend.post(f"/api/shop/bot/accounts/{account_id}/auto-renew-toggle",
+                           json={"telegram_id": update.effective_user.id, "enabled": enabled})
+    except ShopApiError:
+        logger.exception("Auto-renew toggle failed for account %s", account_id)
+        context.user_data.clear()
+        await _reply(update, texts.RENEW_TARGET_GONE, session)
+        return
+    await _reply(update,
+                 texts.AUTORENEW_TURNED_ON if enabled else texts.AUTORENEW_TURNED_OFF,
+                 session)
 
 
 async def on_auto_renew(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1616,8 +1649,24 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # suspended service must say so instead of rendering as "active, X GB
         # left" that secretly connects to nothing. Passing it changes nothing
         # for active/limited/expired rows (see account_line's default).
+        # Round F (owner journey 3): the account's own daily pace — used GB
+        # divided by days alive — rendered as the average plus the one
+        # forecast the customer acts on. Skipped for accounts too fresh to
+        # average (under ~0.05 GB/day).
+        avg_daily_gb = None
+        created_raw = row.get("created_at")
+        if created_raw and limit_gb and used_gb:
+            created = (datetime.fromisoformat(created_raw)
+                       if isinstance(created_raw, str) else created_raw)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            days_alive = max(1.0, (datetime.now(timezone.utc) - created).total_seconds() / 86400)
+            pace = used_gb / days_alive
+            if pace >= 0.05:
+                avg_daily_gb = pace
         lines = [texts.account_line(limit_gb, used_gb, days_left,
-                                     status=row.get("status"), name=_display_service_name(row))]
+                                     status=row.get("status"), name=_display_service_name(row),
+                                     avg_daily_gb=avg_daily_gb)]
         # T3: an ended card states what happened AND what one tap does, and
         # its تمدید button becomes the FIRST thing on the card. The volume
         # threshold is 10 MB (matching account_line): Marzban cuts a user off
@@ -1712,6 +1761,16 @@ async def on_service_more(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if offer_auto_renew:
         buttons.append([InlineKeyboardButton(texts.AUTO_RENEW_BUTTON,
                                              callback_data=f"autorenew:{account_id}")])
+    # Round F (owner journeys 6+7): the STANDING auto-renew — visible state
+    # and a customer-side toggle. None (old backend) shows nothing, exactly
+    # as before.
+    state = row.get("auto_renew_enabled") if row is not None else None
+    if state is True:
+        buttons.append([InlineKeyboardButton(texts.AUTORENEW_STATE_ON,
+                                             callback_data=f"autotoggle:{account_id}:off")])
+    elif state is False:
+        buttons.append([InlineKeyboardButton(texts.AUTORENEW_STATE_OFF,
+                                             callback_data=f"autotoggle:{account_id}:on")])
     await update.effective_message.reply_text(
         texts.SERVICE_MORE_HINT,
         reply_markup=InlineKeyboardMarkup(buttons),

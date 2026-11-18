@@ -45,6 +45,7 @@ from handlers.shop import (  # noqa: E402
     on_account_detail,
     on_account_topup,
     on_auto_renew,
+    on_auto_toggle,
     on_buy_confirm,
     on_menu_callback,
     on_pay_debt,
@@ -129,6 +130,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(on_menu_callback, pattern=r"^menu:"))
     app.add_handler(CallbackQueryHandler(on_buy_confirm, pattern=r"^buy:"))
     app.add_handler(CallbackQueryHandler(on_auto_renew, pattern=r"^autorenew:"))
+    app.add_handler(CallbackQueryHandler(on_auto_toggle, pattern=r"^autotoggle:"))
     # Debt-payment keyboard (council 2026-10-24): debt:wallet / debt:receipt /
     # debt:wallet:yes / debt:cancel. More specific patterns registered BEFORE
     # the bare debt: handler.

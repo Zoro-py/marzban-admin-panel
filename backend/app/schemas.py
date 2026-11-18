@@ -896,6 +896,12 @@ class ShopBotSession(BaseModel):
     # starting a second one. Both READ-ONLY; neither changes any money path.
     has_accounts: bool = False
     has_payg_service: bool = False
+    # The name of the account a plain purchase would EXTEND (the customer's
+    # own nickname, else the panel username) — the buy screen says «این خرید
+    # به سرویس «X» اضافه می‌شود» instead of leaving "which account?" open
+    # (owner question 2026-11-18). None = nothing extendable: a plain buy
+    # will create a NEW service (force_new always does).
+    renewable_label: Optional[str] = None
     # Capability bit: this backend accepts ShopBotPurchaseRequest.
     # target_account_id. An OLD backend silently drops the unknown field, so
     # the bot sends it only when this is True (absent -> False -> old flow).
@@ -1087,6 +1093,11 @@ class ShopBotAccountRow(BaseModel):
     # A volume purchase can be added to THIS service (alive, not metered, has
     # a data cap). Drives the renew button on every card that can take it.
     can_renew: Optional[bool] = None
+    # The standing per-account auto-renew flag (sync job's opt-in gate —
+    # 2026-10-27). None only from an ancient backend. Exposed so the bot's
+    # «⋯ بیشتر» panel can SHOW the state and offer the customer-side toggle
+    # (until 2026-11-18 only the operator could flip it).
+    auto_renew_enabled: Optional[bool] = None
     # Whether the «تمدید خودکار» action can work for this row — the SAME rule
     # shop_service.auto_renew_account refuses on: a shop-wallet feature, never
     # for an account an operator-managed customer owns (customer_id set, even
@@ -1094,6 +1105,12 @@ class ShopBotAccountRow(BaseModel):
     # disabled/deleted one. None = not computed (old backend): the bot then
     # falls back to its own guess.
     auto_renew_ok: Optional[bool] = None
+    auto_renew_enabled: Optional[bool] = None
+
+
+class ShopBotAutoRenewToggleRequest(BaseModel):
+    telegram_id: int
+    enabled: bool
 
 
 # ── shop-bot link for EXISTING customers (operator-created accounts) ──────
